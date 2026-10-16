@@ -2442,12 +2442,42 @@ def _extracts_into_protected_dir(command: str) -> Optional[str]:
     return None
 
 
-_HEREDOC_OPEN_RE = _rx(
-    r"(?<!<)<<(?!<)(?P<dash>-?)[ \t]*(?:(?P<q>['\"])(?P<d1>\w+)(?P=q)|\\(?P<d2>\w+)|(?P<d3>\w+))"
+# The delimiter is a shell WORD: adjacent quoted / backslashed / bare parts
+# concatenate (``'E'OF`` is the delimiter ``EOF``), and ANY quote or backslash
+# in it makes the body literal.
+_HEREDOC_WORD = (
+    r"(?:'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.|\$'[^']*'|[^\s;&|<>()'\"\\$]+|\$(?!['\"]))+"
 )
+_HEREDOC_OPEN_RE = _rx(r"(?<!<)<<(?!<)(?P<dash>-?)[ \t]*(?P<word>" + _HEREDOC_WORD + r")")
+_HEREDOC_PART = _rx(r"'([^']*)'|\"((?:[^\"\\]|\\.)*)\"|\\(.)|\$'([^']*)'|([^'\"\\]+)")
 _RESCAN_DEPTH = 3
 _RESCAN_FANOUT = 32
 _RESCAN_BUDGET = 200  # derived commands scanned per top-level check
+
+
+def _heredoc_delimiter(word: str) -> Tuple[str, bool]:
+    """``(delimiter, body_is_literal)`` for a heredoc delimiter word."""
+    parts = _HEREDOC_PART.findall(word)
+    delim = "".join("".join(p) for p in parts)
+    return delim, any(p[0] or p[1] or p[2] or p[3] for p in parts) or "'" in word or '"' in word
+
+
+_SEGMENT_BREAK = _rx(r";|&&|\|\||&(?!>)|\n")
+
+
+def _feeding_segment(command: str, start: int, line_end: int) -> str:
+    """The simple command a heredoc marker at ``start`` is attached to (pipes kept, ``;``/``&&`` break it).
+
+    A closer on the line after the terminator (``) | sh``) is part of it, so a
+    heredoc inside a group that is piped onward is judged by its consumer.
+    """
+    line_start = command.rfind("\n", 0, start) + 1
+    before = command[line_start:start]
+    cut = [m.end() for m in _SEGMENT_BREAK.finditer(before)]
+    head = before[cut[-1]:] if cut else before
+    after = command[start:line_end]
+    nxt = _SEGMENT_BREAK.search(after)
+    return head + (after[: nxt.start()] if nxt else after)
 
 
 class _Heredoc:
@@ -2461,41 +2491,51 @@ class _Heredoc:
 
 
 def _heredocs(command: str) -> List[_Heredoc]:
-    """Every heredoc in ``command``, terminated the way bash terminates it.
+    """Every heredoc in ``command``, parsed the way bash reads them.
 
+    Several markers on one line read their bodies in order (``cat <<A <<B``).
     The terminator is the delimiter ALONE on its line: ``<<`` takes no leading
     or trailing whitespace (`` EOF`` and ``EOF `` are body text), ``<<-`` strips
-    leading TABS only. A quoted (``'EOF'``, ``"EOF"``) or backslash-quoted
-    (``\\EOF``) delimiter makes the body literal.
+    leading TABS only. The delimiter is a full shell word (see above).
     """
     out: List[_Heredoc] = []
     pos = 0
+    n = len(command)
     while True:
         m = _HEREDOC_OPEN_RE.search(command, pos)
         if not m:
             return out
-        delim = m.group("d1") or m.group("d2") or m.group("d3")
         nl = command.find("\n", m.end())
         if nl == -1:
             return out
-        body_start, idx, end = nl + 1, nl + 1, len(command)
-        body_end = term_end = end
-        while idx <= end:
-            eol = command.find("\n", idx)
-            stop = end if eol == -1 else eol
-            line = command[idx:stop]
-            if (line.lstrip("\t") if m.group("dash") else line) == delim:
-                body_end, term_end = idx, stop
-                break
-            if eol == -1:
-                break
-            idx = eol + 1
-        opening = command[command.rfind("\n", 0, m.start()) + 1 : nl]
-        out.append(_Heredoc(
-            m.start(), body_start, body_end,
-            command[body_start:body_end].rstrip("\n"), m.group("d3") is None, opening,
-        ))
-        pos = max(term_end, nl + 1)
+        markers = [m] + [
+            x for x in _HEREDOC_OPEN_RE.finditer(command, m.end(), nl)
+        ]
+        cursor = nl + 1
+        for mk in markers:
+            delim, literal = _heredoc_delimiter(mk.group("word"))
+            body_end = term_end = n
+            idx = cursor
+            while idx <= n:
+                eol = command.find("\n", idx)
+                stop = n if eol == -1 else eol
+                line = command[idx:stop]
+                if (line.lstrip("\t") if mk.group("dash") else line) == delim:
+                    body_end, term_end = idx, stop
+                    break
+                if eol == -1:
+                    break
+                idx = eol + 1
+            feed = _feeding_segment(command, mk.start(), nl)
+            closer = re.match(r"[ \t]*[)}][^\n]*", command[min(term_end + 1, n):])
+            if closer:  # ``(cat <<'EOF' … EOF`` newline ``) | sh``
+                feed += " " + closer.group(0)
+            out.append(_Heredoc(
+                mk.start(), cursor, body_end,
+                command[cursor:body_end].rstrip("\n"), literal, feed,
+            ))
+            cursor = min(term_end + 1, n)
+        pos = max(cursor - 1, nl + 1)
 
 
 def _heredoc_bodies(command: str) -> List[Tuple[str, bool, str]]:
@@ -2592,7 +2632,9 @@ _PARALLEL_VALUE_OPTS = frozenset(
 _PARALLEL_REPLACEMENT = _rx(r"\{(?:\.|/|//|/\.|#)?\}")
 
 
-_REDIRECT_RE = _rx(r"\d*(?:<<<|<<-?|<>|>>|>\||>&|&>|<|>)[ \t]*(?:'[^']*'|\"[^\"]*\"|[^\s|;&]+)")
+_REDIRECT_RE = _rx(
+    r"\d*(?:<<<|<<-?|<>|>>|>\||>&|&>|<|>)[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|[^\s|;&()'\"\\])+"
+)
 _WORD_OPERATORS = frozenset({"|", "||", "&", "&&", ";"})
 
 
@@ -2603,9 +2645,26 @@ def _words(text: str) -> List[str]:
         return text.split()
 
 
+_OPERATOR_ONLY = _rx(r"[;&|<>()]+")
+_OPERATOR_TOKEN = _rx(r"&&|\|\||[;&|<>()]")
+
+
 def _command_words(line: str) -> List[str]:
-    """Words of a command line with redirections removed (``ssh host <<EOF`` -> ``ssh host``)."""
-    return _words(_REDIRECT_RE.sub(" ", line))
+    """Words of a command line with redirections removed (``ssh host <<EOF`` -> ``ssh host``).
+
+    Operators are words of their own, with or without spaces (``|sh`` -> ``|``, ``sh``).
+    """
+    text = _REDIRECT_RE.sub(" ", line)
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        lex.commenters = "#"
+        words: List[str] = []
+        for w in lex:  # shlex fuses neighbouring operators (``)|``): one word per operator
+            words.extend(_OPERATOR_TOKEN.findall(w) if _OPERATOR_ONLY.fullmatch(w) else [w])
+        return words
+    except ValueError:
+        return text.split()
 
 
 def _ssh_remote_command(args: List[str]) -> List[str]:
@@ -2651,7 +2710,7 @@ def _stage_reads_program(stage: List[str]) -> bool:
     pipe, heredoc and here-string feeds and by the ssh remote command: the
     same payload is refused or allowed however it arrives (#1099 review).
     """
-    words = [w for w in stage if not _ASSIGN_WORD.match(w)]
+    words = [w for w in stage if w not in ("(", ")") and not _ASSIGN_WORD.match(w)]
     while words and words[0] == "--":
         words = words[1:]
     if not words:
@@ -2769,7 +2828,9 @@ _CRON_FIELDS = _rx(r"^[ \t]*(?:@\w+|(?:\S+[ \t]+){5})")
 def _program_text(text: str, consumer_words: List[str]) -> str:
     """The commands in ``text`` as its consumer will run them (a crontab line is ``<5 fields> command``)."""
     if any(os.path.basename(w) == "crontab" for w in consumer_words):
-        return "\n".join(_CRON_FIELDS.sub("", ln) for ln in text.split("\n"))
+        return "\n".join(
+            _CRON_FIELDS.sub("", ln) for ln in text.split("\n") if not ln.lstrip().startswith("#")
+        )
     return text
 
 

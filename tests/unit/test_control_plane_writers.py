@@ -766,6 +766,70 @@ ROUND3_ALLOW = [
 ]
 
 
+# Review of PR #1102 (round 4).
+ROUND4_BLOCK = {
+    "partially-quoted delimiter is a full shell word": [
+        f"cat <<'E'OF\nprose\nEOF\n{_CDT}",
+        f"cat <<\"E\"OF\nprose\nEOF\ngit -C ~/.agentwire checkout damagecontrol.yml",
+        "cat <<'E'OF\nprose\nEOF\necho x >| @P",
+        f"ssh host <<'E'OF\n{_CDT}\nEOF",
+        f"cat <<'EO'F\nprose\nEOF\n{_CDT}",
+        f"cat <<E\"O\"F\nprose\nEOF\n{_CDT}",
+        f"cat <<\"\"\nprose\n\n{_CDT}",
+        f"cat <<$'EOF'\nprose\nEOF\n{_CDT}",
+    ],
+    "no-space pipe into a shell after the marker": [
+        f"cat <<'EOF'|sh\n{_CDT}\nEOF",
+        f"cat <<'EOF' |sh\n{_CDT}\nEOF",
+        f"cat <<'EOF'| sh\n{_CDT}\nEOF",
+        f"cat <<'EOF' | sh\n{_CDT}\nEOF",
+        f"(cat <<'EOF'\n{_CDT}\nEOF\n) | sh",
+        f"(cat <<'EOF'\n{_CDT}\nEOF\n)|sudo -s",
+    ],
+    "several heredocs on one line read their bodies in order": [
+        f"cat <<'A'; sh <<'B'\necho hi\nA\n{_CDT}\nB",
+        f"cat <<'A' <<'B'\nx\nA\ny\nB\n{_CDT}",
+    ],
+    "crontab comment lines are skipped, not the entries": [
+        f"crontab - <<'EOF'\n# a comment\n@reboot {_CDT}\nEOF",
+    ],
+}
+ROUND4_ALLOW = [
+    # prose bodies behind a partially-quoted / backslashed delimiter are literal
+    f"cat <<\"E\"OF > /tmp/n.md\n{_CDT}\nEOF",
+    f"cat <<E\\OF > /tmp/n.md\n{_CDT}\nEOF",
+    f"cat <<E'O'F > /tmp/n.md\n{_CDT}\nEOF",
+    f"cat <<'EO'F > /tmp/n.md\ngit -C ~/.agentwire checkout damagecontrol.yml\nEOF",
+    # a quoted body piped to a program that only reads
+    f"cat <<'EOF'|cat\n{_CDT}\nEOF",
+    f"(cat <<'EOF'\n{_CDT}\nEOF\n) | cat",
+    f"(cat <<'EOF'\n{_CDT}\nEOF\n) > /tmp/o",
+    # two heredocs: the cd text sits in the body of the one that is not a program
+    f"cat <<'A' <<'B'\nx\nA\n{_CDT}\nB",
+    f"cat <<'A'; sh <<'B'\n{_CDT}\nA\necho hi\nB",
+    "crontab - <<'EOF'\n# touch @P\nEOF",
+]
+
+
+def test_round4_review_shapes(cfg):
+    leaked = {}
+    for item, shapes in ROUND4_BLOCK.items():
+        for template in shapes:
+            for sp in (SPELLINGS if "@P" in template else [None]):
+                c = template.replace("@P", sp) if sp else template
+                if not _blocked_by_control_plane(c, cfg):
+                    leaked.setdefault(item, []).append(c)
+    wrongly_blocked = [
+        c
+        for template in ROUND4_ALLOW
+        for sp in (SPELLINGS if "@P" in template else [None])
+        for c in [template.replace("@P", sp) if sp else template]
+        if _blocked_by_control_plane(c, cfg)
+    ]
+    assert not leaked, leaked
+    assert not wrongly_blocked, wrongly_blocked
+
+
 def test_round3_review_shapes(cfg):
     leaked = {}
     for item, shapes in ROUND3_BLOCK.items():

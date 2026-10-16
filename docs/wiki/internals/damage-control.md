@@ -214,8 +214,14 @@ it would unwrapped:
   (`ssh host <<'EOF'`, `sudo sh <<'EOF'`) are still judged as the program they
   are, and unquoted bodies stay scanned for substitutions (#1098). Heredocs end
   where bash ends them: the delimiter ALONE on its line (` EOF` and `EOF ` are
-  body text), with `<<-` stripping leading tabs only; `<<\EOF` is literal like
-  `<<'EOF'`. A `crontab -` body is judged after its five schedule fields (or
+  body text), with `<<-` stripping leading tabs only. The delimiter is a full
+  shell word: adjacent parts concatenate (`<<'E'OF`, `<<E"O"F`, `<<$'EOF'` all
+  end at `EOF`) and any quote or backslash makes the body literal (`<<\EOF`
+  like `<<'EOF'`). Several markers on one line read their bodies in order, and
+  each is judged by the simple command it is attached to (`cat <<'A'; sh <<'B'`:
+  only B is a program), including a group closed on a later line
+  (`(cat <<'EOF' … EOF` newline `) | sh`); operators split into words with or
+  without spaces (`<<'EOF'|sh`). A `crontab -` body is judged after its five schedule fields (or
   `@reboot`), and leading whitespace before a `cd` does not hide it.
 - **`parallel` is xargs-shaped:** its command is re-scanned with the path
   substituted for `{}` (`{.}` `{/}` `{//}` `{/.}` `{#}`, or `-I`), or appended.
@@ -282,7 +288,11 @@ whose target is named only inside the diff, `sftp get`, `ssh host lua` (and
 other interpreters outside the list), a `cd` written inside interpreter source
 (`perl -e 'system("cd <dir> && touch <file>")'`), a body piped into a
 `sh -c '{}'` placeholder (`cat <<'EOF' | xargs -I{} sh -c '{}'` with the literal
-path in the body), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
+path in the body), `cd <dir> && rsync -a <file> host:x` (the absolute spelling
+is refused too — rsync's source is not distinguished from its destination), a
+partially-quoted or backslashed delimiter (`<<E\OF`, `<<'E'OF`) whose literal
+body holds a `$(…)` that names the path literally (the older heredoc masker
+only recognizes whole-word quoting; fail-closed), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
 resolved), a cwd known only from the session or set by `cd $dir` / `cd -` / a
 subshell the command cannot see, `make -C`/`env -C`-style directory options,
 writes through a symlink or hardlink alias, a brace expansion past the cap, a
