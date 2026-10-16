@@ -244,10 +244,16 @@ it would unwrapped:
   `local`/`export`/`readonly`/`typeset` forms) is never a heredoc, closed or
   not: bash cannot hold a heredoc there, and a *recovering* bash (macOS
   `/bin/bash` 3.2 keeps executing after that syntax error; zsh and newer
-  `bash -c` abort) runs the next line. A literal that never closes is the same
-  error, so every heredoc found anywhere inside it (including one nested in a
-  `$(…)`) is discarded; a closed literal's nested `$(…)` heredoc, and a
-  multi-line `<(…)`, are still read. A heredoc opened
+  `bash -c` abort) runs the next line. One rule covers every such line (the
+  scanner's *poisoned* flag): a `<<` token anywhere in a literal (`a=([1<<2]=x)`,
+  `a=(x <<2)`, `a=(${y}<<2)`; quoted `"<<"` and arithmetic `$((1<<2))` are
+  not tokens), or a literal that never closes, makes the line a syntax error.
+  Every heredoc found inside the literal is discarded and every marker on that
+  line, before or after the literal (`a=([1<<2]=x) <<EOF`), is discarded at the
+  line's newline instead of reading a body; the flag clears at the first
+  newline outside the literal, so a literal closed on a later line poisons the
+  rest of its closing line. A closed, clean literal's nested `$(…)` heredoc,
+  and a multi-line `<(…)`, are still read. A heredoc opened
   inside `$(…)` / backticks whose body has unbalanced parentheses is not hidden
   (older bash matches the span by counting parentheses, blind to heredocs). A
   marker after a comment, after `\`, or in those contexts opens nothing, so the
@@ -267,7 +273,8 @@ it would unwrapped:
   bypass): `<<$"EOF"` / `<<-$"EOF"` (locale-quoted delimiter) is not
   recognised, so its body is read as commands; a `case … esac` pattern `)`
   inside `$(…)` can end that span early; `<<` inside a nested `$(…)` within
-  `$((…))` is not walked; `cat <<\EOF | xargs sh -c` (a heredoc body fed to a
+  `$((…))` is not walked; a single very long line is quadratic in the rule
+  path on main and here (tracked in #1108, not part of this change); `cat <<\EOF | xargs sh -c` (a heredoc body fed to a
   data-fed program) is allowed, as it already was for the other quote spellings. `tests/unit/test_heredoc_marker_liveness.py` pins both
   halves (non-heredoc contexts × dangerous tails must block; real heredocs'
   prose bodies must keep their decision) and each guard has a mutation that

@@ -2543,6 +2543,11 @@ class _HeredocScanner:
         self.pending: List[Tuple[int, "re.Match[str]", bool]] = []
         self.absent: set = set()
         self.closed = False  # whether the last ``_commands`` walk ended on its closer
+        # The current line holds a construct bash rejects with a syntax error (a
+        # ``<<`` in an array literal, a literal that never closes). A recovering
+        # bash (3.2) runs the NEXT line, so no marker on this line may hide it:
+        # the newline discards the line's pending markers instead of reading them.
+        self.poisoned = False
 
     def run(self) -> Tuple[_Heredoc, ...]:
         self._commands(0, "", 0)
@@ -2707,14 +2712,19 @@ class _HeredocScanner:
                 word_start = False
                 first = "[["
                 continue
+            if c == "<" and s.startswith("<<", i) and array:
+                self.poisoned = True
+                i += 3 if s.startswith("<<<", i) else 2
+                word_start = False
+                continue
             if c == "<" and s.startswith("<<", i):
                 if s.startswith("<<<", i):
                     i += 3
                     word_start = False
                     continue
                 m = _HEREDOC_OPEN_RE.match(s, i)
-                if m and (array or first == "let" or s.startswith("\\\n", m.end())):
-                    m = None  # an array literal / a ``let`` argument / a delimiter split by a continuation
+                if m and (first == "let" or s.startswith("\\\n", m.end())):
+                    m = None  # a ``let`` argument / a delimiter split by a continuation
                 if m:
                     self.pending.append((i, m, closer != ""))
                     i = m.end()
@@ -2723,6 +2733,12 @@ class _HeredocScanner:
                 word_start = False
                 continue
             if c == "\n":
+                if array or self.poisoned:
+                    self.pending.clear()  # no body is read on a line bash rejects
+                    self.poisoned = self.poisoned and array
+                    i += 1
+                    word_start, word, first, paren = True, [], None, 0
+                    continue
                 i = self._read_bodies(i)
                 word_start, word, first, paren = True, [], None, 0
                 continue
@@ -2739,8 +2755,8 @@ class _HeredocScanner:
                     kept, literal = len(self.found), s[i - 1] == "="
                     i = self._commands(i + 1, ")", depth + 1, literal)
                     if literal and not self.closed:
-                        # an unclosed array literal is a syntax error that bash 3.2
-                        # recovers from, so nothing read inside it can be trusted
+                        self.poisoned = True  # an unclosed literal is a syntax error too
+                    if literal and self.poisoned:
                         del self.found[kept:]
                     word_start = False
                     continue

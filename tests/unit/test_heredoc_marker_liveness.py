@@ -110,6 +110,26 @@ NOT_A_HEREDOC = [
     "x=(a 'q' <<EOF",
     'x=(a "q" <<EOF',
     "x=(a <<EOF\n)",
+    # a "<<" anywhere in a literal poisons the line: a LATER real marker on it,
+    # even after the literal closes, must not hide the next line either
+    "a=([1<<2]=x) <<EOF",
+    "a=([1<<2]=x) <<'EOF'",
+    "a=([1<<2]=x) <<-EOF",
+    "a=([1<<2]=x) << EOF",
+    'a=([1<<2]=x) <<"EOF"',
+    "a=([1<<2]=x) <<\\EOF",
+    "a=(<<2) <<EOF",
+    "a=([k]=<<2) <<EOF",
+    "a=(x <<2) <<EOF",
+    "a=(${y}<<2) <<EOF",
+    "a+=(x <<2) <<EOF",
+    "declare -a a=(x <<2) <<EOF",
+    "local a=(x <<2) <<EOF",
+    "export a=(x <<2) <<EOF",
+    "echo $(a=(x <<2) <<EOF\n)",
+    "a=(x\n<<2\n) <<EOF",
+    "a=(x <<2\n) <<EOF",
+    "cat <<EOF a=([1<<2]=x)",
 ]
 
 # Contexts where the marker IS a redirection: the body is data, the tail after
@@ -139,6 +159,11 @@ REAL_HEREDOC = [
     "cat <(echo a) <<'EOF'",
     "cat <<'EOF' <(echo a)",
     "x=(a b); cat <<'EOF'",
+    "a=($((1<<2))) <<'EOF'",
+    'a=("<<") <<\'EOF\'',
+    "a=('<<') <<'EOF'",
+    "a=(x) <<'EOF'",
+    "a=(x\ny) <<'EOF'",
     "x=(a $(cat <<'EOF'",
     "( cat <<'EOF'",
     "{ cat <<'EOF'",
@@ -242,6 +267,8 @@ CONTROLS = [
     "cat \\\n<<'EOF'\n{B}\nEOF",
     "cat <(echo a) <<'EOF'\n{B}\nEOF",
     "x=(a b); cat <<'EOF'\n{B}\nEOF",
+    "a=($((1<<2))); cat <<'EOF'\n{B}\nEOF",
+    "a=(x) <<'EOF'\n{B}\nEOF",
 ]
 
 
@@ -286,3 +313,10 @@ def test_unclosed_array_literal_holds_no_heredoc():
     unclosed = "x=(a $(cat <<'EOF'\nbody\nEOF\n)\nrm -rf /\n"
     closed = "x=(a $(cat <<'EOF'\nbody\nEOF\n))\nls\n"
     assert [len(_heredocs(c)) for c in (unclosed, closed)] == [0, 1]
+
+
+def test_poisoned_closed_literal_discards_a_nested_heredoc():
+    """A ``<<`` in a literal that closes still makes the line a syntax error."""
+    poisoned = "a=($(cat <<'EOF'\nbody\nEOF\n) <<2)\nrm -rf /\n"
+    clean = "a=($(cat <<'EOF'\nbody\nEOF\n))\nls\n"
+    assert [len(_heredocs(c)) for c in (poisoned, clean)] == [0, 1]
