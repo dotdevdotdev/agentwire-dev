@@ -26,6 +26,7 @@ except ImportError:
 # damage-control surface from agentwire.safety_commands.
 from agentwire.safety._core import (  # noqa: F401
     ALL_OPERATIONS,
+    HOOK_TIMEOUT_SECONDS,
     NO_DELETE_BLOCKED,
     READ_ONLY_BLOCKED,
     _extract_command_paths,
@@ -759,7 +760,11 @@ def register_damage_control_in_settings() -> int:
             continue
         pre.append({
             "matcher": matcher,
-            "hooks": [{"type": "command", "command": command}],
+            # An explicit timeout: a hook that outlives it is killed and the
+            # tool call RUNS (fail-open), so the scan's own deadline
+            # (SCAN_DEADLINE_SECONDS) must sit well inside this value (#1108).
+            "hooks": [{"type": "command", "command": command,
+                       "timeout": HOOK_TIMEOUT_SECONDS}],
         })
         added += 1
 

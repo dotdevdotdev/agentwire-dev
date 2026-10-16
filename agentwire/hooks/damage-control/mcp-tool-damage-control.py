@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "1e1fe9861d77c77c59d695e8cce89dec2e44ea7d9b1d9cac75fb8c5003ef1424", "generated_at": "2026-10-16T20:22:58Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "7eeee73ee5100d8c39f835e70f37a84f04b84ba268317c20f97d648e48157671", "generated_at": "2026-10-16T23:48:45Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -73,6 +73,8 @@ import posixpath
 import re
 import shlex
 import shutil
+import signal
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -469,8 +471,11 @@ def matches_path_in_command(pattern: str, command: str) -> bool:
         haystacks.extend(v for v in variants if v != hay)
 
     glob = is_glob_pattern(pattern)
+    literals = _path_literals(pattern)
     matched = False
     for hay in haystacks:
+        if not _may_mention_path(hay, literals):
+            continue
         try:
             rx = _rx(regex)
             pos = 0
@@ -682,6 +687,33 @@ def _path_context_regex(path: str) -> str:
     return r'(?:' + re.escape(expanded) + r'|' + re.escape(path) + r')'
 
 
+def _path_literals(path: str) -> Tuple[str, ...]:
+    """Case-folded literals of which at least one must occur for ``path`` to match.
+
+    The ``{path}`` regex is quadratic on a long token (#1108): ``[^\\s/]*``
+    re-scans the rest of the token from every start position. Every match
+    must contain the path's literal text, so a ``casefold`` containment test
+    rules the pattern out in O(n) before the regex ever runs. Empty means no
+    usable literal (a glob ending in ``*``), i.e. no prefilter.
+    """
+    if is_glob_pattern(path):
+        if '[' in path:
+            return ()
+        literal = max(re.split(r'[*?]', path), key=len)
+        return (literal.casefold(),) if literal else ()
+    expanded = os.path.expanduser(path)
+    return tuple(dict.fromkeys(
+        p.rstrip('/').casefold() for p in (expanded, path) if p.rstrip('/')
+    ))
+
+
+def _may_mention_path(text: str, literals: Tuple[str, ...]) -> bool:
+    if not literals:
+        return True
+    folded = text.casefold()
+    return any(lit in folded for lit in literals)
+
+
 def path_ladder_haystacks(command: str, path: str) -> List[str]:
     """Haystacks for the readOnly/noDelete/protected path ladders (#922).
 
@@ -701,7 +733,11 @@ def path_ladder_haystacks(command: str, path: str) -> List[str]:
     except re.error:
         return [command]
 
+    literals = _path_literals(path)
+
     def _mentions_path(token: str) -> bool:
+        if not _may_mention_path(token, literals):
+            return False
         if keep.search(token):
             return True
         canon = canonicalize_command(token)
@@ -720,6 +756,8 @@ def check_path_patterns(
 
     Returns ``(matched, reason)`` where reason names the operation that triggered.
     """
+    if not _may_mention_path(command, _path_literals(path)):
+        return False, ""
     path_regex = _path_context_regex(path)
     for pattern_template, operation in patterns:
         try:
@@ -2426,6 +2464,8 @@ def _xargs_rescans(command: str, path: str) -> List[str]:
     ``… | xargs rm`` is judged as ``rm <path>`` and ``… | xargs echo`` as
     ``echo <path>`` — the verb decides, exactly as it would unwrapped.
     """
+    if not _may_mention_path(command, _path_literals(path)):
+        return []
     mention = _rx(_path_context_regex(path)).search(command)
     if not mention:
         return []
@@ -3247,7 +3287,7 @@ def _redirect_variant(command: str) -> List[str]:
     return [out] if out != command else []
 
 
-_PATH_ODDITY = _rx(r"[^\s'\"`;|&<>()]*(?://|/\./|/\.\./|/\.(?=[\s'\"`;|&<>()]|$)|/\.\.(?=[\s'\"`;|&<>()]|$))[^\s'\"`;|&<>()]*")
+_PATH_ODDITY = _rx(r"(?<![^\s'\"`;|&<>()])[^\s'\"`;|&<>()]*(?://|/\./|/\.\./|/\.(?=[\s'\"`;|&<>()]|$)|/\.\.(?=[\s'\"`;|&<>()]|$))[^\s'\"`;|&<>()]*")
 
 
 def _normalized_path_variant(command: str) -> List[str]:
@@ -5576,7 +5616,105 @@ def git_clean_only_explicit_untracked(command: str, cwd: Optional[str]) -> bool:
 
 
 
+# ---- Scan budget (#1108) ---------------------------------------------------
+#
+# Claude Code treats a PreToolUse hook that outlives its timeout as NO DECISION
+# and runs the tool call — measured empirically (docs/wiki/internals/
+# damage-control.md). A command that stalls the scan is therefore a bypass of
+# the whole ladder, so the scan has a budget that FAILS CLOSED (ask, never
+# allow) well inside the harness timeout, on two independent axes:
+#
+#   * size   — a deterministic O(n) gate before any regex runs;
+#   * clock  — a SIGALRM deadline, because some pattern will always be
+#              pathological on some input (the size gate is a bound, not a proof).
+#
+# Limits are set from the audit log of real commands (7.7k rows, 2026-10):
+# longest command 28.9 KB, longest single line 2.9 KB. 256 KB / 32 KB leave
+# ~9x / ~11x headroom, so ordinary large generated scripts and heredoc commit
+# messages pass untouched.
+MAX_COMMAND_CHARS = 256 * 1024
+MAX_LINE_CHARS = 32 * 1024
+HOOK_TIMEOUT_SECONDS = 30  # what hook registration writes into settings.json
+SCAN_DEADLINE_SECONDS = 10  # decide here, a third of the way to the timeout
+
+
+class ScanBudgetExceeded(BaseException):
+    """The scan outran its clock budget; the caller must fail closed.
+
+    A BaseException on purpose: the scan has broad ``except Exception`` guards
+    that would otherwise swallow the alarm and let the scan run on.
+    """
+
+
+def _budget_refusal(command: str, reason: str, rule_id: str) -> Dict[str, Any]:
+    """The fail-closed verdict: an ask that bypass cannot demote and no grant covers."""
+    return {
+        "decision": "ask",
+        "reason": f"{reason} — a human must confirm it (not demoted by bypass)",
+        "pattern": f"budget:{rule_id}",
+        "command": command,
+        "id": rule_id,
+        "unverifiable": True,
+    }
+
+
+def _size_budget_refusal(command: str) -> Optional[Dict[str, Any]]:
+    longest = max(map(len, command.split("\n")))
+    if len(command) > MAX_COMMAND_CHARS:
+        return _budget_refusal(
+            command,
+            f"Command too large to analyze safely ({len(command):,} chars, "
+            f"limit {MAX_COMMAND_CHARS:,})",
+            "core.command-too-large",
+        )
+    if longest > MAX_LINE_CHARS:
+        return _budget_refusal(
+            command,
+            f"Command too large to analyze safely (a single line of {longest:,} "
+            f"chars, limit {MAX_LINE_CHARS:,})",
+            "core.command-too-large",
+        )
+    return None
+
+
+def _on_scan_alarm(signum: int, frame: Any) -> None:
+    raise ScanBudgetExceeded()
+
+
 def check_command(
+    command: str,
+    config: Dict[str, Any],
+    cwd: Optional[str] = None,
+    deadline_seconds: float = SCAN_DEADLINE_SECONDS,
+) -> Dict[str, Any]:
+    """:func:`_decide_command` under the scan budget — over budget means ASK.
+
+    The clock budget needs ``signal.setitimer`` on the main thread (every hook
+    process); elsewhere (a portal worker thread, Windows) only the size gate
+    applies — declared residual.
+    """
+    refusal = _size_budget_refusal(command)
+    if refusal:
+        return refusal
+    armed = hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()
+    if not armed:
+        return _decide_command(command, config, cwd)
+    previous = signal.signal(signal.SIGALRM, _on_scan_alarm)
+    signal.setitimer(signal.ITIMER_REAL, deadline_seconds)
+    try:
+        return _decide_command(command, config, cwd)
+    except ScanBudgetExceeded:
+        return _budget_refusal(
+            command,
+            f"Command scan exceeded its {deadline_seconds:g}s budget — too slow to analyze safely",
+            "core.scan-budget",
+        )
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def _decide_command(
     command: str, config: Dict[str, Any], cwd: Optional[str] = None
 ) -> Dict[str, Any]:
     """Decide whether a bash command should be allowed/blocked/asked.

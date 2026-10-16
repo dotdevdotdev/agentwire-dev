@@ -1522,6 +1522,38 @@ Each tool call adds <100ms overhead for pattern checking:
 - Malicious dependencies
 - Compromised packages
 
+### A hook that times out FAILS OPEN (#1108)
+
+Measured with `claude -p` (2026-10-16): a `PreToolUse` command hook registered
+with `timeout: 2` that sleeps 8 s is killed at the timeout and the Bash call
+**runs anyway**; the same registration with a hook that exits 2 immediately
+blocks it. The harness treats a killed hook as "no decision". So a command that
+stalls the scan is a bypass of the whole ladder, not just a slow call.
+
+The scan therefore has a budget that fails **closed** (`check_command`):
+
+| Axis | Limit | Verdict |
+|------|-------|---------|
+| Command size | 256 K chars | `ask`, id `core.command-too-large` |
+| Longest single line | 32 K chars | `ask`, id `core.command-too-large` |
+| Scan clock | 10 s (`SIGALRM`) | `ask`, id `core.scan-budget` |
+
+The verdicts are `unverifiable` asks: bypassPermissions/auto do not demote
+them, an unattended run blocks them, and the message names the cause. Limits
+come from the audit log of real commands (7.7 k rows: longest command 28.9 KB,
+longest line 2.9 KB), leaving ~9x / ~11x headroom. Hook registration now writes
+`timeout: 30` (`HOOK_TIMEOUT_SECONDS`); the 10 s scan deadline sits well inside
+it. Registrations written before this change carry no timeout (the harness
+default applies) and are not rewritten — the scan deadline does not depend on
+the registered value.
+
+Declared residuals: the clock budget needs `SIGALRM` on the main thread (every
+hook process; not a portal worker thread or Windows, where only the size gate
+applies); the edit/write/read/mcp hooks have no scan deadline (their inputs are
+paths, not free text); some shapes (long runs of `../`, `\`, `{a,`) are still
+super-linear below the line cap and are bounded by the clock budget rather than
+fixed.
+
 ### Defense in Depth
 
 Damage Control is ONE layer:
