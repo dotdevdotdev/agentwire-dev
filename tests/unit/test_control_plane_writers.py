@@ -811,6 +811,73 @@ ROUND4_ALLOW = [
 ]
 
 
+# Review of PR #1102 (round 5).
+ROUND5_BLOCK = {
+    "unquoted bodies stay code only where they are code": [
+        "cat <<EOF\n$(touch @P)\nEOF",
+        f"cat <<EOF\n$({_CDT})\nEOF",
+        "git commit -m \"$(cat <<EOF\nnote\n$(touch @P)\nEOF\n)\"",
+        f"sh <<EOF\n{_CDT}\nEOF",
+        f"bash <<EOF\n{_CDT}\nEOF",
+        f"ssh host <<EOF\n{_CDT}\nEOF",
+    ],
+    "pipe-and-ampersand is a pipe": [
+        f"cat <<'EOF'|&sh\n{_CDT}\nEOF",
+        f"cat <<'EOF' |& sh\n{_CDT}\nEOF",
+        f"cat <<'EOF'|&bash\n{_CDT}\nEOF",
+        f"cat <<'EOF'|&sudo sh\n{_CDT}\nEOF",
+        f"cat <<'EOF'|&ssh host\n{_CDT}\nEOF",
+        f"cat <<'EOF'|&at now\n{_CDT}\nEOF",
+        f"cat <<'EOF'|&crontab -\n@reboot {_CDT}\nEOF",
+        f"cat <<'EOF'|&python3\n{_CDT}\nEOF",
+        "echo 'touch @P' |& sh",
+        "echo 'touch @P' |& ssh host",
+        "echo 'touch @P' |&sh",
+    ],
+    "group closers and delimiter words with operators": [
+        f"{{ cat <<'EOF'; }} | sh\n{_CDT}\nEOF",
+        f"{{ cat <<'EOF'\n{_CDT}\nEOF\n; }} | sh",
+        f"ssh host <<'a;b'\n{_CDT}\na;b",
+        f"ssh host <<'a&b'\ngit -C ~/.agentwire checkout damagecontrol.yml\na&b",
+    ],
+}
+ROUND5_ALLOW = [
+    # unquoted bodies are text to the cd / git -C resolvers (the common commit spelling)
+    f"git commit -F - <<EOF\n{_CDT} is now blocked\nEOF",
+    "git commit -F - <<EOF\ngit -C ~/.agentwire checkout damagecontrol.yml\nEOF",
+    f"cat <<EOF > /tmp/n.md\n{_CDT}\nEOF",
+    f"git commit -m \"$(cat <<EOF\n{_CDT}\nEOF\n)\"",
+    "cat <<EOF > /tmp/n.md\ntouch ~/.agentwire/damage*.yml and ~/.agentwire/./damagecontrol.yml\nEOF",
+    # |& into something that only reads
+    f"cat <<'EOF'|&cat\n{_CDT}\nEOF",
+    "echo 'touch @P' |& cat",
+    "echo hi |& tee /tmp/x",
+    # a closer text is not a consumer across a break or a substitution
+    f"( cat <<'EOF'\n{_CDT}\nEOF\n); sh",
+    f"( cat <<'EOF'\n{_CDT}\nEOF\n) && sh",
+    f"echo $(cat <<'EOF'\n{_CDT}\nEOF\n) | sh",
+]
+
+
+def test_round5_review_shapes(cfg):
+    leaked = {}
+    for item, shapes in ROUND5_BLOCK.items():
+        for template in shapes:
+            for sp in (SPELLINGS if "@P" in template else [None]):
+                c = template.replace("@P", sp) if sp else template
+                if not _blocked_by_control_plane(c, cfg):
+                    leaked.setdefault(item, []).append(c)
+    wrongly_blocked = [
+        c
+        for template in ROUND5_ALLOW
+        for sp in (SPELLINGS if "@P" in template else [None])
+        for c in [template.replace("@P", sp) if sp else template]
+        if _blocked_by_control_plane(c, cfg)
+    ]
+    assert not leaked, leaked
+    assert not wrongly_blocked, wrongly_blocked
+
+
 def test_round4_review_shapes(cfg):
     leaked = {}
     for item, shapes in ROUND4_BLOCK.items():

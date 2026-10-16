@@ -207,12 +207,13 @@ it would unwrapped:
   With a real remote program (`ssh host cat`, `sudo tee`) stdin is data and is
   left alone. Other interpreters (`lua`, `tclsh`, …) are not in the list, the
   same stance the unwrapped inline-interpreter net takes.
-- **Quoted-delimiter heredoc bodies are data for the rewriting passes** (cd /
-  `git -C` resolution, glob, brace, redirect and path normalization): a commit
-  body that *describes* `cd <dir> && touch <file>` is not that command
-  (`_neutralize_literal_heredocs`). Bodies that feed a shell or runner
-  (`ssh host <<'EOF'`, `sudo sh <<'EOF'`) are still judged as the program they
-  are, and unquoted bodies stay scanned for substitutions (#1098). Heredocs end
+- **Heredoc bodies are data for the rewriting passes** (cd / `git -C`
+  resolution, glob, brace, redirect and path normalization), quoted delimiter or
+  not: a commit body that *describes* `cd <dir> && touch <file>` is not that
+  command (`_hide_heredoc_bodies`). In an unquoted body only `$(…)` and
+  backticks are code, and those are scanned on the full command (#1098). Bodies
+  that feed a shell or runner (`ssh host <<'EOF'`, `sudo sh <<EOF`) are the
+  program and stay visible. `|&` is a pipe like `|`. Heredocs end
   where bash ends them: the delimiter ALONE on its line (` EOF` and `EOF ` are
   body text), with `<<-` stripping leading tabs only. The delimiter is a full
   shell word: adjacent parts concatenate (`<<'E'OF`, `<<E"O"F`, `<<$'EOF'` all
@@ -292,7 +293,11 @@ path in the body), `cd <dir> && rsync -a <file> host:x` (the absolute spelling
 is refused too — rsync's source is not distinguished from its destination), a
 partially-quoted or backslashed delimiter (`<<E\OF`, `<<'E'OF`) whose literal
 body holds a `$(…)` that names the path literally (the older heredoc masker
-only recognizes whole-word quoting; fail-closed), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
+only recognizes whole-word quoting; fail-closed), a write to the path after a
+partially-quoted delimiter such as `<<'EO'F` (that older masker mis-parses it;
+the same plain write also passes without the heredoc — tracked in #1106),
+a crontab line with a trailing `# …` comment that mentions the path (blocks),
+`<<$"EOF"` with a prose body (blocks), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
 resolved), a cwd known only from the session or set by `cd $dir` / `cd -` / a
 subshell the command cannot see, `make -C`/`env -C`-style directory options,
 writes through a symlink or hardlink alias, a brace expansion past the cap, a

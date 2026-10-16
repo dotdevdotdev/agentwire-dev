@@ -2462,22 +2462,35 @@ def _heredoc_delimiter(word: str) -> Tuple[str, bool]:
     return delim, any(p[0] or p[1] or p[2] or p[3] for p in parts) or "'" in word or '"' in word
 
 
-_SEGMENT_BREAK = _rx(r";|&&|\|\||&(?!>)|\n")
+_SEGMENT_BREAK = _rx(r";|&&|\|\||(?<![|<>])&(?!>)|\n")
 
 
-def _feeding_segment(command: str, start: int, line_end: int) -> str:
+def _until_break(text: str) -> str:
+    m = _SEGMENT_BREAK.search(text)
+    return text[: m.start()] if m else text
+
+
+_CLOSER = _rx(r"[ \t]*;?[ \t]*[)}][^\n]*")
+
+
+def _feeding_segment(command: str, start: int, word_end: int, line_end: int) -> str:
     """The simple command a heredoc marker at ``start`` is attached to (pipes kept, ``;``/``&&`` break it).
 
-    A closer on the line after the terminator (``) | sh``) is part of it, so a
-    heredoc inside a group that is piped onward is judged by its consumer.
+    A group closer after the command (``{ cat <<'EOF'; } | sh``) is part of it,
+    so a heredoc inside a group that is piped onward is judged by its consumer;
+    the delimiter word itself is never split (``<<'a;b'``).
     """
     line_start = command.rfind("\n", 0, start) + 1
     before = command[line_start:start]
     cut = [m.end() for m in _SEGMENT_BREAK.finditer(before)]
     head = before[cut[-1]:] if cut else before
-    after = command[start:line_end]
+    after = command[word_end:line_end]
+    seg = head + command[start:word_end] + _until_break(after)
     nxt = _SEGMENT_BREAK.search(after)
-    return head + (after[: nxt.start()] if nxt else after)
+    closer = _CLOSER.match(after[nxt.end():]) if nxt else None
+    if closer and "$(" not in before and "`" not in before:
+        seg += " " + _until_break(closer.group(0))
+    return seg
 
 
 class _Heredoc:
@@ -2526,10 +2539,11 @@ def _heredocs(command: str) -> List[_Heredoc]:
                 if eol == -1:
                     break
                 idx = eol + 1
-            feed = _feeding_segment(command, mk.start(), nl)
-            closer = re.match(r"[ \t]*[)}][^\n]*", command[min(term_end + 1, n):])
-            if closer:  # ``(cat <<'EOF' … EOF`` newline ``) | sh``
-                feed += " " + closer.group(0)
+            feed = _feeding_segment(command, mk.start(), mk.end(), nl)
+            closer = _CLOSER.match(command[min(term_end + 1, n):])
+            opening = command[command.rfind("\n", 0, mk.start()) + 1 : mk.start()]
+            if closer and "$(" not in opening and "`" not in opening:
+                feed += " " + _until_break(closer.group(0).lstrip(" \t;"))  # ``(cat <<'EOF' … EOF`` newline ``) | sh``
             out.append(_Heredoc(
                 mk.start(), cursor, body_end,
                 command[cursor:body_end].rstrip("\n"), literal, feed,
@@ -2547,17 +2561,18 @@ def _heredoc_bodies(command: str) -> List[Tuple[str, bool, str]]:
     return [(h.body, h.quoted, h.line) for h in _heredocs(command)]
 
 
-def _hide_heredoc_bodies(command: str, literal_only: bool) -> str:
+def _hide_heredoc_bodies(command: str, keep_programs: bool) -> str:
     """``command`` with heredoc bodies replaced by one inert line.
 
-    ``literal_only`` keeps expanding (unquoted) bodies and bodies handed to a
-    shell or runner, which the shell or the program will execute.
+    ``keep_programs`` keeps the bodies a shell or runner will EXECUTE (they are
+    the program). Every other body is text to the rewriting passes — quoted or
+    not: in an unquoted body only ``$(…)`` and backticks are code, and
+    ``_heredoc_substitution_commands`` scans those on the full command.
     """
     out, pos = [], 0
     for h in _heredocs(command):
-        if literal_only and (
-            not h.quoted
-            or not _heredoc_marker_is_live(command[: h.start])
+        if keep_programs and (
+            not _heredoc_marker_is_live(command[: h.start])
             or _stdin_is_program(_command_words(h.line))
         ):
             continue
@@ -2635,7 +2650,7 @@ _PARALLEL_REPLACEMENT = _rx(r"\{(?:\.|/|//|/\.|#)?\}")
 _REDIRECT_RE = _rx(
     r"\d*(?:<<<|<<-?|<>|>>|>\||>&|&>|<|>)[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|[^\s|;&()'\"\\])+"
 )
-_WORD_OPERATORS = frozenset({"|", "||", "&", "&&", ";"})
+_WORD_OPERATORS = frozenset({"|", "|&", "||", "&", "&&", ";"})
 
 
 def _words(text: str) -> List[str]:
@@ -2646,7 +2661,7 @@ def _words(text: str) -> List[str]:
 
 
 _OPERATOR_ONLY = _rx(r"[;&|<>()]+")
-_OPERATOR_TOKEN = _rx(r"&&|\|\||[;&|<>()]")
+_OPERATOR_TOKEN = _rx(r"&&|\|\||\|&|[;&|<>()]")
 
 
 def _command_words(line: str) -> List[str]:
@@ -2808,9 +2823,9 @@ def _pipe_stages(command: str) -> List[Tuple[str, str]]:
             if (c in "|&" and prev in (">", "<")) or (c == "&" and nxt == ">"):
                 buf.append(c)  # ``>|`` / ``>&`` / ``&>`` are redirects, not separators
             else:
-                this = c + nxt if nxt == c and c in "|&" else c
+                this = c + nxt if (nxt == c and c in "|&") or (c == "|" and nxt == "&") else c
                 stages.append((op, "".join(buf)))
-                buf, op = [], this
+                buf, op = [], ("|" if this == "|&" else this)  # ``|&`` is a pipe
                 i += len(this) - 1
         else:
             buf.append(c)
@@ -2855,7 +2870,7 @@ def _stdin_program_commands(command: str) -> List[str]:
             if _stdin_is_program(words):
                 out.append(_program_text(" ".join(_words(m.group(1))), words))
     if "|" in command:
-        stages = _pipe_stages(_hide_heredoc_bodies(command, literal_only=False))
+        stages = _pipe_stages(_hide_heredoc_bodies(command, keep_programs=False))
         for (_, producer), (op, consumer) in zip(stages, stages[1:]):
             consumer_words = _command_words(consumer)
             if op != "|" or not _stdin_is_program(consumer_words):
@@ -3145,7 +3160,7 @@ def _derived_commands(command: str) -> List[str]:
     # stay (``_neutralize_literal_heredocs`` keeps them), and the stdin-program
     # pass reads the full text, so a quoted body handed to ``ssh host`` is still
     # judged as the program it is.
-    visible = _hide_heredoc_bodies(command, literal_only=True) if "<<" in command else command
+    visible = _hide_heredoc_bodies(command, keep_programs=True) if "<<" in command else command
     derived = (
         _heredoc_substitution_commands(command)
         + _stdin_program_commands(command)
