@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "a70b7a88c0a819f78f4655b193de7d057ebdec93833baedd3c2147fc44a407d7", "generated_at": "2026-10-17T12:56:59Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "5afb9a9ccc037400352d863c5475b089e5cdc08c1e01862038095337606d1901", "generated_at": "2026-10-17T13:17:42Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -2411,7 +2411,7 @@ def _blank_prose_args(hay: str, path: str) -> str:
         if opener != -1 and ")" not in prefix[opener:]:
             return True
         # the command word runs its arguments (ssh host '…', eval '…', watch '…')
-        words = _SEGMENT_SPLIT.split(prefix)[-1].split()
+        words = strip_command_opener_words(_SEGMENT_SPLIT.split(prefix)[-1].split())
         words = [w for w in words if not _ASSIGN_WORD.match(w)]
         names = [os.path.basename(w) for w in words]
         if names and (
@@ -3095,7 +3095,8 @@ def _stage_reads_program(stage: List[str]) -> bool:
     pipe, heredoc and here-string feeds and by the ssh remote command: the
     same payload is refused or allowed however it arrives (#1099 review).
     """
-    words = [w for w in stage if w not in ("(", ")") and not _ASSIGN_WORD.match(w)]
+    words = strip_command_opener_words([w for w in stage if w not in ("(", ")")])
+    words = [w for w in words if not _ASSIGN_WORD.match(w)]
     while words and words[0] == "--":
         words = words[1:]
     if not words:
@@ -3399,7 +3400,7 @@ def _glob_hits(tok: str) -> List[str]:
 
 
 _CD_RE = _rx(
-    r"(?:^\s*|[;&|\n(]\s*)(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
+    r"(?:^\s*|(?:\b(?:then|do|else|elif|if|while|until|time|coproc)\b|[;&|\n(){!])\s*)(?:(?:time|nohup|command|builtin|env|exec|sudo|!|\w+=\S*)\s+(?:-\S+\s+)*)*(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
 )
 _REL_WORD = _rx(r"(?<![^\s;&|(<>'\"=])([A-Za-z0-9_.][^\s;&|()'\"<>]*)")
 
@@ -3969,7 +3970,7 @@ def ambiguity_conceals_verb(command: str) -> Optional[str]:
     if split_err:
         return split_err
     for argv, _op in segments:
-        _assigns, argv = _split_assignments(argv)
+        _assigns, argv = _split_assignments(strip_command_opener_words(argv))
         if not argv:
             continue
         # Walk the launcher chain (sudo, env, uv run, timeout 5 …) to the real
@@ -4733,6 +4734,103 @@ def _strip_heredoc_bodies(command: str) -> str:
     return "".join(out)
 
 
+#
+# COMPOUND-COMMAND OPENERS (#1112)
+#
+# `case x in a) rm …`, `then rm …`, `{ rm; }`, `f(){ rm; }`, `(rm …)`: the word
+# that RUNS is not the segment's first word. Every walker that anchors on
+# command position (anchored rules, ssh payload, global options, concealment,
+# stdin-program stages, prose blanking) used to stop at `case`/`then`/`{`, so
+# the same command was judged differently inside a body than at top level.
+# ONE helper drops the syntax before those walkers run; bash semantics are kept
+# exactly: `{` and the keywords are reserved only as whole words (`{rm`, `do{`
+# are ordinary words), while `(` and `)` always break words, so `(rm`, `then(`,
+# `a)rm` and `f(){` open a command position glued or spaced.
+_OPENER_WORDS = frozenset({
+    "if", "then", "else", "elif", "while", "until", "do", "!", "{",
+    "time", "coproc", "function",
+})
+_NAMED_OPENERS = frozenset({"coproc", "function"})
+_FUNC_HEADER_RE = _rx(r"^[^\s()$`'\"{}=;&|<>]+\(\)(\{?)$", 0)
+_KEYWORD_PAREN_RE = _rx(r"^(if|then|else|elif|while|until|do|time|coproc)(\(.*)$", 0)
+
+#: Tokens of one command: ``(text, fully_quoted, expands)``.
+_Tok = Tuple[str, bool, bool]
+
+
+def _arm_pattern_end(text: str) -> int:
+    """Index of the ``)`` that closes a case-arm pattern inside ``text``, or -1.
+
+    A ``)`` after an open ``(``/``$(``/backtick belongs to a substitution or
+    group, not to the pattern list.
+    """
+    idx = text.find(")")
+    if idx == -1 or any(c in text[:idx].lstrip("(") for c in "($`"):
+        return -1
+    return idx
+
+
+def strip_command_openers(toks: List[_Tok]) -> List[_Tok]:
+    """``toks`` with leading compound-command syntax removed (see section note)."""
+    toks = list(toks)
+    while toks:
+        text, fq, ex = toks[0]
+        if fq or ex:
+            break
+        if text.startswith("(") or text.startswith("!("):
+            rest = text.lstrip("!").lstrip("(")
+            toks[0:1] = [(rest, False, False)] if rest else []
+            continue
+        m = _KEYWORD_PAREN_RE.match(text)
+        if m:
+            toks[0:1] = [(m.group(1), False, False), (m.group(2), False, False)]
+            continue
+        if text in _OPENER_WORDS:
+            del toks[0]
+            if text in _NAMED_OPENERS and len(toks) >= 2 and toks[1][0] == "{":
+                del toks[0]
+            elif text == "time":
+                while toks and not toks[0][1] and toks[0][0].startswith("-"):
+                    del toks[0]
+            continue
+        if text == "case":
+            # No ``in`` (malformed): scan every word for the pattern end rather
+            # than leave the body hidden.
+            j = next((k for k in range(2, len(toks)) if toks[k][0] == "in" and not toks[k][1]), 0)
+            end = -1
+            for k in range(j + 1, len(toks)):
+                if not toks[k][1] and _arm_pattern_end(toks[k][0]) != -1:
+                    end = k
+                    break
+            if end == -1:
+                break
+            rest = toks[end][0][_arm_pattern_end(toks[end][0]) + 1:]
+            toks[: end + 1] = [(rest, False, False)] if rest else []
+            continue
+        m = _FUNC_HEADER_RE.match(text)
+        if m:
+            toks[0:1] = [("{", False, False)] if m.group(1) else []
+            continue
+        if len(toks) >= 3 and toks[1][0] == "(" and toks[2][0] == ")" and _FUNC_NAME_RE.match(text):
+            del toks[:3]
+            continue
+        idx = _arm_pattern_end(text)
+        if idx != -1:
+            rest = text[idx + 1:]
+            toks[0:1] = [(rest, False, False)] if rest else []
+            continue
+        break
+    return toks
+
+
+def strip_command_opener_words(words: List[str]) -> List[str]:
+    """:func:`strip_command_openers` over plain words, for walkers without quote info."""
+    return [t for t, _fq, _ex in strip_command_openers([(w, False, False) for w in words])]
+
+
+_FUNC_NAME_RE = _rx(r"^[^\s()$`'\"{}=;&|<>]+$", 0)
+
+
 def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool, bool]]]:
     """Split ``command`` into subcommands of ``(text, fully_quoted, expands)``.
 
@@ -4872,6 +4970,9 @@ def _masked_subcommand_entries(
         return []
     results: List[Tuple[List[str], bool]] = []
     for toks in _scan_masked_tokens(command):
+        toks = strip_command_openers(toks)
+        if not toks:
+            continue
         words: List[str] = []
         # Resolved text of EVERY token, content included — the wrapper-payload
         # rescan below (#924/#921) needs the text the masked entry blanks.
