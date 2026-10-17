@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "059f5970015f95a69e7d986337af03edadad1932d20544a10911aa15b6a98bac", "generated_at": "2026-10-17T13:48:50Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "09720e72e5ef60f0d128c68b4d1468e105333e72f92a547202f3c691a899b7b6", "generated_at": "2026-10-17T14:11:11Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3842,19 +3842,14 @@ def _eval_producer_texts(stage: str) -> List[str]:
     words = _words(stage)
     if not words or os.path.basename(words[0]) not in ("echo", "printf"):
         return []
-    args = [w for w in words[1:]]
-    while args and re.fullmatch(r"-[neE]+", args[0]):
-        args = args[1:]
-    return [_eval_unescape(" ".join(args))]
+    return [_eval_unescape(" ".join(words[1:]))]
 
 
 def _eval_fed_programs(command: str) -> List[str]:
     """Text handed to a shell on its stdin: heredoc / here-string bodies, piped ``echo``, ``<(…)`` bodies."""
     out: List[str] = []
     for h in _heredocs(command):
-        marker_line = command[h.start : h.body_start]
-        _m, pipe, consumer = marker_line.partition("|")
-        if _eval_shell_consumer(_feed_words(h.line)) or (pipe and _eval_shell_consumer(_command_words(consumer))):
+        if _eval_shell_consumer(_feed_words(h.line)):
             out.append(h.body)
     for m in _HERE_STRING_RE.finditer(command):
         line = command[command.rfind("\n", 0, m.start()) + 1 : m.start()]
@@ -3980,6 +3975,10 @@ def _eval_is_verb(toks: List[Tuple[str, bool, bool]], depth: int, aliases: froze
     def rescan_guess(words: List[str]) -> bool:
         return bool(words) and has_command_position_eval(" ".join(words), depth + 1, True)
 
+    # an unquoted word starting ``#`` opens a comment that runs to the end of the line
+    comment = next((k for k, (t, fq, _ex) in enumerate(toks) if not fq and t.startswith("#")), None)
+    if comment is not None:
+        toks = toks[:comment]
     texts = [t for t, _fq, _ex in toks]
     i, n = 0, len(toks)
     while i < n:
@@ -4007,8 +4006,8 @@ def _eval_is_verb(toks: List[Tuple[str, bool, bool]], depth: int, aliases: froze
             if base == "watch":
                 return rescan(texts[i:])
             continue
-        if base in _SHELL_NAMES or base in ("runuser", "script", "sg"):
-            payload = _eval_c_payload(rest, base in ("su", "runuser", "script", "sg"))
+        if base in _SHELL_NAMES:
+            payload = _eval_c_payload(rest, base == "su")
             return payload is not None and rescan([payload])
         if base == "trap":
             args = [w for w in rest if w != "--"]
@@ -4023,12 +4022,8 @@ def _eval_is_verb(toks: List[Tuple[str, bool, bool]], depth: int, aliases: froze
         if base == "find":
             for j, w in enumerate(rest):
                 if w in _EVAL_FIND_EXEC:
-                    vector = []
-                    for v in rest[j + 1 :]:
-                        if v in (";", "\\;", "+"):
-                            break
-                        vector.append(v)
-                    if rescan(vector):
+                    # only the vector's head decides; a later -exec is visited by this loop
+                    if rescan(rest[j + 1 :]):
                         return True
             return False
         if base in _EVAL_DATA_CONSUMERS:

@@ -135,6 +135,31 @@ DATA_CORPUS = [
 ]
 
 
+EXECUTING_CORPUS += [
+    f"echo {W} x | tee f | sh", f"echo {W} x | cat | sh", f"echo {W} x | sed s/a/b/ | tr a b | bash",
+    f"bash <(echo {W} x)", f"source <(echo a; echo {W} x)", f"zsh <(printf '%s' '{W} x')",
+    f"{{fd}}>f {W} x", f"&>f {W} x", f">|f {W} x", f"&>>f {W} x", f"<>f {W} x",
+    f"<&- {W} x", f">&2 {W} x", f"3<<<foo {W} x", f"2>f {W} x",
+    f"sudo -Eu root sh -c '{W} x'", f"sudo -r r {W} x", f"sudo -t t {W} x", f"env -P /bin {W} x",
+    f"xargs -J % {W} %", f"xargs -R 1 {W}", f"time -o f {W} x", f"time -a -o f {W} x",
+    f"uv run -q sh -c '{W} x'", f"uv run --no-project sh -c '{W} x'", f"uvx -q bash -c '{W} x'",
+    f"npx -y sh -c '{W} x'", f"bunx -b sh -c '{W} x'", f"flock /tmp/l sh -c '{W} x'",
+    f"chroot / sh -c '{W} x'", f"unshare -m sh -c '{W} x'", f"taskset 1 sh -c '{W} x'",
+    f"chrt 1 sh -c '{W} x'", f"strace -f sh -c '{W} x'", f"caffeinate sh -c '{W} x'",
+    f"firejail sh -c '{W} x'", f"parallel -j4 '{W} {{}}'", f"su --command '{W} x'",
+    f"uv run {W} x", f"flock /tmp/l {W} x",
+    f"trap -- '{W} x' EXIT", f"ssh h -- '{W} x'", f"bash -c -- '{W} x'",
+    f"printf 'a\\n{W} x\\n' | sh", f"echo -e 'a\\n{W} x' | sh", f"echo $'a\\n{W} x' | sh",
+    f"x={W}; $x y", f"x={W}; command $x y", f"bash -lc '{W} x'", f"bash -ic '{W} x'",
+    "$'\\x65val' x",
+]
+
+DATA_CORPUS += [
+    f"python3 - <<< '{W}'", f"cat <<'EOF' | python3 -c 'import sys; print(1)'\n{W} x\nEOF",
+    f"echo {W} x | grep x | wc", f"cat f | tee g | grep {W}",
+]
+
+
 
 @pytest.fixture(scope="module")
 def cfg():
@@ -317,4 +342,277 @@ QUERIES_AND_ARGUMENTS = {
 
 def test_queries_and_arguments_do_not_conceal():
     bad = [n for n, c in QUERIES_AND_ARGUMENTS.items() if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+# ---------------------------------------------------------------------------
+# Table-driven differentials: one generated test per table, so a row cannot be
+# removed unnoticed. A removed value-option row makes its value read as the
+# verb, which turns the DATA command below into an ask.
+# ---------------------------------------------------------------------------
+
+from agentwire.safety import _core  # noqa: E402
+
+# Independent spec of the launcher table: the generated tests below iterate THIS, not
+# _core's table, so deleting a row from the code goes red (a test that iterated the
+# code's own table would shrink with it).
+EXPECTED_WRAPPER_OPTS = {
+    "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-r", "-t", "-a", "-c", "--user", "--group",
+             "--host", "--prompt", "--close-from", "--chdir", "--chroot", "--role", "--type",
+             "--login-class", "--other-user"},
+    "doas": {"-u", "-C"},
+    "env": {"-u", "-C", "-S", "-P", "--unset", "--chdir", "--split-string"},
+    "xargs": {"-I", "-n", "-L", "-P", "-s", "-d", "-a", "-E", "-J", "-R", "-S", "--max-args", "--max-procs",
+              "--delimiter", "--arg-file", "--max-lines", "--max-chars", "--eof"},
+    "timeout": {"-k", "-s", "--kill-after", "--signal"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "--class", "--classdata", "--pid"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "time": {"-f", "-o", "--format", "--output"},
+    "watch": {"-n", "--interval"},
+    "exec": {"-a"},
+    "nohup": set(), "command": set(), "builtin": set(), "setsid": set(),
+}
+EXPECTED_TMUX_RUNNERS = ["new-session", "new", "new-window", "neww", "split-window", "splitw", "respawn-pane",
+                         "respawnp", "respawn-window", "respawnw", "run-shell", "run", "if-shell", "if"]
+EXPECTED_FIND_EXEC = ["-exec", "-execdir", "-ok", "-okdir"]
+
+
+def test_code_tables_cover_the_spec():
+    bad = [(w, sorted(set(o) - set(_core._EVAL_WRAPPER_VALUE_OPTS.get(w, ()))))
+           for w, o in EXPECTED_WRAPPER_OPTS.items() if not set(o) <= set(_core._EVAL_WRAPPER_VALUE_OPTS.get(w, ()))]
+    bad += [("tmux", r) for r in EXPECTED_TMUX_RUNNERS if r not in _core._EVAL_TMUX_RUNNERS]
+    bad += [("find", f) for f in EXPECTED_FIND_EXEC if f not in _core._EVAL_FIND_EXEC]
+    assert not bad, bad
+
+
+def _opt_variants(wrapper, opt):
+    """Spellings of one value-taking option: spaced, cluster-with-boolean, long ``=``."""
+    if opt.startswith("--"):
+        return [f"{opt} VAL", f"{opt}=VAL"]
+    return [f"{opt} VAL", f"{opt}VAL"]
+
+
+def test_every_wrapper_option_row_is_load_bearing():
+    bad = []
+    for wrapper, opts in EXPECTED_WRAPPER_OPTS.items():
+        lead = "/usr/bin/time" if wrapper == "time" else wrapper  # bash's own `time` keyword takes only -p
+        for opt in sorted(opts):
+            for spelling in _opt_variants(wrapper, opt):
+                body = f"grep {W} f"
+                if wrapper == "timeout":
+                    cmd = f"timeout {spelling} 5 {body}"
+                elif wrapper == "time":
+                    cmd = f"/usr/bin/time {spelling} {body}"
+                elif wrapper == "env" and opt in ("-S", "--split-string"):
+                    continue  # its value IS a program; covered by the payload test
+                else:
+                    cmd = f"{wrapper} {spelling} {body}"
+                if ambiguity_conceals_verb(cmd) is not None:
+                    bad.append(("data-asks", cmd))
+                run = cmd.replace(body, f"{W} x")
+                if ambiguity_conceals_verb(run) is None:
+                    bad.append(("exec-allowed", run))
+        # boolean flag / terminator keep the verb visible
+        plain = f"timeout -- 5 grep {W} f" if wrapper == "timeout" else f"{lead} -- grep {W} f"
+        if ambiguity_conceals_verb(plain) is not None:
+            bad.append(("terminator-asks", plain))
+    assert not bad, bad
+
+
+def test_wrapper_bare_and_absolute_path_forms():
+    bad = []
+    for wrapper in EXPECTED_WRAPPER_OPTS:
+        pre = "timeout 5" if wrapper == "timeout" else wrapper
+        if ambiguity_conceals_verb(f"/usr/bin/{pre} grep {W} f") is not None:
+            bad.append(("data", wrapper))
+        if ambiguity_conceals_verb(f"/usr/bin/{pre} {W} x") is None and wrapper != "command":
+            bad.append(("exec", wrapper))
+    assert not bad, bad
+
+
+def test_option_clusters_follow_getopt():
+    cases_exec = [f"sudo -Eu root {W} x", f"sudo -Eu root sh -c '{W} x'", f"xargs -0I{{}} {W} {{}}",
+                  f"sudo -Eus x {W} x", f"time -a -o f {W} x"]
+    cases_data = [f"sudo -Eu root grep {W} f", f"xargs -0n1 grep {W}", f"sudo -nE grep {W} f"]
+    bad = [c for c in cases_exec if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in cases_data if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+def test_command_lookup_flags_are_queries():
+    bad = [f"command {f} {W}" for f in ("-v", "-V", "-pv")
+           if ambiguity_conceals_verb(f"command {f} {W}") is not None]
+    bad += [f"command -p {W} x" for _ in [0] if ambiguity_conceals_verb(f"command -p {W} x") is None]
+    assert not bad, bad
+
+
+def test_shell_c_payload_forms():
+    flags = ["-c", "-lc", "-ic", "-xc", "-c --"]
+    shells = ["sh", "bash", "zsh", "dash", "ksh", "/bin/bash", "su", "runuser u", "script", "sg g"]
+    bad = []
+    for sh in shells:
+        for fl in flags:
+            for payload in (f"'{W} x'", f"'a; {W} x'", W):
+                cmd = f"{sh} {fl} {payload}"
+                if ambiguity_conceals_verb(cmd) is None:
+                    bad.append(cmd)
+            if ambiguity_conceals_verb(f"{sh} {fl} 'echo {W}'") is not None:
+                bad.append(("data", sh, fl))
+    for cmd in (f"su --command '{W} x'", f"su --command='{W} x'", f"su root -c '{W} x'",
+                f"sudo bash -c '{W} x'", f"ssh h '{W} x'", f"slogin h '{W} x'", f"ssh -p 22 h -- '{W} x'"):
+        if ambiguity_conceals_verb(cmd) is None:
+            bad.append(cmd)
+    assert not bad, bad
+
+
+def test_tmux_runners_conceal_but_send_keys_is_data():
+    bad = [f"tmux {r} '{W} x'" for r in EXPECTED_TMUX_RUNNERS
+           if ambiguity_conceals_verb(f"tmux {r} '{W} x'") is None]
+    bad += [f"tmux {r}" for r in ("send-keys -t x", "display-message", "select-pane")
+            if ambiguity_conceals_verb(f"tmux {r} '{W} x'") is not None]
+    assert not bad, bad
+
+
+def test_find_exec_vectors():
+    bad = []
+    for flag in EXPECTED_FIND_EXEC:
+        for term in ("\\;", "+"):
+            if ambiguity_conceals_verb(f"find . {flag} {W} {{}} {term}") is None:
+                bad.append(("exec", flag, term))
+            if ambiguity_conceals_verb(f"find . {flag} grep -l {W} {{}} {term}") is not None:
+                bad.append(("data", flag, term))
+            # the executing vector is the SECOND one
+            if ambiguity_conceals_verb(f"find . {flag} echo a {term} {flag} {W} x {term}") is None:
+                bad.append(("second", flag, term))
+    assert not bad, bad
+
+
+def test_redirect_grammar_before_the_verb():
+    bad = []
+    prefixes = ["", "2", "10", "{fd}"]
+    ops = [">", ">>", "<", "<>", ">|", "&>", "&>>", "<<<"]
+    for pre in prefixes:
+        if pre in ("2", "10", "{fd}") or pre == "":
+            for op in ops:
+                if op.startswith("&") and pre:
+                    continue
+                for tgt in ("f", " f"):
+                    r = f"{pre}{op}{tgt}"
+                    if ambiguity_conceals_verb(f"{r} {W} x") is None:
+                        bad.append(("exec", r))
+                    if ambiguity_conceals_verb(f"{r} grep {W} f") is not None:
+                        bad.append(("data", r))
+        for dup in (">&2", ">&-", "<&-", ">&1", "<&3"):
+            r = f"{pre}{dup}"
+            if ambiguity_conceals_verb(f"{r} {W} x") is None:
+                bad.append(("exec", r))
+            if ambiguity_conceals_verb(f"{r} grep {W} f") is not None:
+                bad.append(("data", r))
+    # several redirects, and a redirect AFTER the verb, still leave the verb a verb
+    for c in (f">a 2>&1 <b {W} x", f"{W} x >out 2>&1"):
+        if ambiguity_conceals_verb(c) is None:
+            bad.append(c)
+    assert not bad, bad
+
+
+def test_unknown_launchers_ask_and_never_allow():
+    launchers = ["uv run", "uv run -q", "uv run --no-project", "uvx -q", "npx -y", "bunx -b", "pnpm dlx",
+                 "flock /tmp/l", "chroot /", "unshare -m", "taskset 1", "chrt 1", "strace -f", "ltrace",
+                 "caffeinate", "firejail", "parallel -j4", "someunknowntool --flag"]
+    bad = []
+    for lead in launchers:
+        for tail in (f"sh -c '{W} x'", f"bash -lc '{W} x'", f"zsh -c {W}", f"{W} x", f"'{W} {{}}'"):
+            cmd = f"{lead} {tail}"
+            if ambiguity_conceals_verb(cmd) is None:
+                bad.append(cmd)
+    assert not bad, bad
+
+
+def test_pipeline_walks_every_stage_to_the_shell():
+    middles = ["", "tee f | ", "cat | ", "sed s/a/b/ | ", "tr a b | ", "cut -c1- | ", "head -5 | ",
+               "tail -5 | ", "sort | ", "uniq | ", "awk 1 | ", "base64 -d | ", "gunzip | ",
+               "openssl enc -d | ", "tee a | cat | tee b | "]
+    consumers = ["sh", "bash", "zsh", "dash", "xargs sh -c", "sudo bash", "source /dev/stdin", "ssh host"]
+    producers = [f"echo {W} x", f"printf '%s\\n' '{W} x'", f"echo -e 'a\\n{W} x'", f"echo $'a\\n{W} x'",
+                 f"printf 'a\\n{W} x\\n'"]
+    bad = []
+    for pr, mid, con in itertools.product(producers, middles, consumers):
+        cmd = f"{pr} | {mid}{con}"
+        if ambiguity_conceals_verb(cmd) is None:
+            bad.append(cmd)
+    for mid, con in itertools.product([m for m in middles if "base64" not in m], ["python3", "node", "ruby", "perl", "python3 -c 'print(1)'"]):
+        cmd = f"echo {W} x | {mid}{con}"
+        if ambiguity_conceals_verb(cmd) is not None:
+            bad.append(("interp", cmd))
+    # a data producer feeding a shell is not eval
+    for cmd in ("echo hi | tee f | sh", "printf 'a\\nb' | bash"):
+        if ambiguity_conceals_verb(cmd) is not None:
+            bad.append(("data", cmd))
+    assert not bad, bad
+
+
+def test_process_substitution_operands():
+    shells = ["bash", "sh", "zsh", "dash", "ksh", "source", ".", "sudo bash", "bash -x", "bash <"]
+    bodies = [f"echo {W} x", f"echo a; echo {W} x", f"printf '%s' '{W} x'", "echo a | tee f"]
+    bad = []
+    for sh, body in itertools.product(shells, bodies):
+        cmd = f"{sh} <({body})"
+        want = W in body
+        if (ambiguity_conceals_verb(cmd) is not None) != want:
+            bad.append((cmd, want))
+    for cmd in (f"diff <(echo {W}) <(echo b)", f"cat <(grep {W} f)"):
+        if ambiguity_conceals_verb(cmd) is not None:
+            bad.append(cmd)
+    assert ambiguity_conceals_verb(f"cat <({W} x)") is not None
+    assert not bad, bad
+
+
+def test_variable_alias_of_the_builtin():
+    bad = [c for c in (f"x={W}; $x y", f"x={W}; command $x y", f'x="{W} y"; $x', f"x='{W}'; ${{x}} y")
+           if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in (f"x={W}; echo $x", "x=ls; $x y", f"x={W}x; $x y")
+            if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+def test_dollar_quote_spellings():
+    bad = [c for c in ("$'\\x65val' x", "$'ev''al' x", f'$"{W}" x', "$'e\\x76al' x")
+           if ambiguity_conceals_verb(c) is None]
+    assert not bad, bad
+
+
+def test_nesting_beyond_the_depth_budget_fails_closed():
+    cmd = f"{W} x"
+    for _ in range(_core._RESCAN_MAX_DEPTH + 3):
+        cmd = f"sh -c {shlex.quote(cmd)}"
+    assert ambiguity_conceals_verb(cmd) is not None
+    shallow = f"sh -c {shlex.quote(f'echo {W}')}"
+    assert ambiguity_conceals_verb(shallow) is None
+
+
+def test_interpreter_stdin_is_not_shell_text(cfg):
+    for c in (f"python3 - <<< '{W}'", f"cat <<'EOF' | python3 -c 'print(1)'\n{W} x\nEOF",
+              f"python3 <<'EOF'\n{W}(x)\nEOF"):
+        assert ambiguity_conceals_verb(c) is None, c
+        assert check_command(c, cfg)["decision"] == "allow", c
+
+
+def test_payloads_behind_unknown_launchers_use_the_full_rescan():
+    """(a) of the unknown rule rescans a shell payload with the unknown rule still ON, so a
+    launcher nested INSIDE the payload cannot hide the builtin; the quoted-string guess cannot."""
+    bad = [c for c in (f"flock f sh -c 'uv run {W} x'", f"uvx -q bash -c 'flock f {W} x'",
+                       f"env --split-string '{W} x'", f"env --split-string='{W} x'", f"env -S'{W} x'")
+           if ambiguity_conceals_verb(c) is None]
+    assert not bad, bad
+
+
+def test_terminators_and_quoted_prose_after_known_and_unknown_commands():
+    bad = [c for c in (f"ssh h -- grep {W} f", f"slogin h grep {W} f", f"ssh -p 22 h grep {W} f",
+                       f"trap -- 'echo {W}' EXIT", f"someunknowntool 'note: {W} is bad'",
+                       f"someunknowntool --flag 'a {W} b'", f"find . -exec grep a {{}} + -name {W}")
+           if ambiguity_conceals_verb(c) is not None]
+    bad += [c for c in (f"ssh h -- '{W} x'", f"ssh -p 22 h -- {W} x", f"trap -- '{W} x' EXIT",
+                        f"find . -exec ls {{}} + -exec {W} x +")
+            if ambiguity_conceals_verb(c) is None]
     assert not bad, bad

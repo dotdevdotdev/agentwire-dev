@@ -1114,41 +1114,61 @@ commit message, issue/PR body, grep pattern, `agentwire msg`/`send` payload or
 quoted heredoc that merely NAMED the builtin was an un-demotable
 `unverifiable` ask (a silent block loop when unattended), while spellings the
 regex could not see (`\\eval`, `e''val`, `"eval" x`, `bash -c 'eval "$x"'`)
-passed. `has_command_position_eval()` now reads the resolved token view (quote
-and escape variants normalize; `$'…'`/`$"…"` lose the `$`), after joining
-backslash-newline, with compound-command syntax removed by the shared
+passed. `has_command_position_eval()` reads the resolved token view (quote and
+escape variants normalize; `$'…'` is decoded, `$"…"` loses the `$`), after
+joining backslash-newline, with compound-command syntax removed by the shared
 `strip_command_openers` (#1112 — there is no second chain walker). A command's
-verb is the first word after redirects (`>f`, `2>&1`, `> f`), assignments and
-launcher wrappers.
+verb is the first word after redirects (any bash redirect form, with or
+without a glued target, `N`/`{var}` prefix, `&>`, `>|`, fd dups), assignments
+and known launchers.
+
+**The failure direction is ask.** A command word falls in one of three classes:
+
+- **known launcher** (`_EVAL_WRAPPER_VALUE_OPTS`: `sudo`, `doas`, `env`,
+  `xargs`, `timeout`, `nice`, `ionice`, `stdbuf`, `time`, `watch`, `exec`,
+  `nohup`, `command`, `builtin`, `setsid`): its value-taking options are skipped
+  with getopt cluster semantics (`sudo -Eu root`, `xargs -0I{}`), boolean flags
+  are not, and the next word is the verb. The table only **reduces** false
+  blocks; `command -v|-V|-pv` and `type`/`which`/`help` are lookups;
+- **known pure data consumer** (`_EVAL_DATA_CONSUMERS`: `echo`, `grep`, `git`,
+  `gh`, `agentwire`, `cat`, `ls`, interpreters, …): the rest is data;
+- **anything else is UNKNOWN** (`uv run`, `npx`, `flock`, `chroot`, `strace`,
+  `parallel`, a tool this file has never heard of): every later word is
+  scanned — a shell `-c`/`--command` payload anywhere after it is re-checked as
+  a command in its own right, a quoted multi-word argument is re-checked for a
+  command-position builtin, and the bare word anywhere asks.
 
 - **Concealing:** the builtin as the verb, after any separator, compound
-  keyword, case arm, function body, `builtin`/`command`/`sudo`/`env`/`time`/
-  `nohup`/`xargs`/…; inside a `<(…)`/`>(…)` body; and as the verb of program
-  text the shell is FED and re-checked as a command in its own right: a
-  `bash`/`sh`/`su`/`runuser -c` payload, `ssh host …`, `env -S`, `watch`,
-  `trap '…'`, `tmux new-session|run-shell|…`, `find -exec|-execdir|-ok|-okdir
-  <vector>`, a heredoc/here-string/`echo … |` feeding a shell (quoted or not,
-  directly or via a pipe, incl. `| xargs sh -c`), and `source <(echo …)`.
-- **Data:** the word as an argument (`echo`, `grep`, `git commit -m`, `gh
-  --body`, `agentwire …`, `tmux send-keys`, a quoted heredoc body not fed to a
-  shell, a comment) and lookups (`command -v`, `type`, `which`, `help`). A data
-  mention never shields a real call elsewhere in the same command.
-- **Option values:** only the KNOWN value-taking options of `sudo`, `doas`,
-  `env`, `xargs`, `timeout`, `nice`, `ionice`, `stdbuf`, `time`, `watch`,
-  `exec` swallow the next word, so boolean flags (`sudo -E`, `env -i`, `xargs
-  -0`, `nohup --`) no longer hide the verb or fabricate one. Launchers outside
-  that table (`uv run`, `npx`, …) keep the greedy rule.
+  keyword, case arm, function body or launcher chain; inside a `<(…)`/`>(…)`
+  body; a variable assigned the word earlier in the same command and used as
+  the verb (`x=eval; $x y`); and as the verb of program text the shell is FED —
+  a `sh`/`bash`/`zsh`/`su`/`runuser -c` payload (`-lc`, `--command`, `-c --`),
+  `ssh host …`, `env -S`, `watch`, `trap`, `tmux new-session|run-shell|…`,
+  `find -exec|-execdir|-ok|-okdir`, a heredoc/here-string feeding a shell, the
+  `echo`/`printf` text of ANY earlier stage of a pipeline ending in a shell
+  (through `tee`, `cat`, `sed`, …, escapes expanded), `xargs sh -c`, and the
+  `echo`/`printf` body of a `<(…)` handed to a shell or `source`/`.`.
+- **Data:** the word as an argument of a known data consumer or a known
+  launcher's real verb (`echo`, `grep`, `git commit -m`, `gh --body`,
+  `agentwire …`, `tmux send-keys`, a quoted heredoc body not fed to a shell, a
+  comment), a body piped to an *interpreter* (`python3`, `node`, …), and
+  lookups. A data mention never shields a real call elsewhere in the command.
 
-Residuals, stated plainly: command-position use is *always* unverifiable (a
-literal operand is not re-scanned as a command); an UNKNOWN launcher's option
-whose value is the word errs closed; a call inside `$(…)` is judged by the
-substitution path, not this one; **not detected:** the verb produced
-indirectly (`alias a=eval; a x`, `x="eval y"; $x`, `$1 x`, `e${x}val`, `$'\\x65val'`),
-and program text from anything but `echo`/`printf`/heredoc/here-string
-(`cat file | sh`). `tests/unit/test_damage_control_eval_position.py` is the
-differential (spelling × position × wrapper × consumer, plus a committed
-corpus of executing spellings that must never be `allow` — also unattended, and
-under size padding — and a corpus of data mentions that must).
+Residuals, stated plainly. Wrongful asks we accept as the price of the
+direction: an unknown launcher followed by the bare word (`uv run -q grep eval
+f`, `npx -y grep eval`, `parallel -j4 grep eval ::: f`), and a quoted `'>f'`
+used as a command name. **Not detected:** a verb produced indirectly (`alias
+a=eval; a x`, `$1 x`, `e${x}val`, a name assigned in another command), program
+text from a producer other than `echo`/`printf`/heredoc/here-string (`cat file
+| sh`, `curl … | sh`), `parallel '{eval} {}'`, and a call inside `$(…)`, which
+the substitution path judges. Command-position use is *always* unverifiable;
+a literal operand is not re-scanned as a command. With the kill switch off
+(`enabled: false`) nothing here applies — the switch allows everything by design.
+`tests/unit/test_damage_control_eval_position.py` is the differential: generated
+spelling × position × wrapper × consumer cases, one generated test per table
+(driven by an independent copy of the table spec so a deleted row goes red),
+committed corpora of executing spellings (never `allow`, also unattended and
+under size padding) and of data mentions (must `allow`).
 
 ### Tool-channel parity (#923)
 
