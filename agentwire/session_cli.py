@@ -57,6 +57,7 @@ from .roles import (
     load_roles,
     resolve_roles,
 )
+from .utils.paths import claude_dir
 from .worktree import (
     apply_naming,
     create_and_register_worktree,
@@ -2330,7 +2331,7 @@ def cmd_fork(args) -> int:
         session_created_unix = int(created_result.stdout.strip() or 0) if created_result.returncode == 0 else 0
         session_created_ms = session_created_unix * 1000
 
-        history_file = Path.home() / ".claude" / "history.jsonl"
+        history_file = claude_dir() / "history.jsonl"
         if session_created_ms > 0 and history_file.exists():
             # Find sessions for this project that started AFTER the source tmux session was created.
             # The session whose first message is closest to (and after) creation time is the source.
@@ -2357,7 +2358,7 @@ def cmd_fork(args) -> int:
 
         if not resume_session_id:
             # Fallback: most recently modified JSONL in the project dir
-            claude_projects_dir = Path.home() / ".claude" / "projects"
+            claude_projects_dir = claude_dir() / "projects"
             from .history import encode_project_path as _encode_project_path
             encoded_path = _encode_project_path(str(fork_path))
             session_dir = claude_projects_dir / encoded_path

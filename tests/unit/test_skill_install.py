@@ -6,7 +6,6 @@ drift-aware symlink install + doctor-facing drift report. Everything runs agains
 monkeypatched temp dirs — the real ~/.claude/skills/ is never touched.
 """
 
-import pathlib
 import shutil
 
 import pytest
@@ -31,7 +30,7 @@ def env(tmp_path, monkeypatch):
 
     target_root = tmp_path / "claude" / "skills"
 
-    monkeypatch.setattr(m, "CLAUDE_SKILLS_DIR", target_root)
+    monkeypatch.setattr(m, "claude_skills_dir", lambda: target_root)
     monkeypatch.setattr(m, "get_skills_source", lambda: source)
     return source, target_root
 
@@ -184,10 +183,9 @@ def test_install_hooks_installs_skills(env, tmp_path, monkeypatch):
     # root's .git is a FILE) and in CI's plain clone.
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     from agentwire.safety import provenance as _prov
-    monkeypatch.setattr(
-        _prov, "canonical_package_dir",
-        lambda: pathlib.Path(__import__("agentwire").__file__).parent.resolve(),
-    )
+    pkg = tmp_path / "pkg"
+    monkeypatch.setattr(_prov, "canonical_package_dir", lambda: pkg.resolve())
+    monkeypatch.setattr(_prov, "running_package_dir", lambda: pkg.resolve())
     _, target_root = env
     target = target_root / "wiki"
     assert not target.exists()

@@ -377,6 +377,25 @@ agentwire hooks status
 agentwire hooks install
 ```
 
+### Hook symlinks point into a worktree or temp tree (#1118)
+
+`agentwire doctor` prints `[!!] ... BAD LINK` and names the target when a
+`~/.claude/hooks/*` symlink is dangling, outside the installed tool, or inside a
+git worktree/temp tree. While that is true every session runs that tree's
+un-deployed code. **Recover** with one command from the installed tool (never from
+a worktree — it refuses there and says how to fix):
+
+```bash
+agentwire hooks install
+```
+
+Root cause was a unit test: the hook dirs were frozen to the real `~/.claude` at
+import, so an `install_hooks(allow_foreign=True)` test repointed the real links at
+its checkout. Now the dirs resolve at call time, every machine-global symlink goes
+through `hooks_cli._link_into_claude` (refuses a target outside the canonical
+install, before touching the existing link), and the test guard fails any test that
+writes under the real `~/.claude` or `~/.agentwire`. The guard is detect-after-the-fact (an audit hook records, it does not block); prevention is the call-time dirs and `_link_into_claude`.
+
 ---
 
 ## Idle Notification Issues

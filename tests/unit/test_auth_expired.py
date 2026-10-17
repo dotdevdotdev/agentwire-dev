@@ -207,7 +207,7 @@ def write_transcript(path: Path, rows: list[dict]) -> Path:
 def env(tmp_path, monkeypatch):
     """Isolate CONFIG_DIR and Claude's projects dir into tmp_path."""
     monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path / "agentwire")
-    monkeypatch.setattr("agentwire.history.PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr("agentwire.history.claude_projects_dir", lambda: tmp_path / "projects")
     return tmp_path
 
 

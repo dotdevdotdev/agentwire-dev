@@ -8,6 +8,11 @@ consistency and automatic directory creation.
 from pathlib import Path
 
 
+def claude_dir() -> Path:
+    """Return ~/.claude/ (not created). Resolved per call so a redirected $HOME is honoured (#1118)."""
+    return Path.home() / ".claude"
+
+
 def agentwire_dir() -> Path:
     """Return ~/.agentwire/, creating if needed.
 

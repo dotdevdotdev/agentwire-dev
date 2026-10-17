@@ -24,7 +24,7 @@ STUB = '{"type":"ai-title"}\n{"type":"mode","mode":"normal"}\n'
 def store(tmp_path, monkeypatch):
     """Isolated ~/.agentwire and ~/.claude/projects, plus a launch cwd."""
     monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path / "agentwire")
-    monkeypatch.setattr("agentwire.history.PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr("agentwire.history.claude_projects_dir", lambda: tmp_path / "projects")
     cwd = tmp_path / "worktree"
     cwd.mkdir()
     (tmp_path / "projects").mkdir()

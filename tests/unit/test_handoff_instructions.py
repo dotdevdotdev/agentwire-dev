@@ -12,8 +12,8 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect ~/.claude to a tmp dir so tests don't read real user files."""
     fake_claude = tmp_path / ".claude"
     fake_claude.mkdir()
-    monkeypatch.setattr(instructions, "HOME", tmp_path)
-    monkeypatch.setattr(instructions, "CLAUDE_DIR", fake_claude)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(instructions, "claude_dir", lambda: fake_claude)
     return tmp_path
 
 
