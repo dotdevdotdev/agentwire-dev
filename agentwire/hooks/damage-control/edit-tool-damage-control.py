@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "a020389f609326cb7b46a291e0a1d566555f9ab48ca299e1f9a2b9e5b0ecb90c", "generated_at": "2026-10-17T13:36:29Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "8240fd2778f13dfff7b8493ea5ccbdfc258cd0c5d39df1c345bb07056a514b52", "generated_at": "2026-10-17T18:28:22Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -4065,7 +4065,7 @@ _EXEC_SURFACES: Dict[str, set] = {
     "sqlite3": set(),
     "duckdb": {"-c"},
 }
-_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
+_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*(?:\[[^\n]*?\])?\+?=")
 
 #
 # COMMAND-WRAPPER PAYLOAD RESCAN (#924)
@@ -4701,6 +4701,15 @@ _NAMED_OPENERS = frozenset({"coproc", "function"})
 _FUNC_HEADER_RE = _rx(r"^[^\s()$`'\"{}=;&|<>]+\(\)(\{?)$", 0)
 _KEYWORD_PAREN_RE = _rx(r"^(if|then|else|elif|while|until|do|time|coproc)(\(.*)$", 0)
 
+#: Stands in for a `)` that is DATA (quoted, escaped, or inside `${...}` /
+#: `$'...'` / an assignment subscript) in token text handed to
+#: :func:`strip_command_openers`, which cannot see quotes: tokens arrive
+#: quote-resolved, so `A='a)b' rm` and `A=${x:-)} rm` looked like a case arm
+#: ending at the `)` and the stripped remainder swallowed the verb (#1119).
+#: The scanner writes it, `_masked_subcommand_entries` turns it back into `)`
+#: right after stripping, so no rule ever sees it.
+_DATA_PAREN = "\x02"
+
 #: Tokens of one command: ``(text, fully_quoted, expands)``.
 _Tok = Tuple[str, bool, bool]
 
@@ -4725,7 +4734,146 @@ def _arm_pattern_end(text: str, in_case_header: bool = False) -> int:
             if depth < 0:
                 return i
         return -1
-    return text.find(")")
+    return _first_paren_outside_spans(text)
+
+
+#
+# WORD SPANS (#1119)
+#
+# A `)`, `;`, `&`, `|` or newline INSIDE `${...}`, `$'...'` or an assignment
+# subscript `a[...]=` is data to bash: the word is one word. A splitter that
+# reads those characters as syntax cuts the word in two, and the half that
+# starts `}`/`]` becomes the "command" — `A=${x:-;} rm -rf /x` then reads as
+# `} rm -rf /x` and the real verb is an argument. These readers return the
+# index just past the span, or -1 when it does not close, and an unclosed span
+# is NOT a span: the caller falls back to plain character-by-character
+# scanning, which sees every verb in the remainder (errs closed for the
+# operation). Brace nesting follows bash: only `${` nests, a bare `{` is data.
+
+
+def _quoted_end(s: str, i: int) -> int:
+    """Index past the quote opened at ``s[i]`` (``'`` or ``"``), or -1."""
+    q, j, n = s[i], i + 1, len(s)
+    while j < n:
+        if q == '"' and s[j] == "\\":
+            j += 2
+            continue
+        if s[j] == q:
+            return j + 1
+        j += 1
+    return -1
+
+
+def _subst_end(s: str, i: int) -> int:
+    """Index past the ``$(...)`` / backtick span opened at ``s[i]``, or -1."""
+    if s[i] == "`":
+        j = s.find("`", i + 1)
+        return -1 if j == -1 else j + 1
+    depth, j, n = 1, i + 2, len(s)
+    while j < n and depth:
+        ch = s[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch in "'\"":
+            j = _quoted_end(s, j)
+            if j == -1:
+                return -1
+            continue
+        depth += (ch == "(") - (ch == ")")
+        j += 1
+    return -1 if depth else j
+
+
+def _param_expansion_end(s: str, i: int) -> int:
+    """Index past the ``${...}`` opened at ``s[i]``, or -1 (quote/escape/nest aware)."""
+    depth, j, n = 1, i + 2, len(s)
+    while j < n and depth:
+        ch = s[j]
+        if ch == "\\":
+            j += 2
+        elif ch in "'\"":
+            j = _quoted_end(s, j)
+            if j == -1:
+                return -1
+        elif ch == "$" and s.startswith("${", j):
+            depth += 1
+            j += 2
+        elif ch == "$" and s.startswith("$(", j) or ch == "`":
+            j = _subst_end(s, j)
+            if j == -1:
+                return -1
+        else:
+            depth -= ch == "}"
+            j += 1
+    return -1 if depth else j
+
+
+def _ansi_c_end(s: str, i: int) -> int:
+    """Index of the closing quote of a ``$'...'`` body starting at ``s[i]``, or -1."""
+    j, n = i, len(s)
+    while j < n:
+        if s[j] == "\\":
+            j += 2
+        elif s[j] == "'":
+            return j
+        else:
+            j += 1
+    return -1
+
+
+def _subscript_end(s: str, i: int) -> int:
+    """Index past an assignment subscript ``[...]`` at ``s[i]`` that is followed by ``=``/``+=``, or -1.
+
+    bash reads ``a[;]=1`` / ``a[)]=1`` as one assignment word, but only when
+    the closing ``]`` is followed by the assignment operator — otherwise the
+    ``;`` is a separator, and swallowing it would hide the command after it.
+    """
+    depth, j, n = 0, i, len(s)
+    while j < n:
+        ch = s[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch in "'\"":
+            j = _quoted_end(s, j)
+            if j == -1:
+                return -1
+            continue
+        depth += (ch == "[") - (ch == "]")
+        j += 1
+        if depth == 0:
+            return j if s.startswith("=", j) or s.startswith("+=", j) else -1
+    return -1
+
+
+def _first_paren_outside_spans(text: str) -> int:
+    """Index of the first ``)`` in ``text`` that is not inside ``${...}`` or ``[...]``, or -1.
+
+    A case-arm pattern's terminator is the first ``)`` that is not data. The
+    old ``text.find(")")`` took the first one anywhere, so ``A=${x:-)} rm`` was
+    read as an arm ending inside the expansion and the leftover ``}`` became
+    the command (#1119). An unclosed span does not hide anything: its ``)``
+    still counts, which only ever over-strips.
+    """
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == ")":
+            return i
+        if ch == "$" and text.startswith("${", i):
+            end = _param_expansion_end(text, i)
+            if end != -1:
+                i = end
+                continue
+        elif ch == "[":
+            close = text.find("]", i + 2 if text.startswith(("[!", "[^"), i) else i + 1)
+            if close != -1:
+                i = close + 1
+                continue
+        i += 1
+    return -1
+
 
 
 def strip_command_openers(toks: List[_Tok]) -> List[_Tok]:
@@ -4794,6 +4942,7 @@ def strip_command_opener_words(words: List[str]) -> List[str]:
 
 
 _FUNC_NAME_RE = _rx(r"^[^\s()$`'\"{}=;&|<>]+$", 0)
+_ASSIGN_NAME_RE = _rx(r"^[A-Za-z_]\w*$", 0)
 
 
 def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool, bool]]]:
@@ -4832,23 +4981,61 @@ def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool, bool]]]:
             subs.append(cur)
             cur = []
 
+    def _word_span(i: int) -> int:
+        """End of a span that is one word's DATA at ``i`` (#1119), appended to ``buf``; else -1."""
+        nonlocal has_unquoted, has_any, expands
+        c = command[i]
+        if c == "$" and command.startswith("${", i):
+            end = _param_expansion_end(command, i)
+            if end == -1:
+                return -1
+            text = command[i:end]
+            if _has_subst(text):
+                expands = True
+            has_unquoted = True
+        elif c == "$" and command.startswith("$'", i):
+            close = _ansi_c_end(command, i + 2)
+            if close == -1:
+                return -1
+            end, text = close + 1, command[i + 2:close]
+        elif c == "[" and buf and _ASSIGN_NAME_RE.match("".join(buf)):
+            end = _subscript_end(command, i)
+            if end == -1:
+                return -1
+            text = command[i:end]
+            if _has_subst(text):
+                expands = True
+            has_unquoted = True
+        else:
+            return -1
+        buf.append(text.replace(")", _DATA_PAREN))
+        has_any = True
+        return end
+
     i, n = 0, len(command)
     while i < n:
         c = command[i]
-        if c == "'":
+        span_end = _word_span(i) if c in "$[" else -1
+        if span_end != -1:
+            i = span_end
+        elif c == "'":
             j = command.find("'", i + 1)
             if j == -1:
                 j = n
             # Single quotes suppress expansion entirely — deliberately does NOT
             # set `expands`, however substitution-shaped the contents look.
-            buf.append(command[i + 1:j])
+            buf.append(command[i + 1:j].replace(")", _DATA_PAREN))
             has_any = True
             i = j + 1
         elif c == '"':
             j = i + 1
             out: List[str] = []
             while j < n and command[j] != '"':
-                if command[j] == "\\" and j + 1 < n and command[j + 1] in '"\\$`':
+                if command.startswith("${", j) and _param_expansion_end(command, j) != -1:
+                    end = _param_expansion_end(command, j)
+                    out.append(command[j:end])
+                    j = end
+                elif command[j] == "\\" and j + 1 < n and command[j + 1] in '"\\$`':
                     out.append(command[j + 1])
                     j += 2
                 else:
@@ -4857,11 +5044,11 @@ def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool, bool]]]:
             span = "".join(out)
             if _has_subst(span):
                 expands = True
-            buf.append(span)
+            buf.append(span.replace(")", _DATA_PAREN))
             has_any = True
             i = j + 1
         elif c == "\\" and i + 1 < n:
-            buf.append(command[i + 1])
+            buf.append(command[i + 1].replace(")", _DATA_PAREN))
             has_unquoted = True
             has_any = True
             i += 2
@@ -4935,7 +5122,10 @@ def _masked_subcommand_entries(
         return []
     results: List[Tuple[List[str], bool]] = []
     for toks in _scan_masked_tokens(command):
-        toks = strip_command_openers(toks)
+        toks = [
+            (text.replace(_DATA_PAREN, ")"), fq, ex)
+            for text, fq, ex in strip_command_openers(toks)
+        ]
         if not toks:
             continue
         words: List[str] = []
