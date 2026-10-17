@@ -617,3 +617,25 @@ class TestFormatSessionsServiceGrouping:
         out = format_sessions({"sessions": [
             {"name": "a", "machine": None, "windows": 1, "path": "/a"}]})
         assert "  - a" in out
+
+
+class TestRunAgentwireCmdLogsNoArgvBodies:
+    """#1113: the slow-command warning and the debug line log verb only, never message text."""
+
+    @patch("agentwire.core._run_bounded")
+    def test_no_log_line_carries_the_message_body(self, mock_run, monkeypatch, caplog):
+        import logging
+
+        from agentwire import core
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
+        monkeypatch.setattr(core, "SLOW_CMD_WARN_SECONDS", -1)
+        leaks = []
+        for argv in (["say", "SECRET-BODY"], ["notify-parent", "--to", "SECRET-BODY"],
+                     ["session", "send", "SECRET-BODY"]):
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG, logger=core.logger.name):
+                core.run_agentwire_cmd(argv)
+            if "SECRET-BODY" in caplog.text or not caplog.text:
+                leaks.append((argv, caplog.text))
+        assert not leaks, leaks

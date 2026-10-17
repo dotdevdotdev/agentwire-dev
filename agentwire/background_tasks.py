@@ -404,8 +404,13 @@ def recent_gate_failures(now: "float | None" = None) -> list[dict]:
             row = json.loads(line)
         except ValueError:
             continue
-        if row.get("event") in ("gate_failed", "gate_unusable") \
-                and now - float(row.get("ts", 0)) <= GATE_FAILURE_WINDOW:
+        if not isinstance(row, dict) or row.get("event") not in ("gate_failed", "gate_unusable"):
+            continue
+        try:
+            age = now - float(row.get("ts", 0))
+        except (TypeError, ValueError):
+            continue
+        if age <= GATE_FAILURE_WINDOW:
             found.append(row)
     return found if len(found) >= GATE_FAILURE_THRESHOLD else []
 

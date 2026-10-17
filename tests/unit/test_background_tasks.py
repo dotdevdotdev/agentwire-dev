@@ -598,3 +598,40 @@ def test_gate_failure_before_the_pane_is_known_holds(monkeypatch, capsys):
     monkeypatch.setattr(pane_manager, "get_current_session", boom)
     notify_cli.cmd_idle_gate(argparse.Namespace(conversation_id="", cwd="", json=True))
     assert json.loads(capsys.readouterr().out)["action"] == "defer"
+
+
+# --- #1113: nits from the #1110 review --------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
+def test_a_bad_gate_timeout_falls_back_to_the_default_instead_of_killing_the_gate(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    # A gate that answers `defer` at once. On a plain pane 0 an UNUSABLE gate
+    # sends the notice and a `defer` suppresses it, so a timer that killed the
+    # gate (sleep fails / returns at once) shows up as a notify-parent call.
+    bad = ["abc", "0", "-3", "1.5", "", "8; true", "0x10"]
+
+    def run(i_t):
+        i, t = i_t
+        calls, _ = _run_hook_cell(tmp_path / f"c{i}", 'echo \'{"action":"defer"}\'', "0", False, t)
+        return t, [c for c in calls if c.startswith("notify-parent")]
+
+    with ThreadPoolExecutor(max_workers=7) as pool:
+        offenders = [(t, n) for t, n in pool.map(run, enumerate(bad)) if n]
+    assert not offenders, offenders
+
+
+def test_recent_gate_failures_skips_malformed_rows_and_keeps_the_listing(isolated_config):
+    now = time.time()
+    bt.log_event("gate_failed", session="w", pane=1)
+    path = bt.events_path()
+    good = json.dumps({"event": "gate_unusable", "ts": now})
+    with path.open("a") as f:
+        for junk in ('[1, 2]', '"str"', '7', 'null',
+                     json.dumps({"event": "gate_failed", "ts": "yesterday"}),
+                     json.dumps({"event": "gate_failed", "ts": None}),
+                     json.dumps({"event": "gate_failed", "ts": [1]}), good, good):
+            f.write(junk + "\n")
+    rows = bt.recent_gate_failures(now=now)
+    assert len(rows) == 3, rows
