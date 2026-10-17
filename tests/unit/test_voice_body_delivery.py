@@ -166,7 +166,7 @@ class TestTheBodySurvivesTheRealPastePath:
         )
         # And it is genuinely found once submitted.
         scrollback = "\n".join(
-            [rendered, "─" * 80, "> ", "─" * 80, "  ? for shortcuts"]
+            [f"> {rendered}", "─" * 80, "> ", "─" * 80, "  ? for shortcuts"]
         )
         assert session_ready.message_on_scrollback(scrollback, rendered) is True
 

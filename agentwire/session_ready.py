@@ -414,6 +414,35 @@ def strip_input_box(capture: str) -> "str | None":
     return "\n".join(lines[:rules[-2] + 1])
 
 
+#: Rows that open the AGENT's side of the transcript (reply, tool result, status
+#: line). They end an input echo; the rows of a wrapped echo never start with one.
+_AGENT_ROW_MARKERS = "⏺⎿✻✳✶✢✽●"
+
+
+def input_echo_text(outside: str) -> str:
+    """The part of *outside* (the capture above the input box) that is the agent
+    echoing a SUBMITTED input: each prompt-glyph row at column 0 plus the rows
+    that wrap or continue it, up to the first blank row or agent row (``⏺`` reply,
+    ``⎿`` tool result, a status line). Everything else on screen is the agent's
+    own prose, tool output or a quote of one — text a never-delivered message can
+    appear in verbatim (a relay that quotes a full header + token), so it never
+    proves delivery (#1113). Indentation is deliberately not consulted: a pane
+    soft-wraps the echo at column 0 while Claude's own wrapping indents it.
+    """
+    from agentwire import prompt_router
+
+    echo: list[str] = []
+    in_echo = False
+    for ln in outside.split("\n"):
+        if ln[:1] and ln[0] in prompt_router._PROMPT_GLYPHS:
+            in_echo = True
+        elif not ln.strip() or ln.lstrip()[0] in _AGENT_ROW_MARKERS:
+            in_echo = False
+        if in_echo:
+            echo.append(ln)
+    return "\n".join(echo)
+
+
 def message_on_scrollback(capture: str, rendered: str) -> bool:
     """Strict per-message scrollback check for idempotent redelivery (#621).
 
@@ -443,7 +472,7 @@ def message_on_scrollback(capture: str, rendered: str) -> bool:
     outside = strip_input_box(capture)
     if outside is None:
         return False
-    flat = "".join(outside.split())
+    flat = "".join(input_echo_text(outside).split())
     if needle in flat:
         return True
     # Claude Code ELIDES the middle of a long submitted prompt when it echoes

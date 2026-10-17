@@ -178,9 +178,11 @@ lands in a durable inbox and is injected only at a safe boundary.
    bound the drain first looks for a positive signal
    (`_exhaustion_verdict`): the message echoed on scrollback (head + id token) →
    it was delivered, unlinked, never dead-lettered; the agent's
-   queued-messages placeholder → busy, keep waiting; otherwise it dead-letters
-   with reason `delivery could not be confirmed` (so the owner mail says
-   unconfirmed, not lost; load-bearing kinds email).
+   queued-messages placeholder → busy, keep waiting, **for at most
+   `QUEUED_WAIT_MS` (40 min = `MAX_ATTEMPTS` minutes) after the paste** (#1113);
+   otherwise — or once that wait is spent, a placeholder that never clears — it
+   dead-letters with reason `delivery could not be confirmed` (so the owner mail
+   says unconfirmed, not lost; load-bearing kinds email).
    The genuinely-busy reasons (`target_busy`, `queued_placeholder`,
    `box_static`, `target_parked`) remain unbounded.
 
@@ -190,12 +192,22 @@ lands in a durable inbox and is injected only at a safe boundary.
    never on scrollback even though it was delivered — and an unmatched
    delivered message gets re-pasted. `message_on_scrollback` therefore also
    accepts the message's **head** (first 24 non-space chars: for an inbox
-   message `[MSG from <sender> · <kind>]` plus the first word, so sender and
-   kind discriminate) followed, within one message's length, by its trailing
-   `⟨#id⟩` token, **outside the box**. A bare token — in a quoted line,
-   `msg inbox`/`msg dead` output, another message's text, or the box — does not
-   count. A false accept needs a pane line reproducing this message's head and
-   its token.
+   message `[MSG from <sender> · <kind>]` plus the first word) followed, within
+   one message's length, by its trailing `⟨#id⟩` token, **outside the box**.
+   The head only discriminates the sender *prefix* — for a long sender name
+   (a worktree session name alone can fill 24 chars) it holds no kind and no
+   text, so the unique id token does the discriminating. A bare token — in a
+   quoted line, `msg inbox`/`msg dead` output, another message's text, or the
+   box — does not count. A false accept needs a pane line reproducing this
+   message's head and its token.
+
+   **Only the agent's input echo counts (#1113).** Both the full-line and the
+   elided match run against the *input echo* alone: a prompt-glyph row at column
+   0 (`❯`/`>`) and the rows that wrap it, up to the first blank row or agent row
+   (`⏺` reply, `⎿` tool result, status line; indentation is not consulted — a
+   pane soft-wraps the echo at column 0). The same text in the agent's prose, a tool
+   result, or a relayed quote therefore never marks a never-delivered message as
+   delivered (`session_ready.input_echo_text`).
 
    **Failed deliveries say where the text is (#1105).** `safe_deliver` no
    longer returns `delivery_unverified` for everything. After a failed

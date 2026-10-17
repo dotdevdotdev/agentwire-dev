@@ -1018,6 +1018,9 @@ class TestIdempotentDelivery:
         # #689: "on scrollback" now means outside a parseable input box — a bare
         # rendered line with no box no longer counts (it could be sitting unsent
         # in the box). Model a real delivered state: text above an EMPTY box.
+        # #1113: and only the agent's own input echo (a prompt-glyph row) counts.
+        scrollback = "\n".join(
+            f"❯ {ln}" if ln.startswith("[MSG") else ln for ln in scrollback.split("\n"))
         scrollback = f"{scrollback}\n{RULE}\n❯\n{RULE}"
         monkeypatch.setattr(usage_limit, "_capture", lambda s: "dummy screen")
         monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: "")
@@ -1610,6 +1613,31 @@ class TestHealClobberAndBounds:
         monkeypatch.setattr(inbox, "_exhaustion_verdict", lambda msg: "queued")
         assert inbox._bump_attempts(inbox.list_messages("s"), "stuck_in_box") == 0
         assert len(inbox.list_messages("s")) == 1 and inbox.list_dead("s") == []
+
+    def test_queued_wait_is_bounded_by_the_paste_age(self, isolate, monkeypatch):
+        """#1113: a placeholder that never clears must not hold a message in
+        silence. Recent paste + placeholder keeps waiting; past QUEUED_WAIT_MS it
+        dead-letters as unconfirmed and escalates (load-bearing kind)."""
+        monkeypatch.setattr(inbox, "_exhaustion_verdict", lambda msg: "queued")
+        escalated = []
+        monkeypatch.setattr(
+            inbox, "_escalate_dead_letters", lambda batch, r: batch and escalated.append((len(batch), r)))
+        outcomes = {}
+        for label, age_ms in (("recent", 5 * 60 * 1000),
+                              ("just_inside", inbox.QUEUED_WAIT_MS - 60 * 1000),
+                              ("old", inbox.QUEUED_WAIT_MS + 1000)):
+            to = f"s-{label}"
+            m = _enq(to, self.LONG, kind="request", sender="w")[0]
+            m.heals = inbox.MAX_HEALS - 1
+            m.pasted_ts = inbox._now_ms() - age_ms
+            inbox._write_message(m.path, m)
+            inbox._bump_attempts(inbox.list_messages(to), "stuck_in_box")
+            outcomes[label] = (len(inbox.list_messages(to)), len(inbox.list_dead(to)))
+        assert outcomes == {
+            "recent": (1, 0), "just_inside": (1, 0), "old": (0, 1)}, outcomes
+        assert escalated == [(1, "delivery could not be confirmed")], escalated
+        (dead,) = inbox.list_dead("s-old")
+        assert dead.reason == "delivery could not be confirmed"
 
     def test_busy_reasons_stay_unbounded(self, isolate, monkeypatch):
         inbox.enqueue("s", "hi", sender="x")

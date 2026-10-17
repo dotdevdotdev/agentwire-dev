@@ -127,6 +127,12 @@ GONE_MAX_ATTEMPTS = 5
 _HEAL_REASONS = frozenset({"stuck_in_box", "pasted_unsubmitted"})
 MAX_HEALS = 10
 _UNCONFIRMED_REASON = "delivery could not be confirmed"
+# How long a "queued" verdict (agent busy, our paste in its queue) may keep an
+# exhausted heal waiting, measured from the paste: the same ~40 minutes
+# MAX_ATTEMPTS buys any other busy defer at one drain tick a minute. Past it,
+# a placeholder that never clears dead-letters as unconfirmed (owner mail for
+# load-bearing kinds) instead of holding the message in silence (#1113).
+QUEUED_WAIT_MS = MAX_ATTEMPTS * 60 * 1000
 
 
 def _exhaustion_verdict(msg: Message) -> str:
@@ -949,7 +955,9 @@ def _bump_attempts(messages: list[Message], reason: str = "", detail: str = "") 
                         heals=msg.heals,
                     )
                     continue
-                if verdict == "queued":
+                if verdict == "queued" and (
+                    _now_ms() - (msg.pasted_ts or msg.ts) < QUEUED_WAIT_MS
+                ):
                     msg.heals = MAX_HEALS - 1  # busy, not wedged: keep waiting
                 else:
                     eff = _UNCONFIRMED_REASON

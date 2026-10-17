@@ -344,7 +344,7 @@ class TestSendVerified:
     def test_marker_mode_confirms(self, monkeypatch):
         _fake_clock(monkeypatch)
         # Marker already in scrollback, box cleared → submitted, no Enter needed.
-        _env(monkeypatch, lambda a: "...[COUNCIL PROMPT #1]...\n" + render_box())
+        _env(monkeypatch, lambda a: "❯ ...[COUNCIL PROMPT #1]...\n" + render_box())
         assert session_ready.send_verified("s", "msg", "[COUNCIL PROMPT #1]")
 
     def test_marker_mode_retries_then_fails(self, monkeypatch):
@@ -570,7 +570,7 @@ class TestPrePasteGuardIdentity:
         _fake_clock(monkeypatch)
 
         def frame(a):
-            return "[COUNCIL FOLLOW-UP]\nold nudge text\n" + render_box()
+            return "❯ [COUNCIL FOLLOW-UP]\n  old nudge text\n" + render_box()
 
         actions = _env(monkeypatch, frame)
         assert session_ready.send_verified("s", "second nudge", "[COUNCIL FOLLOW-UP]")
@@ -597,7 +597,7 @@ class TestPrePasteGuardIdentity:
         # (not in the box) → a prior attempt submitted it. No paste, no Enter.
         _fake_clock(monkeypatch)
         msg = "[MSG from worker · done] finished  ⟨#abc123⟩"
-        actions = _env(monkeypatch, lambda a: f"{msg}\n" + render_box())
+        actions = _env(monkeypatch, lambda a: f"❯ {msg}\n" + render_box())
         assert session_ready.send_verified("s", msg)
         assert actions["pastes"] == 0
         assert actions["enters"] == 0
@@ -700,7 +700,7 @@ class TestMessageOnScrollbackBoxAware:
 
     def test_message_above_box_is_on_scrollback(self):
         msg = "[MSG from w · done] PR drafted  ⟨#abc123⟩"
-        cap = f"{msg}\n" + render_box()
+        cap = f"❯ {msg}\n" + render_box()
         assert session_ready.message_on_scrollback(cap, msg)
 
     def test_unparseable_box_stays_pending(self):
@@ -1198,7 +1198,7 @@ class TestForeignDraftGuard:
         _fake_clock(monkeypatch)
         msg = "[MSG from w · done] finished  ⟨#abc123⟩"
         actions = _env(
-            monkeypatch, lambda a: f"{msg}\n" + render_box("a new thought"))
+            monkeypatch, lambda a: f"❯ {msg}\n" + render_box("a new thought"))
         assert session_ready.send_verified("s", msg)
         assert actions["pastes"] == 0
         assert actions["enters"] == 0
@@ -1396,6 +1396,60 @@ class TestElidedEchoDedup:
     def test_message_without_a_token_still_needs_full_text(self):
         assert not session_ready.message_on_scrollback(
             self._cap("❯ hello there"), "hello there friend")
+
+
+class TestDedupOnlyTrustsTheInputEcho:
+    """#1113 — verbatim rendered text counts as delivery only inside the agent's
+    echo of a submitted input (a prompt-glyph row + its continuation rows). The
+    same line in the agent's prose, a tool result, or a quote of one proves
+    nothing: a relay chain can display a never-delivered message in full."""
+
+    RULE = "─" * 30
+    RENDERED = "[MSG from w · request] " + "lorem ipsum " * 40 + " ⟨#cc3b38⟩"
+    SHORT = "[MSG from w · done] PR drafted  ⟨#abc123⟩"
+
+    def _cap(self, body: str) -> str:
+        return f"{body}\n\n{self.RULE}\n❯ \n{self.RULE}\n  status"
+
+    def _wrapped(self, text: str, width: int = 30) -> str:
+        rows = [text[i:i + width] for i in range(0, len(text), width)]
+        return "\n".join(rows[:1] + [f"  {r}" for r in rows[1:]])
+
+    def test_a_quote_outside_the_input_echo_never_counts(self):
+        elided = (f"{self.RENDERED[:60]}\n  …\n  {self.RENDERED[-40:]}")
+        bad = []
+        for label, rendered, body in (
+            ("prose", self.SHORT, f"⏺ the relay saw: {self.SHORT}"),
+            ("prose continuation", self.SHORT, f"⏺ the relay saw:\n  {self.SHORT}"),
+            ("tool output", self.SHORT, f"⏺ Bash(msg inbox)\n  ⎿  {self.SHORT}"),
+            ("tool output bare", self.SHORT, f"⏺ Bash(cat log)\n{self.SHORT}"),
+            ("quote after blank row", self.SHORT, f"❯ earlier\n\n{self.SHORT}"),
+            ("long prose", self.RENDERED, f"⏺ quoting it whole: {self.RENDERED}"),
+            ("long wrapped prose", self.RENDERED, f"⏺ quoting it\n{self._wrapped(self.RENDERED)}"),
+            ("elided in prose", self.RENDERED, f"⏺ they wrote\n  {elided}"),
+            ("glyph in prose", self.SHORT, f"⏺ ❯ {self.SHORT}"),
+            ("after reply", self.SHORT, f"❯ earlier prompt\n⏺ reply\n  {self.SHORT}"),
+        ):
+            if session_ready.message_on_scrollback(self._cap(body), rendered):
+                bad.append(label)
+        assert not bad, bad
+
+    def test_a_real_input_echo_still_counts(self):
+        elided = f"❯ {self.RENDERED[:60]}\n  …\n  {self.RENDERED[-40:]}\n⏺ OK"
+        missed = []
+        for label, rendered, body in (
+            ("one row", self.SHORT, f"❯ {self.SHORT}\n⏺ OK"),
+            ("after an earlier turn", self.SHORT,
+             f"❯ first\n⏺ reply\n\n❯ {self.SHORT}\n⏺ OK"),
+            ("wrapped", self.RENDERED, f"❯ {self._wrapped(self.RENDERED)}\n⏺ OK"),
+            ("soft-wrapped at column 0", self.RENDERED,
+             "❯ " + "\n".join(self.RENDERED[i:i + 28] for i in range(0, len(self.RENDERED), 28))),
+            ("elided middle", self.RENDERED, elided),
+            ("shell-style glyph", self.SHORT, f"> {self.SHORT}"),
+        ):
+            if not session_ready.message_on_scrollback(self._cap(body), rendered):
+                missed.append(label)
+        assert not missed, missed
 
 
 class TestUndeliveredReason:
