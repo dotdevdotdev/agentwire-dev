@@ -729,8 +729,9 @@ DAMAGE_CONTROL_MATCHERS = {
 def register_damage_control_in_settings() -> int:
     """Ensure every damage-control PreToolUse matcher is in ``~/.claude/settings.json``.
 
-    Idempotent: only appends matchers/commands that aren't already present.
-    Returns the number of entries added.
+    Idempotent: appends missing matchers/commands and sets the expected
+    ``timeout`` on existing agentwire-owned entries. Returns the number of
+    entries added or updated.
     """
     settings_file = Path.home() / ".claude" / "settings.json"
     if settings_file.exists():
@@ -751,12 +752,21 @@ def register_damage_control_in_settings() -> int:
         # matchers (Read/Grep/Glob) legitimately share one hook script, so a
         # command-only check would register only the first and silently drop the
         # rest.
-        already = any(
-            entry.get("matcher") == matcher and h.get("command") == command
+        owned = [
+            h
             for entry in pre
+            if entry.get("matcher") == matcher
             for h in entry.get("hooks", [])
-        )
-        if already:
+            if h.get("command") == command
+        ]
+        if owned:
+            # An existing agentwire-owned entry keeps its place but gets the
+            # timeout: one registered without it (every pre-#1108 install)
+            # runs under the harness default, far above the scan deadline.
+            for h in owned:
+                if h.get("timeout") != HOOK_TIMEOUT_SECONDS:
+                    h["timeout"] = HOOK_TIMEOUT_SECONDS
+                    added += 1
             continue
         pre.append({
             "matcher": matcher,
@@ -1036,6 +1046,32 @@ def missing_damage_control_matchers() -> List[str]:
     return missing
 
 
+def damage_control_timeout_drift() -> List[str]:
+    """Registered damage-control matchers without the expected hook ``timeout`` (#1108).
+
+    A registered hook with no (or a different) timeout runs under the harness
+    default; the scan deadline is only known to fit inside ``HOOK_TIMEOUT_SECONDS``.
+    """
+    settings_file = Path.home() / ".claude" / "settings.json"
+    try:
+        settings = json.loads(settings_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    pre = settings.get("hooks", {}).get("PreToolUse", []) if isinstance(settings, dict) else []
+    drifted = []
+    for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
+        command = f"~/.agentwire/hooks/damage-control/{hook_file}"
+        owned = [
+            h
+            for entry in pre if isinstance(entry, dict) and entry.get("matcher") == matcher
+            for h in (entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else [])
+            if isinstance(h, dict) and h.get("command") == command
+        ]
+        if any(h.get("timeout") != HOOK_TIMEOUT_SECONDS for h in owned):
+            drifted.append(matcher)
+    return drifted
+
+
 def _write_installed(src: Path, target: Path, executable: bool = False) -> None:
     """Copy bundled bytes to an installed path with a FRESH mtime.
 
@@ -1214,7 +1250,7 @@ def heal_damage_control(
     added = register_damage_control_in_settings()
     summary["matchers_added"] = added
     if added:
-        log(f"✓ Registered {added} damage-control matcher{'s' if added != 1 else ''}")
+        log(f"✓ Registered or updated {added} damage-control matcher{'s' if added != 1 else ''}")
 
     return summary
 

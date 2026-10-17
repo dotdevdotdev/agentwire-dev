@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "7eeee73ee5100d8c39f835e70f37a84f04b84ba268317c20f97d648e48157671", "generated_at": "2026-10-16T23:48:45Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "8c34f4b3321ad2ff4a35e2c9b53735618a9bb9ae9a7b2a1ef04a21d2e6c16e70", "generated_at": "2026-10-17T00:25:07Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -50,6 +50,7 @@ fail loudly if drift happens.
 """
 
 import codecs
+import contextlib
 import fnmatch
 import functools
 import glob
@@ -61,6 +62,7 @@ import re
 import shlex
 import shutil
 import signal
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -2334,13 +2336,15 @@ def redact_prose_mentions(command: str, path: str) -> str:
     :func:`_reads_as_prose`).
     """
     path_re = _rx(_path_context_regex(path))
+    literals = _path_literals(path)
     out: List[str] = []
     last = 0
     for m in _QUOTED_LITERAL_RE.finditer(command):
         lit = m.group(0)
         body = lit[1:-1]
         if (
-            path_re.search(body)
+            _may_mention_path(body, literals)
+            and path_re.search(body)
             and _is_standalone_data(command, m.start(), m.end())
             and _reads_as_prose(path_re.sub(" ", body).split())
             and not check_path_patterns(body, path, READ_ONLY_BLOCKED, "")[0]
@@ -2390,6 +2394,8 @@ def _blank_prose_args(hay: str, path: str) -> str:
     Runs on the RAW command: the ladder haystacks are already unquoted, so a
     message and a bare operand look the same there.
     """
+    if not _may_mention_path(hay, _path_literals(path)):
+        return hay
     path_re = _rx(_path_context_regex(path))
 
     wrapper_payload = _rx(r"\s-\S*c\s+$")
@@ -5668,37 +5674,105 @@ def _on_scan_alarm(signum: int, frame: Any) -> None:
     raise ScanBudgetExceeded()
 
 
+@contextlib.contextmanager
+def scan_deadline(seconds: float):
+    """Raise :class:`ScanBudgetExceeded` in the body once ``seconds`` elapse.
+
+    Needs ``signal.setitimer`` on the main thread (every hook process);
+    elsewhere (a portal worker thread, Windows) it is a no-op — declared
+    residual. The alarm is disarmed INSIDE the guarded region before leaving
+    it, so it cannot fire in the gap between the body finishing and cleanup;
+    callers still catch the exception around the whole ``with``.
+    """
+    if not (hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()):
+        yield
+        return
+    previous = signal.signal(signal.SIGALRM, _on_scan_alarm)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def check_command(
     command: str,
     config: Dict[str, Any],
     cwd: Optional[str] = None,
     deadline_seconds: float = SCAN_DEADLINE_SECONDS,
 ) -> Dict[str, Any]:
-    """:func:`_decide_command` under the scan budget — over budget means ASK.
-
-    The clock budget needs ``signal.setitimer`` on the main thread (every hook
-    process); elsewhere (a portal worker thread, Windows) only the size gate
-    applies — declared residual.
-    """
+    """:func:`_decide_command` under the scan budget — over budget means ASK."""
     refusal = _size_budget_refusal(command)
     if refusal:
         return refusal
-    armed = hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()
-    if not armed:
-        return _decide_command(command, config, cwd)
-    previous = signal.signal(signal.SIGALRM, _on_scan_alarm)
-    signal.setitimer(signal.ITIMER_REAL, deadline_seconds)
     try:
-        return _decide_command(command, config, cwd)
+        with scan_deadline(deadline_seconds):
+            return _decide_command(command, config, cwd)
     except ScanBudgetExceeded:
         return _budget_refusal(
             command,
             f"Command scan exceeded its {deadline_seconds:g}s budget — too slow to analyze safely",
             "core.scan-budget",
         )
+
+
+# ---- Hook entrypoint guard (#1108) ------------------------------------------
+#
+# A PreToolUse hook that crashes exits 1, which the harness treats as
+# NON-blocking — the tool call runs. So every hook entrypoint turns ANY
+# unexpected failure (malformed stdin, a recursion limit, an alarm that
+# escapes, a bug) into exit 2 with a reason.
+
+MAX_HOOK_INPUT_CHARS = 64 * 1024 * 1024
+
+
+class HookInputError(Exception):
+    """The hook payload could not be read safely; the hook must block."""
+
+
+def read_hook_input(stream: Any = None) -> Dict[str, Any]:
+    """The hook's JSON payload from stdin, or :class:`HookInputError`."""
+    stream = stream if stream is not None else sys.stdin
+    try:
+        raw = stream.read(MAX_HOOK_INPUT_CHARS + 1)
+    except (OSError, ValueError) as e:
+        raise HookInputError(f"could not read hook input ({type(e).__name__}: {e})")
+    if len(raw) > MAX_HOOK_INPUT_CHARS:
+        raise HookInputError(
+            f"hook input too large to analyze safely (limit {MAX_HOOK_INPUT_CHARS:,} chars)"
+        )
+    try:
+        data = json.loads(raw)
+    except RecursionError:
+        raise HookInputError("hook input nested too deeply to analyze safely")
+    except ValueError as e:
+        raise HookInputError(f"invalid JSON on stdin ({e})")
+    if not isinstance(data, dict):
+        raise HookInputError("hook input is not a JSON object")
+    return data
+
+
+def run_hook_guarded(main: Any) -> None:
+    """Run a hook ``main``; any unexpected exception becomes a blocking exit 2."""
+    try:
+        main()
+        return
+    except SystemExit:
+        raise
+    except HookInputError as e:
+        reason = str(e)
+    except ScanBudgetExceeded:
+        reason = "the scan exceeded its time budget"
+    except RecursionError:
+        reason = "input nested too deeply to analyze safely"
+    except BaseException as e:  # KeyboardInterrupt included: never exit 1
+        reason = f"the hook failed ({type(e).__name__}: {e})"
+    try:
+        print(f"SECURITY: Blocked: {reason} — failing closed", file=sys.stderr)
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+        sys.exit(2)
 
 
 def _decide_command(
@@ -6213,11 +6287,7 @@ def main() -> None:
     config = load_config(_resolve_rules_dir())
     config["safety"] = load_safety_config()
 
-    try:
-        input_data = json.load(sys.stdin)
-    except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON input: {e}", file=sys.stderr)
-        sys.exit(1)
+    input_data = read_hook_input()
 
     # Session attribution for audit rows (#940): hand the parsed payload to
     # audit_logger so every log_* call carries the conversation id. Fail-open.
@@ -6253,4 +6323,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_hook_guarded(main)

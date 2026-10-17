@@ -1426,7 +1426,7 @@ agentwire safety check "your command here"
 
 ### Hook Timeout
 
-Hooks have a 5-second timeout. If your rule files are very large or patterns are complex, you may hit it.
+Hooks are registered with `timeout: 30` and the scan decides within 10 s (see *A hook that times out FAILS OPEN*). A hook registered without a timeout was measured to run for more than 100 s before the harness kills it. If your rule files are very large or patterns are complex, you may hit the scan budget and get an ask.
 
 **Solution**: Optimize regex patterns
 ```yaml
@@ -1541,18 +1541,43 @@ The scan therefore has a budget that fails **closed** (`check_command`):
 The verdicts are `unverifiable` asks: bypassPermissions/auto do not demote
 them, an unattended run blocks them, and the message names the cause. Limits
 come from the audit log of real commands (7.7 k rows: longest command 28.9 KB,
-longest line 2.9 KB), leaving ~9x / ~11x headroom. Hook registration now writes
-`timeout: 30` (`HOOK_TIMEOUT_SECONDS`); the 10 s scan deadline sits well inside
-it. Registrations written before this change carry no timeout (the harness
-default applies) and are not rewritten — the scan deadline does not depend on
-the registered value.
+longest line 2.9 KB), leaving ~9x / ~11x headroom. The cap counts PHYSICAL
+lines: backslash-continued lines are not joined, so 240 K of continued lines is
+scanned and bounded by the clock alone.
+
+**Every hook entrypoint fails closed.** A hook that crashes exits 1, which the
+harness treats as non-blocking. `read_hook_input` / `run_hook_guarded` (shared
+by all five hooks) turn malformed or oversized (> 64 M chars) stdin, a
+non-object payload, `RecursionError`, an escaped alarm and any other exception
+into exit 2 with a reason. The MCP hook additionally walks arguments
+iteratively, screens each distinct string once, and runs the screening under
+the same 10 s deadline (over it: an unverifiable `ask`, id `core.scan-budget`).
+Edit/write/read never scan `content` / `old_string` / `new_string` (50 MB
+payloads pass in ~0.1 s); only the path is checked.
+
+**Timeouts.** Hook registration writes `timeout: 30` (`HOOK_TIMEOUT_SECONDS`).
+`agentwire hooks install` UPDATES the timeout on existing agentwire-owned
+entries and `agentwire doctor` flags `[!!]` any registered matcher without it.
+A hook registered with NO timeout was measured not to be killed at 100 s, so
+the harness default is > 100 s, far above the 10 s scan deadline.
+
+**Re-measuring on a new Claude Code version.** In an empty temp dir, put a
+project-local `.claude/settings.local.json` registering a PreToolUse Bash hook
+(`"timeout": 2`, script sleeps 8 then exits 0; variant: no `timeout`, sleeps
+100 then exits 2), run `claude -p "run exactly this bash command: touch
+SENTINEL" --permission-mode bypassPermissions --allowedTools Bash`, and check
+whether `SENTINEL` exists. A control hook that exits 2 at once must block.
+
+Speed: the protected/zero-access path patterns are prefiltered on the path's
+required literal and `_PATH_ODDITY` is anchored at token starts. This makes
+long UNQUOTED tokens linear (10 k chars: 9.8 s -> 0.2 s) and plain quoted
+strings linear (30 k chars: 0.2 s). Quoted strings full of path-like text are
+still super-linear (30 K of `a/b/` takes ~2 s, 30 K of `../` ~8 s); those,
+and runs of `\` or `{a,`, are bounded by the clock budget rather than fixed.
 
 Declared residuals: the clock budget needs `SIGALRM` on the main thread (every
 hook process; not a portal worker thread or Windows, where only the size gate
-applies); the edit/write/read/mcp hooks have no scan deadline (their inputs are
-paths, not free text); some shapes (long runs of `../`, `\`, `{a,`) are still
-super-linear below the line cap and are bounded by the clock budget rather than
-fixed.
+applies).
 
 ### Defense in Depth
 

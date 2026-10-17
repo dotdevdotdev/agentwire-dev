@@ -287,7 +287,7 @@ class TestBashHookSubprocess:
         proc = self._run({"tool_name": "Bash", "tool_input": {"command": ""}})
         assert proc.returncode == 0
 
-    def test_invalid_json_exits_1(self):
+    def test_invalid_json_blocks_with_exit_2(self):
         proc = subprocess.run(
             [sys.executable, str(self.HOOK)],
             input="not json {{{",
@@ -296,8 +296,9 @@ class TestBashHookSubprocess:
             env={"PATH": "/usr/bin:/bin"},
             timeout=10,
         )
-        assert proc.returncode == 1
-        assert "Invalid JSON" in proc.stderr or "Error" in proc.stderr
+        # exit 1 is NON-blocking to the harness (fail-open); a bad payload must block (#1108)
+        assert proc.returncode == 2
+        assert "invalid JSON" in proc.stderr
 
 
 class TestUnattendedAllowlist:

@@ -99,6 +99,7 @@ def test_long_tokens_scan_in_linear_time(cfg):
     shapes = {
         "one long word": "echo " + "a" * 20_000,
         "unterminated quotes": "echo " + "'" * 20_000,
+        "long quoted string": "echo '" + "x" * 20_000 + "'",
         "long word then slash": "echo " + "a" * 20_000 + "/x",
     }
     slow = {}
@@ -126,14 +127,50 @@ def test_path_prefilter_keeps_every_spelling_of_a_protected_path_blocked(cfg):
     assert not wrongly_allowed, wrongly_allowed
 
 
-def test_registration_writes_an_explicit_timeout_above_the_scan_deadline(tmp_path, monkeypatch):
+def test_registration_sets_the_timeout_on_new_and_existing_entries(tmp_path, monkeypatch):
     import json
 
     from agentwire import safety_commands
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_file = tmp_path / ".claude" / "settings.json"
+
+    def timeouts():
+        pre = json.loads(settings_file.read_text())["hooks"]["PreToolUse"]
+        return {h.get("timeout") for entry in pre for h in entry["hooks"]}
+
     safety_commands.register_damage_control_in_settings()
-    pre = json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]["PreToolUse"]
-    timeouts = {h.get("timeout") for entry in pre for h in entry["hooks"]}
-    assert timeouts == {core.HOOK_TIMEOUT_SECONDS}
+    assert timeouts() == {core.HOOK_TIMEOUT_SECONDS}
     assert core.SCAN_DEADLINE_SECONDS < core.HOOK_TIMEOUT_SECONDS
+    assert safety_commands.damage_control_timeout_drift() == []
+
+    # a pre-#1108 install: owned entries registered with no timeout (plus a foreign hook that must be left alone)
+    settings = json.loads(settings_file.read_text())
+    for entry in settings["hooks"]["PreToolUse"]:
+        for h in entry["hooks"]:
+            h.pop("timeout")
+    settings["hooks"]["PreToolUse"].append(
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "~/other-hook.sh"}]}
+    )
+    settings_file.write_text(json.dumps(settings))
+    assert set(safety_commands.damage_control_timeout_drift()) == set(safety_commands.DAMAGE_CONTROL_MATCHERS)
+
+    updated = safety_commands.register_damage_control_in_settings()
+    assert updated == len(safety_commands.DAMAGE_CONTROL_MATCHERS)
+    assert safety_commands.damage_control_timeout_drift() == []
+    foreign = [
+        h for e in json.loads(settings_file.read_text())["hooks"]["PreToolUse"] for h in e["hooks"]
+        if h["command"] == "~/other-hook.sh"
+    ]
+    assert foreign == [{"type": "command", "command": "~/other-hook.sh"}]
+    assert safety_commands.register_damage_control_in_settings() == 0
+
+
+def test_the_alarm_interrupts_a_real_pathological_scan(cfg):
+    """No stub: a scan that takes seconds is cut off at the deadline and asks."""
+    pathological = "echo '" + "../" * 10_000 + "'"  # ~8 s unbounded
+    t = time.perf_counter()
+    result = check_command(pathological, cfg, deadline_seconds=0.3)
+    elapsed = time.perf_counter() - t
+    assert (result["decision"], result.get("id")) == ("ask", "core.scan-budget")
+    assert elapsed < 3, elapsed
