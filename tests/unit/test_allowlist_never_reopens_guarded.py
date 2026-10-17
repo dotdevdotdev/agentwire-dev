@@ -111,3 +111,97 @@ def test_scratch_work_in_tmp_is_still_allowed(cfg, monkeypatch):
     ]
     assert not wrongly_blocked, wrongly_blocked
     assert check_path("/tmp/work/out.log", cfg)[0] is False
+
+
+# ---- test-gap pins (round-2 review): no-delete / read-only / anchoring helpers ----
+
+NO_DELETE_TARGETS = [
+    "~/.claude/CLAUDE.md",
+    "~/.agentwire/sessions/s1/metadata.json",
+    "~/.claude/projects/p1",
+]
+# ``find -delete`` and ``mv`` away are not in this sweep: ``mv`` is not a delete
+# verb to the no-delete ladder at ANY home (HOME-independent allow), and
+# ``find -delete`` is re-permitted by the bypassable-rule override at HOME=/tmp
+# (filed as its own issue — that override still takes the unfiltered allowlist).
+DELETE_SHAPES = ["rm @T", "rmdir @T", "unlink @T", "rm -r @T"]
+READ_ONLY_TARGETS = ["~/.bashrc", "~/.zshrc", "~/.bash_history"]
+WRITE_SHAPES = ["echo x >> @T", "tee @T < /dev/null", "sed -i s/a/b/ @T"]
+
+
+def test_no_delete_set_is_blocked_for_every_delete_verb_wherever_home_is(cfg, tmp_path, monkeypatch):
+    bad = []
+    for home in _homes(tmp_path):
+        monkeypatch.setenv("HOME", home)
+        for spelling in NO_DELETE_TARGETS:
+            target = os.path.expanduser(spelling)
+            for shape in DELETE_SHAPES:
+                command = shape.replace("@T", target)
+                if check_command(command, cfg)["decision"] != "block":
+                    bad.append((home, command))
+    assert not bad, bad[:25]
+
+
+def test_read_only_set_is_blocked_for_bash_writers_wherever_home_is(cfg, tmp_path, monkeypatch):
+    bad = []
+    for home in _homes(tmp_path):
+        monkeypatch.setenv("HOME", home)
+        for spelling in READ_ONLY_TARGETS:
+            target = os.path.expanduser(spelling)
+            for shape in WRITE_SHAPES:
+                command = shape.replace("@T", target)
+                if check_command(command, cfg)["decision"] != "block":
+                    bad.append((home, command))
+            if not check_path(target, cfg)[0]:  # the Edit/Write half of the read-only guard
+                bad.append((home, "edit " + target))
+    assert not bad, bad[:25]
+
+
+def test_literal_entry_naming_a_guarded_file_still_repermits(cfg, monkeypatch):
+    """False-block side: a human's entry that NAMES the file (or scopes a guarded directory) works."""
+    bad = []
+    for home in ("/Users/x", "/tmp/x"):
+        monkeypatch.setenv("HOME", home)
+        secret = os.path.expanduser(SECRETS[0])
+        lock = f"{home}/proj/poetry.lock"
+        c = dict(cfg)
+        c["allowedPaths"] = list(cfg.get("allowedPaths", [])) + [
+            {"path": secret, "allow": {"read"}},
+            {"path": lock, "allow": {"edit", "write"}},
+        ]
+        if check_read_path(secret, c)[0]:
+            bad.append((home, "literal secret entry ignored"))
+        if check_path(lock, c)[0]:
+            bad.append((home, "literal read-only entry ignored"))
+        if not check_path(f"{home}/proj/yarn.lock", c)[0]:
+            bad.append((home, "literal entry widened to a sibling"))
+        # directory-pattern clause: the shipped */dist/* entry re-permits inside a guarded dist/
+        if check_path(f"{home}/proj/dist/app.js", c)[0]:
+            bad.append((home, "dir-pattern entry ignored"))
+        if check_command(f"rm {home}/proj/dist/old.whl", c)["decision"] == "block":
+            bad.append((home, "dir-pattern delete entry ignored"))
+    assert not bad, bad
+
+
+def test_anchor_home_rewrites_by_component_not_by_prefix(monkeypatch):
+    from agentwire.safety import _core
+
+    monkeypatch.setenv("HOME", "/tmp/x")
+    # a sibling whose name merely STARTS with the home string is not below it
+    assert _core._anchor_home("/tmp/xyz/.agentwire/a") == "/tmp/xyz/.agentwire/a"
+    assert _core._anchor_home("/tmp/x/.agentwire/a") == _core._CANONICAL_HOME + "/.agentwire/a"
+    assert _core._anchor_home("/tmp/*") == "/tmp/*"
+
+
+def test_anchor_home_resolves_a_symlinked_home(tmp_path, monkeypatch):
+    """An entry spelled with the RESOLVED home still anchors when $HOME is the symlink."""
+    from agentwire.safety import _core
+
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    monkeypatch.setenv("HOME", str(link))
+    _core._live_homes.cache_clear()
+    assert _core._anchor_home(f"{real.resolve()}/.agentwire/*") == _core._CANONICAL_HOME + "/.agentwire/*"
+    assert _core._anchor_home(f"{link}/.agentwire/*") == _core._CANONICAL_HOME + "/.agentwire/*"
