@@ -134,45 +134,76 @@ lands in a durable inbox and is injected only at a safe boundary.
    of them with no dead-letter and no email:
    [The #689 heal cliff](heal-line-count-cliff.md) (#930).
 
-   **The heal is window-aware (#1105).** The same test had a second blind spot:
-   the box *scrolls*, so a ~400-char paste on a 30-column pane renders only its
-   **tail**, and "the whole render is in the box" is false for exactly the
-   long messages most likely to hit a swallowed Enter. The drain read its own
-   landed paste as a human draft — `box_not_empty`, penalized every tick, the
-   text never submitted (reproduced in a real 30-column Claude pane: attempts
-   0→1→2, text sitting in the box). `inbox._stuck_in_box` now also accepts a
-   box that is a **suffix** of the oldest-first batch the drain would have
-   pasted (≥ `MIN_BOX_FRAGMENT` chars; the longest matching prefix wins, so a
-   window of message 2 never unlinks message 1's later neighbour). A short
-   foreign draft, or text that merely occurs inside our message but is not its
-   tail, still reads as a human's and is never given an Enter — the clobber
-   protection is unchanged.
+   **The heal is window-aware, and narrow on purpose (#1105).** The same test
+   had a second blind spot: the box *scrolls*, so a ~400-char paste on a
+   30-column pane renders only its **tail**, and "the whole render is in the
+   box" is false for exactly the long messages most likely to hit a swallowed
+   Enter. The drain read its own landed paste as a human draft —
+   `box_not_empty`, penalized every tick, the text never submitted (reproduced
+   in a real 30-column Claude pane: attempts 0→1→2). A window is now accepted,
+   but Enter is pressed only into a box that is **provably our paste**.
+   `inbox._stuck_in_box` requires ALL of: **(1) provenance** — the entry
+   carries `pasted_ts`, stamped by the drain *before* it pastes, within the last
+   10 minutes (`PASTE_HEAL_WINDOW_MS`); a box that merely resembles a pending
+   message but was never pasted by that entry is a draft. **(2)** the box is a
+   **suffix** of the oldest-first batch the drain would have pasted, at least
+   `MIN_BOX_FRAGMENT` (80) non-space chars, **containing the final `⟨#id⟩`
+   token** (or the whole render is in the box). **What a false accept now
+   takes:** a human must have *replaced* our landed paste with text that
+   reproduces ≥80 chars of its tail including the unique id token, inside the
+   10-minute window — i.e. retyped our message from memory. Quoting it
+   without the token, quoting it after the window, or quoting a message the
+   drain never pasted all stay foreign. (The earlier "clobber protection is
+   unchanged" claim was wrong for the quoted-tail shape; this is the narrowed
+   guarantee.)
+
+   **The heal confirms only on positive proof, and re-checks before every
+   Enter.** `session_ready.heal_submit` re-reads the box immediately before
+   each press and presses only while it still holds our text; if it was cleared
+   or replaced it stops (`box_changed`: nothing pressed, entry stays pending,
+   penalized). "The box no longer holds our text" never confirms — a human
+   clearing the box looks identical. After OUR press it confirms only when the
+   message appears on scrollback outside the box. No echo → `unconfirmed`: the
+   entry stays pending (`stuck_in_box`). Residual: a message submitted into a
+   busy agent that queues it without any echo stays pending until the echo
+   appears; the `queued_placeholder` gate keeps the drain from re-pasting while
+   the queue indicator shows. Heals are **bounded**: `stuck_in_box` and
+   `pasted_unsubmitted` stay no-penalty for `MAX_HEALS` (10) attempts, then the
+   entry dead-letters with that reason (load-bearing kinds email the owner).
+   The genuinely-busy reasons (`target_busy`, `queued_placeholder`,
+   `box_static`, `target_parked`) remain unbounded.
 
    **Dedup survives Claude's echo elision (#1105).** Claude Code echoes a long
    submitted prompt into the transcript with its middle elided (head rows, a
    truncated fragment, then the tail), so the full text of a long message is
    never on scrollback even though it was delivered — and an unmatched
    delivered message gets re-pasted. `message_on_scrollback` therefore also
-   accepts the trailing `⟨#id⟩` token (unique per message / `send` attempt)
-   **outside the box**. A token only in the box still reads as not delivered.
+   accepts the message's **head** (first 24 non-space chars: for an inbox
+   message `[MSG from <sender> · <kind>]` plus the first word, so sender and
+   kind discriminate) followed, within one message's length, by its trailing
+   `⟨#id⟩` token, **outside the box**. A bare token — in a quoted line,
+   `msg inbox`/`msg dead` output, another message's text, or the box — does not
+   count. A false accept needs a pane line reproducing this message's head and
+   its token.
 
    **Failed deliveries say where the text is (#1105).** `safe_deliver` no
    longer returns `delivery_unverified` for everything. After a failed
    `send_verified` it re-reads the box: `pasted_unsubmitted` (our text is in the
-   box, Enter never took — **no-penalty**; the next drain submits it Enter-only,
-   never re-pastes), `box_not_empty` (a foreign draft owns the box; nothing was
-   pasted — this is also what `flush --force` reports instead of pasting over a
-   draft), or `delivery_unverified` (neither provable). `flush --force` still
-   bypasses only the *pre-paste* empty-box gate; its paste goes through the same
-   submit loop, and if Enter never takes it says `pasted_unsubmitted` and leaves
-   the heal to the next drain (≤60 s) rather than backspacing text that may by
-   then include a human's keystrokes.
+   box, Enter never took — no-penalty but bounded as above; the next drain
+   submits it Enter-only, never re-pastes), `box_not_empty` (a foreign draft
+   owns the box; nothing was pasted — this is also what `flush --force` reports
+   instead of pasting over a draft), or `delivery_unverified` (neither
+   provable). `flush --force` still bypasses only the *pre-paste* empty-box
+   gate; if its Enter never takes it says `pasted_unsubmitted` and leaves the
+   heal to the next drain (≤60 s) rather than backspacing text that may by then
+   include a human's keystrokes.
 
-   **Every deferral is visible.** Each pending message carries its last
-   deferral `reason`, `reason_ts` and a short `detail` (what the box held),
-   stamped on penalized *and* no-penalty deferrals, and `msg inbox` prints it
-   (`last deferral: box_not_empty at 2026-10-16 19:41:02 — box holds: '…'`);
-   `--json` has the fields. Events also log `detail`.
+   **Every deferral is visible — without leaking drafts.** Each pending message
+   carries its last deferral `reason`, `reason_ts` and a `detail`, stamped on
+   penalized and no-penalty deferrals, and `msg inbox` prints it. `detail`
+   never contains box text (the box may hold a human's draft): a foreign box is
+   recorded as `foreign_draft len=N sha=xxxxxxxx`. `--json` has the fields
+   (plus `pasted_ts`, `heals`).
 
    As a last-resort
    backstop, the watchdog pane-sweep flushes a bare Enter on any pane —
