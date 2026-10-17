@@ -1624,6 +1624,54 @@ Declared residuals: the clock budget needs `SIGALRM` on the main thread (every
 hook process; not a portal worker thread or Windows, where only the size gate
 applies).
 
+### A command inside a compound body is judged like the same command at top level (#1112)
+
+`case x in a|b) rm -rf /tmp/x;; esac` was allowed while the bare `rm -rf /tmp/x`
+was blocked, and the same hole covered `if`/`while`/`for`/`{ }`/`( )`/function
+bodies, `!`, `coproc`: an anchored rule matches only at a command position, and
+the position chain stopped at the first non-wrapper word (`case`, `then`, `{`,
+`a|b)`), and the ssh/global-option/concealment walkers each had their own copy of
+that blind spot. **Guaranteed now, in ONE place:** `strip_command_openers` (and
+the plain-word twin `strip_command_opener_words`) drops compound syntax from the
+front of every command before any walker runs, so the body command is seen
+exactly as at top level. It follows bash: the keywords (`if then else elif while
+until do ! time coproc function`) and `{` are reserved only as WHOLE words
+(`{rm`, `do{` stay plain words), while `(` and `)` always break words, so
+`(rm`, `then(`, `!(`, `f(){`, `f ( ) {`, `a)rm` open a command position glued or
+spaced. A `case` header is dropped through the first `)` after `in`, and the
+stripper keeps stripping while the remainder still starts with a `)`-bearing word,
+so a pattern holding its own parens (`"a)b"`, `[)]`, `a\\)`, `@(a|b)`, `$y`, `${y:-a)b}`)
+never leaves the body hidden. This is deliberately CONSERVATIVE: tokens arrive
+with quotes already resolved, so the first `)` is taken as the terminator and a
+harmless body may be over-read, never a destructive one under-read. A segment that
+opens with a command substitution (`$(date)`, a backtick) only counts a `)` that
+takes the paren depth negative. Function headers in every spacing (`f()`, `f ()`,
+`f ( )`, `f(  )`, `function f`, `function f ()`, newline before `{`) and `time -p`
+options are dropped too. Pattern words are never match starts, so a verb in an
+arm pattern is data: `case x in 'rm -rf') echo hi;; esac` is ALLOWED.
+
+Wired into: the masked-entry builder (anchored rules, ssh and git-config payloads,
+global-option stripping), `ambiguity_conceals_verb`, and `_feed_words` (producer
+and consumer of piped `echo`, heredoc and here-string feeds to ssh/at/shell).
+`_CD_RE` (directory tracking for control-plane writers) is a regex over raw text,
+so it carries the same opener list plus `time`/`nohup`/`env`/`sudo`/`VAR=1`
+prefixes. `command_scope_dirs` (the unattended grant evaluator) and
+`_parse_rm_command` REFUSE any segment that starts with compound syntax, because
+a `cd` behind `then`/`do`/`!` cannot be modelled. Not wired because nothing can
+observe it: `_stage_reads_program` and the prose-blanking runner check (the
+earlier wiring there was deleted; removing it changed no decision).
+
+Pinned by a differential (command x 70+ wrappers incl. the full pattern-form
+sweep, decision equal to top level, in all four kill-switch x unattended states)
+in `tests/unit/test_compound_command_positions.py`, plus must-allow controls and
+exact-shape pins for the stripper.
+
+**Declared residuals:** a glob like `[a-z]*` in the same command as a pipe into a
+shell can expand onto a control-plane name (`echo [a-z]*; echo hi | sh` blocks at
+top level too; false-block direction, not wrapper-specific). A substitution in a
+case pattern is ask-tier, never allowed. `<(rm -rf x)`, `sh <<< 'rm -rf /x'` and a
+heredoc into bash allow for non-control-plane verbs on main too (pre-existing).
+
 ### Defense in Depth
 
 Damage Control is ONE layer:
