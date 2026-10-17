@@ -238,3 +238,46 @@ def test_walker_without_quote_info_skips_parens_inside_spans():
     assert not bad, bad
     # a real arm terminator after the span is still found
     assert strip_command_opener_words(["${x:-)})", "rm", "-rf"]) == ["rm", "-rf"]
+
+
+# A `'` inside a DOUBLE-quoted `${..}` is a literal (bash and zsh); reading it as
+# a quote swallowed the closing `}"` and the commands after it (review r1).
+DQ_QUOTE_FORMS = [
+    "echo \"${{x:-'}}\"; {c}; echo \"'}}\"",
+    "echo \"${{x:-'}}\"\n{c}\necho \"'}}\"",
+    "if true; then echo \"${{x:-'}}\"; {c}; fi",
+    "echo \"${{x:-\"'\"}}\"; {c}",
+    "echo \"${{x:-'}}\" && {c}",
+    "A=\"${{x:-'}}\" {c}",
+]
+
+
+def test_single_quote_inside_double_quoted_expansion_is_literal(config):
+    top = {c: _decision(config, c) for c in DANGEROUS}
+    bad = [
+        (form, c, top[c], got)
+        for c in DANGEROUS
+        for form in DQ_QUOTE_FORMS
+        if (got := _decision(config, form.format(c=c))) != top[c]
+    ]
+    assert not bad, bad
+
+
+def test_unquoted_expansion_still_quotes_a_single_quote():
+    subs = _scan_masked_tokens("A=${x:-'}'} rm -rf /tmp/x")
+    assert len(subs) == 1 and [t[0] for t in subs[0]][1:] == ["rm", "-rf", "/tmp/x"], subs
+
+
+def test_flag_before_operand_pins_the_tokenizer_half(config):
+    """Verbs whose rule is order-insensitive: the construct is the only variable."""
+    bad = [
+        s
+        for s in (
+            "A=${x:-)} chmod -R 777 /",
+            "chmod -R ${x:-)} 777 /",
+            "A=${x:-;} dd if=/dev/zero of=/dev/sda",
+            "rm -rf ${x:-)} /tmp/x",
+        )
+        if _decision(config, s) == "allow"
+    ]
+    assert not bad, bad

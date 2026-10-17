@@ -4750,14 +4750,20 @@ def _subst_end(s: str, i: int) -> int:
     return -1 if depth else j
 
 
-def _param_expansion_end(s: str, i: int) -> int:
-    """Index past the ``${...}`` opened at ``s[i]``, or -1 (quote/escape/nest aware)."""
+def _param_expansion_end(s: str, i: int, in_dquote: bool = False) -> int:
+    """Index past the ``${...}`` opened at ``s[i]``, or -1 (quote/escape/nest aware).
+
+    ``in_dquote`` is the context: inside ``"${x:-'}"`` a single quote is a
+    LITERAL (bash and zsh agree), so only ``"`` opens a nested quote there;
+    reading it as a quote swallowed the ``}"`` and the commands after it as
+    data. Unquoted, ``'`` quotes in both shells.
+    """
     depth, j, n = 1, i + 2, len(s)
     while j < n and depth:
         ch = s[j]
         if ch == "\\":
             j += 2
-        elif ch in "'\"":
+        elif ch == '"' or (ch == "'" and not in_dquote):
             j = _quoted_end(s, j)
             if j == -1:
                 return -1
@@ -4996,8 +5002,8 @@ def _scan_masked_tokens(command: str) -> List[List[Tuple[str, bool, bool]]]:
             j = i + 1
             out: List[str] = []
             while j < n and command[j] != '"':
-                if command.startswith("${", j) and _param_expansion_end(command, j) != -1:
-                    end = _param_expansion_end(command, j)
+                if command.startswith("${", j) and _param_expansion_end(command, j, True) != -1:
+                    end = _param_expansion_end(command, j, True)
                     out.append(command[j:end])
                     j = end
                 elif command[j] == "\\" and j + 1 < n and command[j + 1] in '"\\$`':
