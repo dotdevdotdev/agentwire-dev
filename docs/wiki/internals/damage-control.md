@@ -1570,9 +1570,20 @@ delivered, so the exit becomes 2; a dead stderr is ignored.
 read first (`kill_switch_off`) and turns the budget off with everything else: no
 size gate, and a scan or MCP screen that outruns the deadline is allowed
 (disabled), not asked, so a disabled hook no longer stalls unattended tasks
-with big commands. What runs BEFORE the switch by design is unchanged: the
-protected control plane (and protected commands) still block while disabled,
-under the 10 s deadline. A corrupt or unreadable `damagecontrol.yml` is the
+with big commands. The control plane is exempt from that: what runs BEFORE the
+switch by design (protected paths and commands) still blocks while disabled.
+The guarantee for a PADDED command is "refused or asked", never allowed: when
+the deadline fires, `mentions_control_plane` (a linear, regex-free containment
+test over every protected path's literal, its basename, and its `$HOME`/`~`
+spellings) decides. If the command names a protected path, only the lines that
+name it are re-checked under their own 2 s deadline: a positive write is a
+BLOCK, anything unconcluded is the unverifiable `core.scan-budget` ask (bypass
+cannot demote it, unattended blocks it), in either switch state. If it names
+none, a disabled hook allows and an enabled one asks. The check over-matches by
+design (a bare `settings.json` mention counts), which only costs an ask once
+the budget is already spent; a padded read of a protected path therefore asks.
+The MCP over-budget path follows the same rule: a protected path anywhere in
+the arguments asks even with the switch off. A corrupt or unreadable `damagecontrol.yml` is the
 existing fail-secure behavior: `enabled` stays true.
 
 **Timeouts.** Hook registration writes `timeout: 30` (`HOOK_TIMEOUT_SECONDS`).
@@ -1602,7 +1613,9 @@ still super-linear (30 K of `a/b/` takes ~2 s, a quoted `../` run ~8.5 s); those
 and runs of `\` or `{a,`, are bounded by the clock budget rather than fixed.
 A writer verb next to a protected path stays blocked with a long quoted string
 before it, after it, or holding the path, balanced or not (pinned; a differential
-against main over that slice found no decision differences).
+against main over that slice found no decision differences). Known allow, same
+as main: a writer AND the path both inside ONE quoted string (`ln`, `curl -o`)
+is data in a quote, not a command.
 
 The read hook has no deadline but is linear in the path length (a 20 MB path
 takes ~4 s); edit/write scan only the path.

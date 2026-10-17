@@ -170,7 +170,7 @@ def test_the_alarm_interrupts_a_real_pathological_scan(cfg):
     """No stub: a scan that takes seconds is cut off at the deadline and asks."""
     pathological = "echo '" + "../" * 10_000 + "'"  # ~8 s unbounded
     t = time.perf_counter()
-    result = check_command(pathological, cfg, deadline_seconds=0.3)
+    result = check_command(pathological, cfg, deadline_seconds=0.05)
     elapsed = time.perf_counter() - t
     assert (result["decision"], result.get("id")) == ("ask", "core.scan-budget")
     assert elapsed < 3, elapsed
@@ -185,11 +185,52 @@ def test_the_kill_switch_turns_the_budget_off_too(cfg):
 
     # a scan that outruns the clock is allowed (disabled), not asked
     slow = "echo '" + "../" * 10_000 + "'"
-    assert check_command(slow, cfg, deadline_seconds=0.3)["id"] == "core.scan-budget"
-    assert check_command(slow, off, deadline_seconds=0.3)["decision"] == "allow"
+    assert check_command(slow, cfg, deadline_seconds=0.05)["id"] == "core.scan-budget"
+    assert check_command(slow, off, deadline_seconds=0.05)["decision"] == "allow"
 
     # the control plane precedes the switch by design: it still blocks
     assert check_command("echo x > ~/.agentwire/damagecontrol.yml", off)["decision"] == "block"
+
+
+PAD_LINE = "cat " + "../" * 10_000
+
+
+def _padded(write_line, before=3, after=0):
+    return "\n".join([PAD_LINE] * before + [write_line] + [PAD_LINE] * after)
+
+
+def test_a_padded_control_plane_write_is_never_allowed_in_either_switch_state(cfg):
+    """The deadline firing must not turn a control-plane write into an allow."""
+    on = cfg
+    off = {**cfg, "safety": {"enabled": False, "disabled_rules": []}}
+    writes = {
+        "tilde": "echo x > ~/.agentwire/damagecontrol.yml",
+        "home-var": "echo x > $HOME/.agentwire/damagecontrol.yml",
+        "dot-segment": "echo x > ~/.agentwire/./damagecontrol.yml",
+        "relative-after-cd": "cd ~/.agentwire && echo x > damagecontrol.yml",
+    }
+    layouts = {"before": (3, 0), "both": (2, 2), "eight": (8, 0)}
+    allowed = []
+    for wname, write in writes.items():
+        for lname, (before, after) in layouts.items():
+            cmd = _padded(write, before, after)
+            for sname, conf in (("on", on), ("off", off)):
+                r = check_command(cmd, conf, deadline_seconds=0.05)
+                if r["decision"] == "allow":
+                    allowed.append((wname, lname, sname))
+    assert not allowed, allowed
+    # a positively identified write is a BLOCK, not merely an ask
+    assert check_command(_padded(writes["tilde"]), on, deadline_seconds=0.05)["decision"] == "block"
+
+
+def test_padding_still_allows_harmless_commands_with_the_switch_off_and_decides_reads(cfg):
+    off = {**cfg, "safety": {"enabled": False, "disabled_rules": []}}
+    harmless = _padded("echo hello")
+    assert check_command(harmless, off, deadline_seconds=0.05)["decision"] == "allow"
+    assert check_command(harmless, cfg, deadline_seconds=0.05)["decision"] == "ask"
+    padded_read = _padded("cat ~/.agentwire/damagecontrol.yml")
+    # a padded read of a protected path asks (over-matching is accepted once the budget is spent)
+    assert check_command(padded_read, off, deadline_seconds=0.05)["decision"] == "ask"
 
 
 def test_a_corrupt_damagecontrol_file_keeps_damage_control_on(tmp_path):

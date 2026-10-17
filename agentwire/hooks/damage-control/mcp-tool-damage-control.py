@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "5ec4abadb2845e75da54bf835cd0508fa9e2061f1b3848fe6b9e717be2d322b7", "generated_at": "2026-10-17T02:39:10Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "d1e82a5cc8d23a4500da992b7de7f264d81ff5e5abc6202a27b17f10cf4b84ab", "generated_at": "2026-10-17T04:28:22Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -5716,6 +5716,68 @@ def kill_switch_off(config: Dict[str, Any]) -> bool:
     return isinstance(safety_cfg, dict) and safety_cfg.get("enabled", True) is False
 
 
+CONTROL_PLANE_DEADLINE_SECONDS = 2
+
+
+@functools.lru_cache(maxsize=1)
+def _control_plane_literals() -> Tuple[str, ...]:
+    """Loose casefolded literals of every protected control-plane path.
+
+    Looser than :func:`_path_literals` on purpose: the ``~/`` prefix is dropped
+    (so ``$HOME/...`` matches) and a plain path also contributes its basename (so
+    ``~/.agentwire/./x`` and a bare ``x`` after a ``cd`` match). Over-matching
+    only costs an ask when the scan already ran out of budget.
+    """
+    lits = set()
+    for path in PROTECTED_CONTROL_PLANE_PATHS:
+        stripped = path[2:] if path.startswith("~/") else path
+        if is_glob_pattern(stripped):
+            segs = [x for x in re.split(r"[*?\[\]]", stripped) if x]
+            if segs:
+                lits.add(max(segs, key=len).casefold())
+        else:
+            lits.add(stripped.casefold())
+            lits.add(posixpath.basename(stripped).casefold())
+    return tuple(sorted(lits))
+
+
+def mentions_control_plane(text: str) -> bool:
+    """O(n) containment test: does ``text`` name any protected control-plane path?"""
+    folded = text.casefold()
+    return any(lit in folded for lit in _control_plane_literals())
+
+
+def _control_plane_verdict_on_timeout(
+    command: str, config: Dict[str, Any], deadline_seconds: float
+) -> Dict[str, Any]:
+    """The scan ran out of budget: never allow a command that names the control plane.
+
+    Only the lines that name a protected path are re-checked (linear split), under
+    their own short deadline, so padding elsewhere cannot hide a write. A positive
+    write classification is a BLOCK; anything unconcluded is the unverifiable ask.
+    """
+    lines = [ln for ln in command.split("\n") if mentions_control_plane(ln)]
+    try:
+        with scan_deadline(CONTROL_PLANE_DEADLINE_SECONDS):
+            blocked, reason = check_protected_command("\n".join(lines), load_allowed_paths(config))
+    except ScanBudgetExceeded:
+        blocked, reason = False, ""
+    if blocked:
+        return {
+            "decision": "block",
+            "reason": reason,
+            "pattern": "protectedControlPlane",
+            "command": command,
+            "protected": True,
+        }
+    return _budget_refusal(
+        command,
+        f"Command scan exceeded its {deadline_seconds:g}s budget and names a protected "
+        "control-plane path — too slow to analyze safely",
+        "core.scan-budget",
+    )
+
+
 def check_command(
     command: str,
     config: Dict[str, Any],
@@ -5726,7 +5788,8 @@ def check_command(
 
     The kill switch is read first and the budget honors it: a disabled hook has
     no size gate, and a scan that outruns the deadline is allowed (disabled),
-    not asked. The control-plane checks that precede the switch still run.
+    not asked — UNLESS the command names a protected control-plane path, which
+    the switch never exempts: that is re-checked line by line and blocked or asked.
     """
     disabled = kill_switch_off(config)
     if not disabled:
@@ -5737,6 +5800,8 @@ def check_command(
         with scan_deadline(deadline_seconds):
             return _decide_command(command, config, cwd)
     except ScanBudgetExceeded:
+        if mentions_control_plane(command):
+            return _control_plane_verdict_on_timeout(command, config, deadline_seconds)
         if disabled:
             return {
                 "decision": "allow",
@@ -6537,7 +6602,11 @@ def main() -> None:
             # Arguments too large to screen in time: fail closed (#1108) — an
             # unverifiable ask, so bypass cannot demote it and unattended blocks.
             # The kill switch turns the budget off with everything else.
-            if not kill_switch_off(config):
+            # A protected control-plane path anywhere in the arguments is never
+            # exempted by the switch.
+            if not kill_switch_off(config) or any(
+                mentions_control_plane(s) for s in _iter_string_values(tool_input)
+            ):
                 budget_exceeded = True
                 decision = "ask"
                 rule_id = "core.scan-budget"

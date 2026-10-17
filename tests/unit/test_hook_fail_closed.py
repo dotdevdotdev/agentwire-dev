@@ -240,6 +240,26 @@ def test_mcp_arguments_over_the_screening_budget_ask_unverifiably(hook_modules, 
     assert "budget" in verdict["permissionDecisionReason"]
 
 
+def test_mcp_over_budget_with_the_switch_off_asks_only_for_control_plane_paths(hook_modules, monkeypatch, capsys):
+    mcp = hook_modules["mcp"]
+
+    def over_budget(*args, **kwargs):
+        raise mcp.ScanBudgetExceeded()
+
+    monkeypatch.setattr(mcp, "_screen_tool_paths", over_budget)
+    monkeypatch.setattr(mcp, "load_safety_config", lambda: {"enabled": False, "disabled_rules": []})
+    outcomes = {}
+    for name, args in {
+        "plain": {"x": ["/tmp/a"]},
+        "control-plane": {"x": [{"deep": ["~/.agentwire/damagecontrol.yml"]}]},
+        "home-var": {"x": "$HOME/.agentwire/damagecontrol.yml"},
+    }.items():
+        capsys.readouterr()
+        code = _exit_code(mcp, _mcp_payload(args), monkeypatch)
+        outcomes[name] = (code, bool(capsys.readouterr().out))
+    assert outcomes == {"plain": (0, False), "control-plane": (0, True), "home-var": (0, True)}
+
+
 def test_mcp_string_walk_survives_deep_nesting_and_repeats(hook_modules):
     mcp = hook_modules["mcp"]
     deep = "/tmp/leaf"
