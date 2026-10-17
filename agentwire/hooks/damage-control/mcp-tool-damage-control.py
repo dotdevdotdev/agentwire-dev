@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "d1e82a5cc8d23a4500da992b7de7f264d81ff5e5abc6202a27b17f10cf4b84ab", "generated_at": "2026-10-17T04:28:22Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "b61c40443541aa281ba1ba9b6cf8fbd9c00cb296c5931bc875733cc5a6076e4c", "generated_at": "2026-10-17T12:56:30Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3418,7 +3418,7 @@ def _glob_hits(tok: str) -> List[str]:
 
 
 _CD_RE = _rx(
-    r"(?:^\s*|[;&|\n(]\s*)(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
+    r"(?:^\s*|(?:\b(?:then|do|else|elif|if|while|until|time|coproc)\b|[;&|\n(){!])\s*)(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
 )
 _REL_WORD = _rx(r"(?<![^\s;&|(<>'\"=])([A-Za-z0-9_.][^\s;&|()'\"<>]*)")
 
@@ -5000,6 +5000,24 @@ _POSITION_WRAPPERS = _WRAPPER_PREFIXES | {
 }
 
 
+# Reserved words that OPEN a command position: the word after them is the real
+# command, exactly as after a wrapper. ``if rm …``, ``then rm …``, ``{ rm; }``,
+# ``! rm`` (#1112). ``function``/``coproc`` may carry a NAME before ``{``.
+_COMPOUND_OPENERS = frozenset({
+    "if", "then", "else", "elif", "while", "until", "do", "{", "(", "!",
+    "coproc", "function",
+})
+_NAMED_OPENERS = frozenset({"coproc", "function"})
+
+
+def _is_case_pattern_end(word: str) -> bool:
+    """A word that closes a ``case`` arm's pattern list (``a)``, ``*.sh)``).
+
+    ``$(…)`` words are substitutions, never patterns.
+    """
+    return word.endswith(")") and not word.startswith("$(") and not word.startswith("`")
+
+
 def _allowed_match_spans(words: List[str]) -> List[Tuple[int, int]]:
     """Char spans of ``" ".join(words)`` where an anchored rule may START.
 
@@ -5008,22 +5026,58 @@ def _allowed_match_spans(words: List[str]) -> List[Tuple[int, int]]:
     open; the first token that is none of those is the real command — its span
     is the last allowed one. Every token in the chain is itself an allowed
     start (the wrapper might be the ruled tool, as in ``\\bsudo\\s+rm\\b``).
+
+    Compound-command syntax keeps the chain open too (#1112): a reserved word
+    that opens a command position (``then``, ``do``, ``{``…), a ``case`` header
+    up to the ``)`` that ends an arm's pattern list, and a bare ``pat)`` at
+    segment start (the arm after ``;;``/``|``, the ``f()`` of a function). The
+    skipped pattern words are NOT allowed starts, so ``rm`` in a pattern is data.
     """
     spans: List[Tuple[int, int]] = []
+    offsets: List[int] = []
     pos = 0
-    prev_was_option = False
     for word in words:
-        spans.append((pos, pos + len(word)))
+        offsets.append(pos)
         pos += len(word) + 1
+    prev_was_option = False
+    i = 0
+    while i < len(words):
+        word = words[i]
+        start = offsets[i]
+        spans.append((start, start + len(word)))
         base = word.rsplit("/", 1)[-1]
+        if word == "case":
+            # skip the subject and ``in``, then the pattern words up to ``)``
+            if "in" in words[i + 1:]:
+                j = words.index("in", i + 1) + 1
+                while j < len(words) and not _is_case_pattern_end(words[j]):
+                    j += 1
+                if j < len(words):
+                    i = j + 1
+                    prev_was_option = False
+                    continue
+            break
+        if i == 0 and _is_case_pattern_end(word):
+            prev_was_option = False
+            i += 1
+            continue
+        if word in _COMPOUND_OPENERS:
+            if word in _NAMED_OPENERS and i + 2 < len(words) and words[i + 2] == "{":
+                i += 1
+            prev_was_option = False
+            i += 1
+            continue
         if base in _POSITION_WRAPPERS or word == _MASK or _ASSIGN_TOKEN_RE.match(word):
             prev_was_option = False
+            i += 1
             continue
         if word.startswith("-"):
             prev_was_option = True
+            i += 1
             continue
         if prev_was_option or (word[:1].isdigit()):
             prev_was_option = False
+            i += 1
             continue
         break
     return spans

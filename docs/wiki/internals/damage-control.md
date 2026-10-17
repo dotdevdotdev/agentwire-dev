@@ -1624,6 +1624,29 @@ Declared residuals: the clock budget needs `SIGALRM` on the main thread (every
 hook process; not a portal worker thread or Windows, where only the size gate
 applies).
 
+### A command inside a compound body is judged like the same command at top level (#1112)
+
+`case x in a|b) rm -rf /tmp/x;; esac` was allowed while the bare `rm -rf /tmp/x`
+was blocked, and the same hole covered `if`/`while`/`for`/`{ }`/`( )`/function
+bodies, `!`, `coproc`: an anchored rule matches only at a command position, and
+the position chain (`_allowed_match_spans`) stopped at the first non-wrapper word
+(`case`, `then`, `{`, `a|b)`). **Guaranteed now:** reserved words that open a
+command position (`if then else elif while until do { ( ! coproc function`), a
+`case` header up to the `)` that ends an arm's pattern list, and a bare `pat)` at
+segment start (later arms, `f()`) keep the chain open, so the body command is
+matched exactly as at top level; the directory-tracking pass (`_CD_RE`) sees the
+directory change after the same words. Pattern words are never match starts, so a
+verb in an arm pattern is data. Pinned by a differential (command x 27 wrappers,
+decision must equal top level) in `tests/unit/test_compound_command_positions.py`,
+plus must-allow controls.
+
+**Declared residuals** (both pre-existing, both the false-BLOCK direction): a
+quoted multi-word case pattern with the verb inside (`case x in 'rm -rf x') …`)
+is read as a payload-bearing word and blocked; and a glob like `[a-z]*` in the
+same command as a pipe into a shell can expand onto a control-plane name
+(`echo [a-z]*; echo hi | sh` blocks at top level too). Neither is
+wrapper-specific.
+
 ### Defense in Depth
 
 Damage Control is ONE layer:
