@@ -639,3 +639,27 @@ class TestRunAgentwireCmdLogsNoArgvBodies:
             if "SECRET-BODY" in caplog.text or not caplog.text:
                 leaks.append((argv, caplog.text))
         assert not leaks, leaks
+
+
+class TestOtherArgvLoggersCarryNoBodies:
+    """#1113: the tmux agent wrapper and the session-create route log verb only."""
+
+    def test_tmux_wrapper_debug_lines_omit_typed_text(self, monkeypatch, caplog):
+        import logging
+
+        from agentwire.agents import tmux as tmux_mod
+
+        ran = MagicMock(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(tmux_mod.subprocess, "run", lambda *a, **k: ran)
+        agent = tmux_mod.TmuxAgent({})
+        leaks = []
+        for label, call in (
+            ("local", lambda: agent._run_local(["tmux", "send-keys", "-t", "s", "SECRET-BODY"])),
+            ("remote", lambda: agent._run_remote({"host": "h"}, "tmux send-keys -t s SECRET-BODY")),
+        ):
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG, logger=tmux_mod.logger.name):
+                call()
+            if "SECRET-BODY" in caplog.text or not caplog.text:
+                leaks.append((label, caplog.text))
+        assert not leaks, leaks

@@ -127,12 +127,23 @@ GONE_MAX_ATTEMPTS = 5
 _HEAL_REASONS = frozenset({"stuck_in_box", "pasted_unsubmitted"})
 MAX_HEALS = 10
 _UNCONFIRMED_REASON = "delivery could not be confirmed"
-# How long a "queued" verdict (agent busy, our paste in its queue) may keep an
-# exhausted heal waiting, measured from the paste: the same ~40 minutes
-# MAX_ATTEMPTS buys any other busy defer at one drain tick a minute. Past it,
-# a placeholder that never clears dead-letters as unconfirmed (owner mail for
-# load-bearing kinds) instead of holding the message in silence (#1113).
+# How long an entry may wait on a "the agent is busy with it" signal before the
+# drain stops waiting in silence: the same ~40 minutes MAX_ATTEMPTS buys any
+# other defer at one drain tick a minute, but measured in AGE (from the paste, or
+# from enqueue when never pasted), not attempts — a busy reason still never
+# penalizes, so a genuinely busy session burns nothing before the bound. It
+# governs the exhausted-heal "queued" verdict AND the normal-path
+# ``queued_placeholder`` / ``box_static`` defers, which is where an entry lands
+# once the 10-minute PASTE_HEAL_WINDOW_MS has passed. At the bound the drain
+# looks for delivery evidence first (the agent's input echo) and consumes the
+# entry if found; otherwise it dead-letters as unconfirmed (owner mail for
+# load-bearing kinds) instead of holding the message forever (#1113).
 QUEUED_WAIT_MS = MAX_ATTEMPTS * 60 * 1000
+_AGE_BOUNDED_REASONS = frozenset({"queued_placeholder", "box_static"})
+
+
+def _wait_expired(msg: Message) -> bool:
+    return _now_ms() - (msg.pasted_ts or msg.ts) >= QUEUED_WAIT_MS
 
 
 def _exhaustion_verdict(msg: Message) -> str:
@@ -955,13 +966,22 @@ def _bump_attempts(messages: list[Message], reason: str = "", detail: str = "") 
                         heals=msg.heals,
                     )
                     continue
-                if verdict == "queued" and (
-                    _now_ms() - (msg.pasted_ts or msg.ts) < QUEUED_WAIT_MS
-                ):
+                if verdict == "queued" and not _wait_expired(msg):
                     msg.heals = MAX_HEALS - 1  # busy, not wedged: keep waiting
                 else:
                     eff = _UNCONFIRMED_REASON
                     unconfirmed = True
+        expired = False
+        if eff in _AGE_BOUNDED_REASONS and _wait_expired(msg):
+            if _exhaustion_verdict(msg) == "delivered":
+                msg.path.unlink(missing_ok=True)
+                _log_event(
+                    "delivered_late", id=msg.id, to=msg.to, kind=msg.kind,
+                    heals=msg.heals,
+                )
+                continue
+            eff = _UNCONFIRMED_REASON
+            unconfirmed = expired = True
         if eff in _NO_PENALTY_REASONS and msg.heals < MAX_HEALS:
             # The recipient exists but can't take it right now — busy (long
             # command / human-queued input / wedged paste) or usage-limit parked
@@ -984,6 +1004,7 @@ def _bump_attempts(messages: list[Message], reason: str = "", detail: str = "") 
             msg.attempts >= MAX_ATTEMPTS
             or msg.gone_attempts >= GONE_MAX_ATTEMPTS
             or msg.heals >= MAX_HEALS
+            or expired
         ):
             msg.dead_ts = _now_ms()
             target = dead_dir(msg.to or "unknown") / msg.path.name

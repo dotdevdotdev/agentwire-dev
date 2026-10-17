@@ -380,8 +380,9 @@ def box_shows_message(box: str, message: str, allow_chip: bool = True) -> bool:
     return nb in nm
 
 
-def strip_input_box(capture: str) -> "str | None":
-    """*capture* with the input-box region removed, or None if no box parses.
+def _split_at_box(capture: str) -> "tuple[str, str] | None":
+    """``(outside, glyph)``: *capture* with the input-box region removed, and the
+    prompt glyph the box itself uses; None if no box parses.
 
     The #689 building block: "on scrollback" must mean *outside the input box*.
     A pasted-but-unsubmitted message renders inside the box, which is part of
@@ -411,32 +412,39 @@ def strip_input_box(capture: str) -> "str | None":
     text = "\n".join(box).lstrip()
     if text[:1] not in prompt_router._PROMPT_GLYPHS:
         return None
-    return "\n".join(lines[:rules[-2] + 1])
+    return "\n".join(lines[:rules[-2] + 1]), text[0]
+
+
+def strip_input_box(capture: str) -> "str | None":
+    """*capture* with the input-box region removed, or None if no box parses
+    (see :func:`_split_at_box`)."""
+    split = _split_at_box(capture)
+    return None if split is None else split[0]
 
 
 #: Rows that open the AGENT's side of the transcript (reply, tool result, status
-#: line). They end an input echo; the rows of a wrapped echo never start with one.
+#: line). They end an input echo; no row of an echoed message starts with one.
 _AGENT_ROW_MARKERS = "⏺⎿✻✳✶✢✽●"
 
 
-def input_echo_text(outside: str) -> str:
+def input_echo_text(outside: str, glyph: str) -> str:
     """The part of *outside* (the capture above the input box) that is the agent
-    echoing a SUBMITTED input: each prompt-glyph row at column 0 plus the rows
-    that wrap or continue it, up to the first blank row or agent row (``⏺`` reply,
-    ``⎿`` tool result, a status line). Everything else on screen is the agent's
-    own prose, tool output or a quote of one — text a never-delivered message can
-    appear in verbatim (a relay that quotes a full header + token), so it never
-    proves delivery (#1113). Indentation is deliberately not consulted: a pane
-    soft-wraps the echo at column 0 while Claude's own wrapping indents it.
+    echoing a SUBMITTED input: each row opening with *glyph* (the prompt glyph
+    the input box itself uses, at column 0) and everything after it up to the
+    first row where the AGENT's output begins (``⏺`` reply, ``⎿`` tool result,
+    spinner/status row) or the end of *outside*. Blank rows and indentation are
+    part of the echo — a multi-paragraph message echoes with blank rows, and a
+    pane soft-wraps at column 0 while Claude's own wrapping indents. Everything
+    outside an echo is the agent's own prose, tool output or a quote of one —
+    text a never-delivered message can appear in verbatim (a relay that quotes a
+    full header + token), so it never proves delivery (#1113).
     """
-    from agentwire import prompt_router
-
     echo: list[str] = []
     in_echo = False
     for ln in outside.split("\n"):
-        if ln[:1] and ln[0] in prompt_router._PROMPT_GLYPHS:
+        if ln[:1] == glyph:
             in_echo = True
-        elif not ln.strip() or ln.lstrip()[0] in _AGENT_ROW_MARKERS:
+        elif ln.strip() and ln.lstrip()[0] in _AGENT_ROW_MARKERS:
             in_echo = False
         if in_echo:
             echo.append(ln)
@@ -469,10 +477,10 @@ def message_on_scrollback(capture: str, rendered: str) -> bool:
     needle = "".join(rendered.split())
     if not needle:
         return False
-    outside = strip_input_box(capture)
-    if outside is None:
+    split = _split_at_box(capture)
+    if split is None:
         return False
-    flat = "".join(input_echo_text(outside).split())
+    flat = "".join(input_echo_text(*split).split())
     if needle in flat:
         return True
     # Claude Code ELIDES the middle of a long submitted prompt when it echoes

@@ -1614,31 +1614,6 @@ class TestHealClobberAndBounds:
         assert inbox._bump_attempts(inbox.list_messages("s"), "stuck_in_box") == 0
         assert len(inbox.list_messages("s")) == 1 and inbox.list_dead("s") == []
 
-    def test_queued_wait_is_bounded_by_the_paste_age(self, isolate, monkeypatch):
-        """#1113: a placeholder that never clears must not hold a message in
-        silence. Recent paste + placeholder keeps waiting; past QUEUED_WAIT_MS it
-        dead-letters as unconfirmed and escalates (load-bearing kind)."""
-        monkeypatch.setattr(inbox, "_exhaustion_verdict", lambda msg: "queued")
-        escalated = []
-        monkeypatch.setattr(
-            inbox, "_escalate_dead_letters", lambda batch, r: batch and escalated.append((len(batch), r)))
-        outcomes = {}
-        for label, age_ms in (("recent", 5 * 60 * 1000),
-                              ("just_inside", inbox.QUEUED_WAIT_MS - 60 * 1000),
-                              ("old", inbox.QUEUED_WAIT_MS + 1000)):
-            to = f"s-{label}"
-            m = _enq(to, self.LONG, kind="request", sender="w")[0]
-            m.heals = inbox.MAX_HEALS - 1
-            m.pasted_ts = inbox._now_ms() - age_ms
-            inbox._write_message(m.path, m)
-            inbox._bump_attempts(inbox.list_messages(to), "stuck_in_box")
-            outcomes[label] = (len(inbox.list_messages(to)), len(inbox.list_dead(to)))
-        assert outcomes == {
-            "recent": (1, 0), "just_inside": (1, 0), "old": (0, 1)}, outcomes
-        assert escalated == [(1, "delivery could not be confirmed")], escalated
-        (dead,) = inbox.list_dead("s-old")
-        assert dead.reason == "delivery could not be confirmed"
-
     def test_busy_reasons_stay_unbounded(self, isolate, monkeypatch):
         inbox.enqueue("s", "hi", sender="x")
         _patch_delivery(monkeypatch, empty=True, deliver=(False, "queued_placeholder"))
@@ -1654,6 +1629,105 @@ class TestHealClobberAndBounds:
         events = inbox.EVENTS_FILE.read_text()
         for blob in (m.detail, json.dumps(m.to_dict()), events):
             assert "private" not in blob
+
+
+class TestBusyWaitIsBoundedByAge:
+    """#1113 — the busy defers (``queued_placeholder`` / ``box_static``) cost no
+    attempts, so a placeholder that never clears used to hold an entry forever.
+    Driven through ``flush_session`` with a stub clock (the drain's real call
+    path): wait = age from the paste, or from enqueue if never pasted."""
+
+    PLACEHOLDER = "Press up to edit queued messages"
+    MINUTE = 60 * 1000
+
+    def _run(self, monkeypatch, *, pasted, box, minutes, scrollback="", kind="request"):
+        from agentwire import session_ready
+
+        t0 = inbox._now_ms()
+        now = [t0]
+        monkeypatch.setattr(inbox, "_now_ms", lambda: now[0])
+        escalated = []
+        monkeypatch.setattr(
+            inbox, "_escalate_dead_letters",
+            lambda batch, r: batch and escalated.append(([m.kind for m in batch], r)))
+        _enq("s", "report body", kind=kind, sender="w", pasted=pasted)
+        _patch_delivery(monkeypatch, empty=False, box=box)
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, p=0: scrollback)
+        state = {}
+        for minute in minutes:
+            now[0] = t0 + minute * self.MINUTE
+            inbox.flush_session("s")
+            state[minute] = (len(inbox.list_messages("s")), len(inbox.list_dead("s")))
+        return state, escalated
+
+    def test_a_placeholder_that_never_clears_dead_letters_at_the_bound(self, isolate, monkeypatch):
+        """Never pasted, and pasted-then-placeholder, and an unknown static box."""
+        bad = []
+        for label, pasted, box in (
+            ("never pasted", False, self.PLACEHOLDER),
+            ("pasted, placeholder forever", True, self.PLACEHOLDER),
+            ("pasted, static unknown box", True, "some static status widget"),
+        ):
+            inbox.purge_pending("s")
+            minutes = [0, 1, 5, 11, 20, 39, 41, 42]
+            state, escalated = self._run(monkeypatch, pasted=pasted, box=box, minutes=minutes)
+            # alive and silent before the bound, dead (and escalated) after it
+            if any(state[t] != (1, 0) for t in (0, 1, 5, 11, 20, 39)):
+                bad.append((label, "dead-lettered before the bound", state))
+            if state[41] != (0, 1):
+                bad.append((label, "not dead-lettered past the bound", state))
+            if escalated != [(["request"], "delivery could not be confirmed")]:
+                bad.append((label, "no/odd owner escalation", escalated))
+            inbox.purge_dead("s")
+        assert not bad, bad
+
+    def test_a_busy_agent_that_consumes_the_queue_at_minute_30_is_delivered(self, isolate, monkeypatch):
+        from agentwire import session_ready
+
+        t0 = inbox._now_ms()
+        now = [t0]
+        monkeypatch.setattr(inbox, "_now_ms", lambda: now[0])
+        escalated = []
+        monkeypatch.setattr(inbox, "_escalate_dead_letters", lambda b, r: b and escalated.append(r))
+        m = _enq("s", "report body", kind="request", sender="w")[0]
+        state = {"minute": 0}
+        echoed = f"old\n❯ {m.render()}\n⏺ ok"
+        monkeypatch.setattr(
+            session_ready, "scrollback",
+            lambda s, p=0: (echoed if state["minute"] >= 30 else "old") + f"\n{RULE}\n❯\n{RULE}")
+        # minutes 0..25 the placeholder is up and nothing is echoed; at 30 the
+        # agent consumed its queue (echo visible, box empty again)
+        _patch_delivery(monkeypatch, empty=False, box=self.PLACEHOLDER)
+        seen = []
+        for minute in (0, 10, 25):
+            state["minute"] = minute
+            now[0] = t0 + minute * self.MINUTE
+            inbox.flush_session("s")
+            seen.append((minute, len(inbox.list_messages("s")), len(inbox.list_dead("s"))))
+        assert seen == [(0, 1, 0), (10, 1, 0), (25, 1, 0)], seen
+        state["minute"] = 30
+        now[0] = t0 + 30 * self.MINUTE
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1 and not res["deferred"], res
+        assert inbox.list_messages("s") == [] and inbox.list_dead("s") == [] and not escalated
+
+    def test_an_expired_entry_with_delivery_evidence_is_consumed_not_dead_lettered(
+        self, isolate, monkeypatch
+    ):
+        from agentwire import session_ready
+
+        now = [inbox._now_ms()]
+        monkeypatch.setattr(inbox, "_now_ms", lambda: now[0])
+        m = _enq("s", "report body", kind="request", sender="w")[0]
+        monkeypatch.setattr(prompt_router, "capture", lambda s, p=0, **kw: "x")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: self.PLACEHOLDER)
+        # past the bound the evidence check runs first: the echo is on scrollback
+        now[0] += inbox.QUEUED_WAIT_MS + self.MINUTE
+        monkeypatch.setattr(
+            session_ready, "scrollback",
+            lambda s, p=0: f"❯ {m.render()}\n⏺ ok\n{RULE}\n❯\n{RULE}")
+        dead = inbox._bump_attempts(inbox.list_messages("s"), "queued_placeholder")
+        assert dead == 0 and inbox.list_messages("s") == [] and inbox.list_dead("s") == []
 
 
 class TestHealEqualityAndStamp:

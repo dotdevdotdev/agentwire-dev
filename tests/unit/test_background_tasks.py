@@ -610,14 +610,15 @@ def test_a_bad_gate_timeout_falls_back_to_the_default_instead_of_killing_the_gat
     # A gate that answers `defer` at once. On a plain pane 0 an UNUSABLE gate
     # sends the notice and a `defer` suppresses it, so a timer that killed the
     # gate (sleep fails / returns at once) shows up as a notify-parent call.
-    bad = ["abc", "0", "-3", "1.5", "", "8; true", "0x10"]
+    bad = ["abc", "0", "-3", "1.5", "", "8; true", "0x10", "08", "09", "00", "10000",
+           "99999999999999999999"]
 
     def run(i_t):
         i, t = i_t
         calls, _ = _run_hook_cell(tmp_path / f"c{i}", 'echo \'{"action":"defer"}\'', "0", False, t)
         return t, [c for c in calls if c.startswith("notify-parent")]
 
-    with ThreadPoolExecutor(max_workers=7) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         offenders = [(t, n) for t, n in pool.map(run, enumerate(bad)) if n]
     assert not offenders, offenders
 
@@ -635,3 +636,16 @@ def test_recent_gate_failures_skips_malformed_rows_and_keeps_the_listing(isolate
             f.write(junk + "\n")
     rows = bt.recent_gate_failures(now=now)
     assert len(rows) == 3, rows
+
+
+def test_recent_gate_failures_survives_bad_bytes_and_implausible_stamps(isolated_config):
+    now = time.time()
+    path = bt.events_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    good = json.dumps({"event": "gate_unusable", "ts": now}).encode()
+    junk = [b"\xff\xfe not utf8 \x80", b'{"event": "gate_failed", "ts": Infinity}',
+            b'{"event": "gate_failed", "ts": 1e308}', b'{"event": "gate_failed", "ts": -5}',
+            b'{"event": "gate_failed", "ts": NaN}',
+            json.dumps({"event": "gate_failed", "ts": now + 10 * 365 * 86400}).encode()]
+    path.write_bytes(b"\n".join(junk + [good, good, good]) + b"\n")
+    assert len(bt.recent_gate_failures(now=now)) == 3

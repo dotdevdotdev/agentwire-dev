@@ -539,7 +539,7 @@ class TestRecoverUnverifiedSend:
         old_marker = session_ready.new_delivery_marker()
         this_marker = session_ready.new_delivery_marker()
         rule = "─" * 20
-        cap = f"> continue  {old_marker}\n{rule}\n❯\n{rule}"
+        cap = f"❯ continue  {old_marker}\n{rule}\n❯\n{rule}"
         monkeypatch.setattr(session_ready, "scrollback", lambda s, pane_index=0: cap)
         monkeypatch.setattr(
             session_ready, "recover_failed_seed", lambda *a, **k: "inbox")

@@ -85,11 +85,13 @@ if [[ "$notification_type" == "idle_prompt" ]]; then
     gate_out=$(mktemp "${TMPDIR:-/tmp}/idle-gate.XXXXXX")
     $AGENTWIRE idle-gate --json --conversation-id "$session_id" --cwd "$cwd" >"$gate_out" 2>>"$DEBUG_LOG" &
     gate_pid=$!
-    # A non-positive-integer override (garbage, 0, negative) would make `sleep`
-    # fail or return at once and the timer would kill every gate: use the default.
+    # Anything but a plain base-10 integer 1..9999 (garbage, 0, negative, a
+    # leading zero that shell arithmetic would read as octal, a value `sleep`
+    # rejects) would make the timer return at once and kill every gate: use the
+    # default. A pattern, never arithmetic, so there is no octal to trip on.
     gate_timeout="${AGENTWIRE_GATE_TIMEOUT:-8}"
-    if [[ ! "$gate_timeout" =~ ^[0-9]+$ || "$gate_timeout" -le 0 ]]; then
-      log "AGENTWIRE_GATE_TIMEOUT='$gate_timeout' is not a positive integer — using 8"
+    if [[ ! "$gate_timeout" =~ ^[1-9][0-9]{0,3}$ ]]; then
+      log "AGENTWIRE_GATE_TIMEOUT='$gate_timeout' is not an integer in 1..9999 — using 8"
       gate_timeout=8
     fi
     ( sleep "$gate_timeout"; kill -9 "$gate_pid" 2>/dev/null ) >/dev/null 2>&1 &
