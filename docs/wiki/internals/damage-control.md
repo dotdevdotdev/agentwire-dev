@@ -1149,8 +1149,9 @@ and known launchers.
   arguments can hand a program to a shell (a shell name, `SHELL=`); `exec`/`dlx`/
   `x` re-check the launched command (`pnpm exec vitest -t eval` is data, `pnpm exec
   sh -c '…'` is a shell payload), and `--call=` is a shell payload. A few
-  data consumers have executing forms that ARE modelled: `sed` (`e` command and
-  `s///e` flag, when the script holds the word) and `git` (`rebase --exec|-x`,
+  data consumers have executing forms that ARE modelled: `sed` (`e` command after any
+  address form incl. `!`, in `-e`/`--expression`/`-f -` scripts, and the `s///e`
+  flag, when the script holds the word) and `git` (`rebase --exec|-x`,
   `bisect run`, `submodule foreach`). Package, service and resource verbs take the
   word as a NAME (`_EVAL_DATA_SUBCOMMANDS`: `uv add`, `brew install`, `pip install`,
   `systemctl restart`, `kubectl get`, `helm template`, `docker build`, …); `docker
@@ -1162,18 +1163,19 @@ and known launchers.
 - **Concealing:** the builtin as the verb, after any separator, compound
   keyword, case arm, function body or launcher chain; inside a `<(…)`/`>(…)`
   body; a head `$var`/`${…}` holding the word (`${x:-eval} y`) or a variable
-  assigned it earlier in the same command (`x=eval; $x y`) or a `for`/`select` variable iterating a list that
-  holds it (`for c in eval ls; do $c x; done`; also `while read c` in a command
-  that holds the word) when the body uses it at command position, as a payload or
-  as shell-fed text; and as the verb of
+  assigned it earlier in the same command (`x=eval; $x y`) or a `for`/`select` variable iterating a list that holds it (brace lists
+  are expanded, bounded; `for c in {eval,ls}; do $c x; done`), or a variable set by
+  `read`/`mapfile`/`readarray` in a command that holds the word (`read c <<< eval;
+  $c x`, `while read c`, `read -a a`, `${a[0]}`), when the body uses it at command
+  position, as a payload or as shell-fed text; and as the verb of
   program text a shell is FED: a `-c` payload, `ssh host …`, `env -S`, `npx
   -c`, `watch`, `trap`, `tmux new-session|run-shell|…`, `find -exec|-execdir|
   -ok|-okdir`, a heredoc or here-string feeding a shell, the `echo`/`printf`
   text or here-string of ANY earlier stage of a pipeline ending in a shell —
   through `tee`, `cat`, `sed`, … and inside `for`/`while`/`if`/`case`/function
   bodies, as written and escape-expanded — `xargs sh -c`, and the body of a
-  `<(…)` handed to a shell or `source`/`.`, and a makefile read from `-f -`,
-  `-f /dev/stdin` or `-f <(…)`. Text that expands an
+  `<(…)` handed to a shell or `source`/`.`, and a make/just file read from stdin, `/dev/stdin`, `/dev/fd/N` or `<(…)`
+  (`-f F`, `-fF`, `-sf F` clusters, `--file|--makefile|--justfile[=]F`). Text that expands an
   alias variable (`echo "$p" | sh`, `sh <<< "$p"`) asks too.
 - **Data:** the word as an argument of a data consumer or a known launcher's
   real verb, a `for`/`select` word list, `tmux send-keys`, a quoted heredoc
@@ -1189,6 +1191,9 @@ eval ::: f`, `flock /tmp/l grep eval f`, `poetry run`, `docker run … grep eval
 a quoted `'>f'` used as a command name, and a shell invoked with a payload
 that merely mentions the variable (`p=eval; sh -c 'echo $p'`). **Not detected:**
 a data consumer that can itself run a command line, except `sed` and `git` above
+(also: `npm exec -c='…'`/`-c…`, `git rebase -x…`, `git difftool -x|--extcmd`, `git fetch
+--upload-pack`, `git config core.editor`, `GIT_SEQUENCE_EDITOR`; any tool not in the
+tables asks; Makefile/justfile recipe text from a plain file is undecidable)
 (`awk system()`, `python -c os.system`, `perl system`, `vim -c '!…'`, `tar
 --to-command`, `rsync -e`, `git filter-branch --*-filter` — pinned as still
 allowed so the claim cannot drift); a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}

@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "3f58611eeecd8b3749aa44611e1ee2803188a9376a929b7e9fc954dbb09950f6", "generated_at": "2026-10-17T15:26:28Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "29ce78b00eb476d97fca226e37f263f700000adcb0038118c6092ea57ff4d9f6", "generated_at": "2026-10-17T18:19:18Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3799,7 +3799,7 @@ _EVAL_DATA_CONSUMERS = frozenset({
     "more", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "sed", "awk", "gawk", "diff", "cmp",
     "comm", "jq", "yq", "ls", "tree", "mkdir", "touch", "rm", "cp", "mv", "ln", "stat", "file",
     "man", "info", "which", "type", "whereis", "whatis", "whence", "help", "git", "gh", "agentwire",
-    "tee", "curl", "wget", "open", "pbcopy", "sleep", "date", "true", "false", "test", "[", "read",
+    "tee", "curl", "wget", "open", "pbcopy", "sleep", "date", "true", "false", "test", "[", "read", "mapfile", "readarray",
     "cd", "pwd", "export", "unset", "python", "python2", "python3", "node", "ruby", "perl", "php",
     "deno", "bun", "pytest", "ruff", "pip", "ssh-keygen", "scp", "rsync",
     "say", "jest", "vitest", "mocha", "tsc", "eslint", "prettier", "dotnet", "tar", "zip", "unzip", "gzip", "gunzip", "base64", "openssl", "shasum", "md5", "du", "df", "ps",
@@ -3824,7 +3824,7 @@ _EVAL_ANSI_QUOTE_RE = _rx(r"\$'((?:[^'\\]|\\.)*)'", 0)
 _EVAL_DOLLAR_DQUOTE_RE = _rx(r"\$(?=\")", 0)
 _EVAL_ALIAS_ASSIGN_RE = _rx(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=(?:'eval\b|\"eval\b|eval(?=[\s;&|)]|$))", 0)
 _EVAL_FOR_LIST_RE = _rx(r"(?:^|[\s;&|(])(?:for|select)\s+([A-Za-z_]\w*)\s+in\s+([^;\n]*)", 0)
-_EVAL_WHILE_READ_RE = _rx(r"(?:^|[\s;&|(])while\s+(?:IFS=\S*\s+)?read\s+(?:-\w+\s+)*([A-Za-z_][\w ]*?)\s*[;\n]", 0)
+_EVAL_READ_RE = _rx(r"(?:^|[\s;&|(])(read|mapfile|readarray)\b([^;&|\n<]*)", 0)
 _EVAL_ALIAS_COPY_RE = _rx(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=[\"']?\$\{?([A-Za-z_]\w*)", 0)
 _EVAL_ESCAPE_RE = _rx(r"\\(?:x([0-9A-Fa-f]{1,2})|([0-7]{1,3})|(.))", re.DOTALL)
 _EVAL_TMUX_RUNNERS = frozenset({"new-session", "new", "new-window", "neww", "split-window", "splitw",
@@ -3869,10 +3869,69 @@ def _eval_shell_consumer(words: List[str]) -> bool:
     return bool(names & _EVAL_SHELLS) or not (names & _EVAL_INTERPRETERS)
 
 
+_EVAL_PROGRAM_FILE_HEADS = frozenset({"make", "gmake", "just"})
+_EVAL_FILE_LONG_OPTS = frozenset({"--file", "--makefile", "--justfile"})
+
+
+def _eval_file_operands(words: List[str]) -> Tuple[List[str], bool]:
+    """``(file operands, pending)`` of a make/just invocation's file options.
+
+    ``-f F``, ``-fF``, clusters (``-sf F``), ``--file|--makefile|--justfile`` as ``=F`` or ``F``.
+    ``pending`` is True when the last option still awaits its value (the next word, e.g. a
+    ``<(…)`` that the caller cut out of the line).
+    """
+    vals: List[str] = []
+    pending = False
+    i, n = 0, len(words)
+    while i < n:
+        w = words[i]
+        pending = False
+        if w.startswith("--"):
+            name, eq, val = w.partition("=")
+            if name in _EVAL_FILE_LONG_OPTS:
+                if eq:
+                    vals.append(val)
+                    pending = val == ""
+                elif i + 1 < n:
+                    vals.append(words[i + 1])
+                    i += 1
+                else:
+                    pending = True
+        elif w.startswith("-") and len(w) > 1:
+            k = w.find("f", 1)
+            if k != -1 and (w[1:k].isalpha() or k == 1):
+                if len(w) > k + 1:
+                    vals.append(w[k + 1 :])
+                elif i + 1 < n:
+                    vals.append(words[i + 1])
+                    i += 1
+                else:
+                    pending = True
+        i += 1
+    return vals, pending
+
+
+def _eval_is_stdin_operand(v: str) -> bool:
+    return v in ("-", "/dev/stdin") or v.startswith(("/dev/fd/", "/proc/self/fd/"))
+
+
 def _eval_makefile_reader(words: List[str]) -> bool:
-    """``make -f -`` / ``-f /dev/stdin``: the makefile text is a program of shell recipes."""
-    return bool({os.path.basename(w) for w in words} & {"make", "gmake"}) and any(
-        a == "-f" and b in ("-", "/dev/stdin") for a, b in zip(words, words[1:])
+    """``make -f -`` / ``-f /dev/stdin|/dev/fd/N`` / ``just --justfile -``: the file text is a program of shell recipes."""
+    for i, w in enumerate(words):
+        if os.path.basename(w) in _EVAL_PROGRAM_FILE_HEADS:
+            vals, _pending = _eval_file_operands(words[i + 1 :])
+            if any(_eval_is_stdin_operand(v) for v in vals):
+                return True
+    return False
+
+
+def _eval_sed_script_reader(words: List[str]) -> bool:
+    """``sed -f -`` / ``-f /dev/stdin``: the script arrives on stdin."""
+    return bool({os.path.basename(w) for w in words} & {"sed", "gsed"}) and any(
+        (a in ("-f", "--file") and _eval_is_stdin_operand(b))
+        or (a.startswith("-f") and _eval_is_stdin_operand(a[2:]))
+        or (a.startswith("--file=") and _eval_is_stdin_operand(a[7:]))
+        for a, b in zip(words, words[1:] + [""])
     )
 
 
@@ -3890,22 +3949,24 @@ def _eval_producer_texts(stage: str) -> List[str]:
     return out
 
 
-def _eval_fed_programs(command: str) -> List[str]:
+def _eval_fed_programs(command: str, consumer=None) -> List[str]:
     """Text handed to a shell on its stdin: heredoc / here-string bodies, piped ``echo``, ``<(…)`` bodies."""
+    consumer = consumer or _eval_shell_consumer
+    shell_kind = consumer is _eval_shell_consumer
     out: List[str] = []
     for h in _heredocs(command):
-        if _eval_shell_consumer(_feed_words(h.line)):
+        if consumer(_feed_words(h.line)):
             out.append(h.body)
     for m in _HERE_STRING_RE.finditer(command):
         line = command[command.rfind("\n", 0, m.start()) + 1 : m.start()]
-        if _eval_shell_consumer(_feed_words(line)):
+        if consumer(_feed_words(line)):
             out.append(" ".join(_words(m.group(1))))
     stages = _pipe_stages(_hide_heredoc_bodies(command, keep_programs=False)) if "|" in command else []
     for k, (op, stage) in enumerate(stages):
         words = _feed_words(stage)
         if op != "|" or not (
-            _eval_shell_consumer(words)
-            or ("xargs" in words and any(os.path.basename(w) in _SHELL_NAMES for w in words))
+            consumer(words)
+            or (shell_kind and "xargs" in words and any(os.path.basename(w) in _SHELL_NAMES for w in words))
         ):
             continue
         # the shell consumes the stdout of EVERY stage before it in this pipeline,
@@ -3916,14 +3977,29 @@ def _eval_fed_programs(command: str) -> List[str]:
             if stages[j][0] != "|":
                 break
             j -= 1
-    for m in _EVAL_PROCSUB_BODY_RE.finditer(command):
+    for m in _EVAL_PROCSUB_BODY_RE.finditer(command if shell_kind else ""):
         prefix = re.split(r"[;&|\n]", command[: m.start()])[-1]
         pwords = _words(_EVAL_PROCSUB_BODY_RE.sub(" ", prefix))
-        if _EVAL_SHELLS & {os.path.basename(w) for w in pwords} or (
-            {os.path.basename(w) for w in pwords} & {"make", "gmake"} and "-f" in pwords
-        ):
+        heads = {os.path.basename(w) for w in pwords}
+        if _EVAL_SHELLS & heads or (heads & _EVAL_PROGRAM_FILE_HEADS and _eval_file_operands(pwords)[1]):
             for _op, stage in _pipe_stages(m.group(1)):
                 out.extend(_eval_producer_texts(stage))
+    return out
+
+
+def _eval_brace_expand(word: str, _budget: int = 256) -> List[str]:
+    """Bash brace expansion of ``word`` (``{eval,ls}``, ``ev{al,}``), bounded; over the bound the
+    word is returned with the builtin included, because an unexpandable list errs toward asking."""
+    m = re.search(r"\{([^{}]*,[^{}]*)\}", word)
+    if not m:
+        return [word]
+    parts = m.group(1).split(",")
+    if len(parts) > _budget:
+        return ["eval"]
+    out: List[str] = []
+    for part in parts:
+        # the budget halves per group, so a product past the bound reaches ``len(parts) > _budget`` above
+        out.extend(_eval_brace_expand(word[: m.start()] + part + word[m.end() :], _budget // len(parts)))
     return out
 
 
@@ -3932,19 +4008,27 @@ def _eval_aliases(command: str) -> frozenset:
     names = {m.group(1) for m in _EVAL_ALIAS_ASSIGN_RE.finditer(command)}
     # a ``for``/``select`` variable iterating a list that holds the builtin carries it into the body
     for m in _EVAL_FOR_LIST_RE.finditer(command):
-        if "eval" in _words(m.group(2)):
+        if any("eval" in _eval_brace_expand(w) for w in _words(m.group(2))):
             names.add(m.group(1))
-    # ``while read c`` fed by a producer that holds it (pipe, here-string, ``< <(…)``, heredoc)
-    if _EVAL_WHILE_READ_RE.search(command) and any(
-        t == "eval" for toks in _scan_masked_tokens(command) for t, _fq, _ex in toks
+    # ``read c`` / ``mapfile a`` / ``read -a a`` fed by a producer that holds it (pipe, here-string,
+    # ``< <(…)``, heredoc): in a command that holds the word, the variables they set may carry it
+    if _EVAL_READ_RE.search(command) and any(
+        "eval" in t.split() for toks in _scan_masked_tokens(command) for t, _fq, _ex in toks
     ):
-        for m in _EVAL_WHILE_READ_RE.finditer(command):
-            names.update(m.group(1).split())
+        for m in _EVAL_READ_RE.finditer(command):
+            ids = [w for w in m.group(2).split() if re.fullmatch(r"[A-Za-z_]\w*", w)]
+            names.update(ids or ["MAPFILE" if m.group(1) != "read" else "REPLY"])
     while True:
         more = {m.group(1) for m in _EVAL_ALIAS_COPY_RE.finditer(command) if m.group(2) in names} - names
         if not more:
             return frozenset(names)
         names |= more
+
+
+def _eval_param_name(text: str) -> str:
+    """The variable a leading ``$x`` / ``${x}`` / ``${x[0]}`` / ``"$x"`` expansion names."""
+    m = re.match(r"\$\{?([A-Za-z_]\w*)", text)
+    return m.group(1) if m else ""
 
 
 def _eval_refs_alias(text: str, aliases: frozenset) -> bool:
@@ -3980,6 +4064,8 @@ def has_command_position_eval(command: str, _depth: int = 0, _guess: bool = Fals
     for text in _eval_fed_programs(command):
         if has_command_position_eval(text, _depth + 1) or _eval_refs_alias(text, aliases):
             return True
+    if any(_eval_sed_executes(text) for text in _eval_fed_programs(command, _eval_sed_script_reader)):
+        return True
     command = _EVAL_PROCSUB_RE.sub("; ( ", _strip_heredoc_bodies(command))
     command = _EVAL_AMP_REDIRECT_RE.sub(">", _EVAL_FD_DUP_RE.sub(" ", command))
     for toks in _scan_masked_tokens(command):
@@ -4083,7 +4169,7 @@ def _eval_run_shell(base: str, rest: List[str], aliases: frozenset, rescan, resc
     return False
 
 
-_EVAL_SED_E_COMMAND_RE = _rx(r"(?:^|[;{}\n]|[0-9$/])\s*e(?:\s|$)", 0)
+_EVAL_SED_E_COMMAND_RE = _rx(r"(?:^|[;{}\n]|[0-9$/])\s*!?\s*e(?:\s|$)", 0)
 _EVAL_SED_S_FLAG_E_RE = _rx(r"s([^\w\s\\])(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[a-zA-Z0-9]*e", 0)
 
 
@@ -4146,7 +4232,7 @@ def _eval_is_verb(toks: List[Tuple[str, bool, bool]], depth: int, aliases: froze
             if _ASSIGN_TOKEN_RE.match(text):
                 i += 1
                 continue
-        if text == "eval" or (text[:1] == "$" and (text.lstrip("${").rstrip("}") in aliases or "eval" in text)):
+        if text == "eval" or (text[:1] == "$" and (_eval_param_name(text) in aliases or "eval" in text)):
             return True
         base = text.rsplit("/", 1)[-1]
         rest = texts[i + 1 :]
@@ -4181,7 +4267,10 @@ def _eval_is_verb(toks: List[Tuple[str, bool, bool]], depth: int, aliases: froze
                 return False
         if base == "git" and _eval_git_payload(rest, rescan):
             return True
-        if base in ("sed", "gsed") and any(_eval_sed_executes(w) for w in rest):
+        if base in ("sed", "gsed") and any(
+            _eval_sed_executes(w) or _eval_sed_executes(w.partition("=")[2] if w.startswith("--expression=") else w[2:] if w.startswith("-e") else "")
+            for w in rest
+        ):
             return True
         if base in _EVAL_PROJECT_RUNNERS:
             for w in rest:
@@ -4270,12 +4359,23 @@ def _heredoc_piped_to_program(command: str, h: "_Heredoc") -> bool:
     return bool(pipe) and _eval_shell_consumer(_command_words(consumer))
 
 
+def _heredoc_feeds_program_file(h: "_Heredoc") -> bool:
+    """Whether a heredoc is read as a makefile / justfile / sed script (``make -f - <<'EOF'``): its body is a program."""
+    words = _feed_words(h.line)
+    return _eval_makefile_reader(words) or _eval_sed_script_reader(words)
+
+
 def _neutralize_literal_heredocs(command: str) -> str:
     """Replace each literal heredoc body with one inert line (see INERT VIEW)."""
     out: List[str] = []
     pos = 0
     for h in _heredocs(command):
-        if not h.quoted or _heredoc_feeds_shell(command[: h.start]) or _heredoc_piped_to_program(command, h):
+        if (
+            not h.quoted
+            or _heredoc_feeds_shell(command[: h.start])
+            or _heredoc_piped_to_program(command, h)
+            or _heredoc_feeds_program_file(h)
+        ):
             continue
         out.append(command[pos : h.body_start])
         out.append(_HEREDOC_BODY + "\n")
