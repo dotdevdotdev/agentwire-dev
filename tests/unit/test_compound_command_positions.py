@@ -40,6 +40,7 @@ DANGEROUS = [
     "ssh host 'rm -rf /tmp/x'",
     "time -p cd ~/.agentwire && touch damagecontrol.yml",
     "nohup cd ~/.agentwire && touch damagecontrol.yml",
+    "echo 'touch ~/.agentwire/damagecontrol.yml' | ssh host",
 ]
 
 WRAPPERS = {
@@ -81,6 +82,17 @@ WRAPPERS = {
     "func-glued-brace": "f(){ {c}; }; f",
     "func-keyword-glued": "function f(){ {c}; }; f",
     "func-spaced-parens": "f ( ) { {c}; }; f",
+    "func-space-before-parens": "f () { {c}; }; f",
+    "func-keyword-space-before-parens": "function f () { {c}; }; f",
+    "func-keyword-parens": "function f() { {c}; }; f",
+    "func-subshell-body": "f () ( {c} ); f",
+    "func-wide-parens": "f(  ) { {c}; }; f",
+    "func-tab-parens": "f\t()\t{ {c}; }; f",
+    "func-newline-brace": "f ()\n{\n {c}\n}\nf",
+    "func-newline-brace-glued": "f()\n{\n {c}\n}\nf",
+    "func-if-body": "f () if true; then {c}; fi; f",
+    "func-case-body": "f () case x in a) {c};; esac; f",
+    "func-while-body": "f () while true; do {c}; done; f",
     "case-first-arm-glued-body": "case x in a){c};; esac",
     "case-second-arm-glued-body": "case x in a)true;;b){c};; esac",
     "case-glued-leading-paren": "case x in (a){c};; esac",
@@ -89,6 +101,26 @@ WRAPPERS = {
     "negated-subshell": "!({c})",
     "case-no-in-header": "case x a) {c};; esac",
 }
+
+# Case-arm pattern forms: tokens arrive quote-resolved, so the finder treats the
+# first ``)`` as the terminator and keeps stripping (conservative, #1112 r2).
+PATTERNS = [
+    "a", "*", "$y", '"$y"', "${y}", "${y:-a)b}", '"a)b"', "'a)b'",
+    "a\\)", "[)]", "[(]", "[(])", "@(a|b)", "*(x)", "!(x)", "?(x)", "+(x)", "$'a\\)'",
+    '$"x"', '"a(b"', "$HOME/*", "a|$y", "a|b|c", "(a)", "(a|b)", "a\\(",
+]
+for _p in PATTERNS:
+    WRAPPERS[f"pattern[{_p}]"] = f"case x in {_p}) {{c}};; esac"
+    WRAPPERS[f"pattern-second-arm[{_p}]"] = f"case x in z) true;; {_p}) {{c}};; esac"
+    WRAPPERS[f"pattern-glued-body[{_p}]"] = f"case x in {_p}){{c}};; esac"
+# A substitution in a pattern is ask-tier by itself; the body must still never be allowed.
+SUBSTITUTION_PATTERNS = ["$(echo a)", "`echo a`", "$(echo a)b", "a$(echo b)"]
+# `esac` as an ARGUMENT of ssh is not a stdin program in real bash either.
+WRAPPERS_NOT_SYNTAX = {
+    ("case-unterminated-last-arm", "echo 'touch ~/.agentwire/damagecontrol.yml' | ssh host")
+}
+WRAPPERS["pattern-multiline"] = "case x in\n a|\n $y)\n {c}\n ;;\nesac"
+WRAPPERS["pattern-with-semicolons"] = "case x in a;;b) {c};; esac"
 
 HARMLESS = ["echo hi", "ls -la", "git status"]
 
@@ -120,9 +152,22 @@ def test_wrapped_decision_equals_top_level(config):
     for command in DANGEROUS:
         top = _decision(config, command)
         for name, wrapper in WRAPPERS.items():
+            if (name, command) in WRAPPERS_NOT_SYNTAX:
+                continue
             got = _decision(config, wrapper.replace("{c}", command))
             if got != top:
                 bad.append((name, command, top, got))
+    assert not bad, bad
+
+
+def test_substitution_patterns_never_allow_a_dangerous_body(config):
+    bad = []
+    for command in DANGEROUS:
+        for pat in SUBSTITUTION_PATTERNS:
+            for tmpl in ("case x in {p}) {c};; esac", "case x in z) true;; {p}) {c};; esac"):
+                script = tmpl.replace("{p}", pat).replace("{c}", command)
+                if _decision(config, script) == "allow":
+                    bad.append(script)
     assert not bad, bad
 
 
@@ -145,6 +190,8 @@ def test_differential_holds_with_kill_switch_off_and_unattended_on(config, monke
         for command in DANGEROUS:
             top = _decision(cfg, command)
             for name, wrapper in WRAPPERS.items():
+                if (name, command) in WRAPPERS_NOT_SYNTAX:
+                    continue
                 got = _decision(cfg, wrapper.replace("{c}", command))
                 if got != top:
                     bad.append((state, name, command, top, got))
@@ -157,7 +204,7 @@ def test_case_inside_substitution_equals_plain_substitution(config):
         plain = _decision(config, SUBSTITUTION.format(inner=command))
         inner = WRAPPERS["case"].replace("{c}", command)
         got = _decision(config, SUBSTITUTION.format(inner=inner))
-        if got == "allow" or got != plain:
+        if got == "allow" or (got != plain and got != "block"):
             bad.append((command, plain, got))
     assert not bad, bad
 
@@ -229,4 +276,70 @@ def test_concealment_sees_through_openers():
         if ambiguity_conceals_verb(w.replace("{c}", payload)) is None
     ]
     assert ambiguity_conceals_verb(payload) is not None
+    assert not bad, bad
+
+
+def test_scope_evaluator_refuses_unmodelled_compound_syntax(tmp_path):
+    """A scoped unattended grant must not apply to a `cd` hidden behind compound syntax."""
+    from agentwire.safety._core import command_scope_dirs
+
+    cwd = str(tmp_path)
+    bodies = ["cd /etc && git commit -m x"]
+    wrappers = [
+        "if true; then {c}; fi",
+        "while true; do {c}; done",
+        "! {c}",
+        "time {c}",
+        "case x in a) {c};; esac",
+    ]
+    bad = []
+    for body in bodies:
+        for w in wrappers:
+            script = w.replace("{c}", body)
+            dirs, why = command_scope_dirs(script, cwd, pattern=r"\bgit\s+commit\b")
+            if why is None:
+                bad.append((script, dirs))
+    assert command_scope_dirs(bodies[0], cwd, pattern=r"\bgit\s+commit\b")[1] is None
+    assert not bad, bad
+
+
+def test_rm_parser_refuses_unmodelled_compound_syntax(tmp_path):
+    """`then cd X && rm …` would be judged against the wrong directory."""
+    from agentwire.safety._core import _parse_rm_command
+
+    cwd = str(tmp_path)
+    body = "cd /etc && rm -rf x"
+    assert _parse_rm_command(body, cwd) is not None
+    bad = [
+        w for w in ("if true; then {c}; fi", "while true; do {c}; done", "! {c}", "time {c}")
+        if _parse_rm_command(w.replace("{c}", body), cwd) is not None
+    ]
+    assert not bad, bad
+
+
+def test_heredoc_and_here_string_feed_behind_openers_equals_plain(config):
+    plain = {
+        "heredoc": "ssh host <<'EOF'\ntouch ~/.agentwire/damagecontrol.yml\nEOF",
+        "here-string": "ssh host <<< 'touch ~/.agentwire/damagecontrol.yml'",
+    }
+    wrappers = ["if true; then {c}\nfi", "{ {c}\n}", "( {c}\n)", "while true; do {c}\ndone"]
+    bad = []
+    for kind, cmd in plain.items():
+        top = _decision(config, cmd)
+        assert top != "allow", (kind, top)
+        for w in wrappers:
+            got = _decision(config, w.replace("{c}", cmd))
+            if got != top:
+                bad.append((kind, w, top, got))
+    assert not bad, bad
+
+
+def test_stdin_program_consumer_behind_openers_equals_plain_pipe(config):
+    feed = "echo 'touch ~/.agentwire/damagecontrol.yml' | "
+    plain = _decision(config, feed + "ssh host")
+    assert plain != "allow"
+    bad = [
+        c for c in ("{ ssh host; }", "! ssh host", "(ssh host)", "time ssh host")
+        if _decision(config, feed + c) != plain
+    ]
     assert not bad, bad

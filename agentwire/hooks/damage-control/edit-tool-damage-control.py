@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "b7a654b828b83f49bfb64ea4c10518c7e90eb230ee2c055a64e5aae202bfa4ac", "generated_at": "2026-10-17T13:26:29Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "784e3e82d6084502625cb1f10b9d7a74c4133453c7ca16d9b1e419085fa96abe", "generated_at": "2026-10-17T13:41:12Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -1712,6 +1712,11 @@ def command_scope_dirs(
     current_dir = cwd
 
     for argv, following_op in segments:
+        if strip_command_opener_words(argv) != argv:
+            return [], (
+                "command uses compound-command syntax (if/then/do/{/!/case/time) — "
+                "the execution context is not statically knowable"
+            )
         assigns, argv = _split_assignments(argv)
         if not argv:
             continue
@@ -2411,7 +2416,7 @@ def _blank_prose_args(hay: str, path: str) -> str:
         if opener != -1 and ")" not in prefix[opener:]:
             return True
         # the command word runs its arguments (ssh host '…', eval '…', watch '…')
-        words = strip_command_opener_words(_SEGMENT_SPLIT.split(prefix)[-1].split())
+        words = _SEGMENT_SPLIT.split(prefix)[-1].split()
         words = [w for w in words if not _ASSIGN_WORD.match(w)]
         names = [os.path.basename(w) for w in words]
         if names and (
@@ -2944,7 +2949,7 @@ def _hide_heredoc_bodies(command: str, keep_programs: bool) -> str:
     """
     out, pos = [], 0
     for h in _heredocs(command):
-        if keep_programs and _stdin_is_program(_command_words(h.line)):
+        if keep_programs and _stdin_is_program(_feed_words(h.line)):
             continue
         out.append(command[pos : h.body_start])
         out.append(_HEREDOC_BODY + "\n")
@@ -3052,6 +3057,12 @@ def _command_words(line: str) -> List[str]:
         return text.split()
 
 
+def _feed_words(line: str) -> List[str]:
+    """:func:`_command_words` of a command that is handed stdin, past compound openers
+    and a group's closing paren/brace (``if x; then ssh host <<EOF``, ``(ssh host <<EOF``)."""
+    return [w for w in strip_command_opener_words(_command_words(line)) if w not in (")", "}")]
+
+
 def _ssh_remote_command(args: List[str]) -> List[str]:
     """The remote command words of an ``ssh`` invocation (empty = interactive shell)."""
     i = 0
@@ -3095,8 +3106,7 @@ def _stage_reads_program(stage: List[str]) -> bool:
     pipe, heredoc and here-string feeds and by the ssh remote command: the
     same payload is refused or allowed however it arrives (#1099 review).
     """
-    words = strip_command_opener_words([w for w in stage if w not in ("(", ")")])
-    words = [w for w in words if not _ASSIGN_WORD.match(w)]
+    words = [w for w in stage if w not in ("(", ")") and not _ASSIGN_WORD.match(w)]
     while words and words[0] == "--":
         words = words[1:]
     if not words:
@@ -3232,21 +3242,21 @@ def _stdin_program_commands(command: str) -> List[str]:
     out: List[str] = []
     if "<<" in command:
         for body, _quoted, line in _heredoc_bodies(command):
-            words = _command_words(line)
+            words = _feed_words(line)
             if _stdin_is_program(words):
                 out.append(_program_text(body, words))
         for m in _HERE_STRING_RE.finditer(command):
             line = command[command.rfind("\n", 0, m.start()) + 1 : m.start()]
-            words = _command_words(line)
+            words = _feed_words(line)
             if _stdin_is_program(words):
                 out.append(_program_text(" ".join(_words(m.group(1))), words))
     if "|" in command:
         stages = _pipe_stages(_hide_heredoc_bodies(command, keep_programs=False))
         for (_, producer), (op, consumer) in zip(stages, stages[1:]):
-            consumer_words = _command_words(consumer)
+            consumer_words = _feed_words(consumer)
             if op != "|" or not _stdin_is_program(consumer_words):
                 continue
-            words = _words(producer)
+            words = strip_command_opener_words(_words(producer))
             if words and os.path.basename(words[0]) in ("echo", "printf"):
                 text = " ".join(w for w in words[1:] if not re.fullmatch(r"-[neE]+", w))
                 out.append(_program_text(text, consumer_words))
@@ -4853,16 +4863,27 @@ _KEYWORD_PAREN_RE = _rx(r"^(if|then|else|elif|while|until|do|time|coproc)(\(.*)$
 _Tok = Tuple[str, bool, bool]
 
 
-def _arm_pattern_end(text: str) -> int:
-    """Index of the ``)`` that closes a case-arm pattern inside ``text``, or -1.
+def _arm_pattern_end(text: str, in_case_header: bool = False) -> int:
+    """Index of the ``)`` that ends a case-arm pattern inside ``text``, or -1.
 
-    A ``)`` after an open ``(``/``$(``/backtick belongs to a substitution or
-    group, not to the pattern list.
+    Tokens arrive with their quotes already resolved, so a ``)`` inside
+    ``"a)b"``, ``[)]`` or ``a\\)`` cannot be told from the terminator. The
+    answer is therefore deliberately conservative for the OPERATION: the FIRST
+    ``)`` counts, and the caller strips again while the remainder still holds
+    one, so extra pattern parens are consumed and the body is never left hidden
+    (a harmless script may be over-read, never a destructive one under-read).
+    The only guard is at a segment start that opens a command substitution
+    (``$(date)``, a backtick), where a ``)`` is the substitution's own; there
+    the paren depth must go NEGATIVE (``$(echo a))``) to count.
     """
-    idx = text.find(")")
-    if idx == -1 or any(c in text[:idx].lstrip("(") for c in "($`"):
+    if not in_case_header and (text.startswith("$(") or text.startswith("`")):
+        depth = 0
+        for i, c in enumerate(text):
+            depth += (c == "(") - (c == ")")
+            if depth < 0:
+                return i
         return -1
-    return idx
+    return text.find(")")
 
 
 def strip_command_openers(toks: List[_Tok]) -> List[_Tok]:
@@ -4894,12 +4915,12 @@ def strip_command_openers(toks: List[_Tok]) -> List[_Tok]:
             j = next((k for k in range(2, len(toks)) if toks[k][0] == "in" and not toks[k][1]), 0)
             end = -1
             for k in range(j + 1, len(toks)):
-                if not toks[k][1] and _arm_pattern_end(toks[k][0]) != -1:
+                if not toks[k][1] and _arm_pattern_end(toks[k][0], True) != -1:
                     end = k
                     break
             if end == -1:
                 break
-            rest = toks[end][0][_arm_pattern_end(toks[end][0]) + 1:]
+            rest = toks[end][0][_arm_pattern_end(toks[end][0], True) + 1:]
             toks[: end + 1] = [(rest, False, False)] if rest else []
             continue
         m = _FUNC_HEADER_RE.match(text)
@@ -4908,6 +4929,13 @@ def strip_command_openers(toks: List[_Tok]) -> List[_Tok]:
             continue
         if len(toks) >= 3 and toks[1][0] == "(" and toks[2][0] == ")" and _FUNC_NAME_RE.match(text):
             del toks[:3]
+            continue
+        # `f ()` lexes `()` as one word; `f(  )` as `f(` + `)`
+        if len(toks) >= 2 and toks[1][0] == "()" and _FUNC_NAME_RE.match(text):
+            del toks[:2]
+            continue
+        if len(toks) >= 2 and toks[1][0] == ")" and text.endswith("(") and _FUNC_NAME_RE.match(text[:-1]):
+            del toks[:2]
             continue
         idx = _arm_pattern_end(text)
         if idx != -1:
@@ -5605,6 +5633,8 @@ def _parse_rm_command(
     env: Dict[str, str] = {}
     found: List[Tuple[List[str], List[str], str]] = []
     for argv, following_op in segments:
+        if strip_command_opener_words(argv) != argv:
+            return None  # compound syntax: the directory/env context is not modelled
         assigns, argv = _split_assignments(argv)
         if argv and os.path.basename(argv[0]) == "export" and all(_ASSIGN_TOKEN_RE.match(t) for t in argv[1:]):
             assigns, argv = argv[1:], []
