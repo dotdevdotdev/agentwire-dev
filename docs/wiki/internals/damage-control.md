@@ -1142,11 +1142,19 @@ and known launchers.
   command position is a positional parameter (`sh -c '$1' _ eval`) when an
   argument is the word;
 - **known pure data consumer** (`_EVAL_DATA_CONSUMERS`: `echo`, `grep`, `git`,
-  `gh`, `agentwire`, `say`, interpreters, …) and **project runner**
-  (`_EVAL_PROJECT_RUNNERS`: `make just cargo npm pnpm yarn fd go bundle`): the
-  rest is data (`make eval`, `cargo test eval`, `npm run eval`, `pnpm test --
-  -t eval`). A runner falls back to UNKNOWN as soon as its arguments can hand a
-  program to a shell: an `exec`/`dlx`/`x` word, a shell name, or `SHELL=`;
+  `gh`, `agentwire`, `say`, test runners such as `jest`/`vitest`, interpreters,
+  …) and **project runner** (`_EVAL_PROJECT_RUNNERS`: `make just cargo npm pnpm
+  yarn fd go bundle`): the rest is data (`make eval`, `cargo test eval`, `npm run
+  eval`, `npx jest -t eval`). A runner falls back to UNKNOWN as soon as its
+  arguments can hand a program to a shell (a shell name, `SHELL=`); `exec`/`dlx`/
+  `x` re-check the launched command (`pnpm exec vitest -t eval` is data, `pnpm exec
+  sh -c '…'` is a shell payload), and `--call=` is a shell payload. A few
+  data consumers have executing forms that ARE modelled: `sed` (`e` command and
+  `s///e` flag, when the script holds the word) and `git` (`rebase --exec|-x`,
+  `bisect run`, `submodule foreach`). Package, service and resource verbs take the
+  word as a NAME (`_EVAL_DATA_SUBCOMMANDS`: `uv add`, `brew install`, `pip install`,
+  `systemctl restart`, `kubectl get`, `helm template`, `docker build`, …); `docker
+  run|exec`, `kubectl exec`, `docker compose run` are not in it and keep asking;
 - **anything else is UNKNOWN** (`flock`, `chroot`, `strace`, `parallel`, a tool
   this file has never heard of): the bare word asks, and so does any quoted
   multi-word argument whose own verb is the word.
@@ -1154,14 +1162,18 @@ and known launchers.
 - **Concealing:** the builtin as the verb, after any separator, compound
   keyword, case arm, function body or launcher chain; inside a `<(…)`/`>(…)`
   body; a head `$var`/`${…}` holding the word (`${x:-eval} y`) or a variable
-  assigned it earlier in the same command (`x=eval; $x y`); and as the verb of
+  assigned it earlier in the same command (`x=eval; $x y`) or a `for`/`select` variable iterating a list that
+  holds it (`for c in eval ls; do $c x; done`; also `while read c` in a command
+  that holds the word) when the body uses it at command position, as a payload or
+  as shell-fed text; and as the verb of
   program text a shell is FED: a `-c` payload, `ssh host …`, `env -S`, `npx
   -c`, `watch`, `trap`, `tmux new-session|run-shell|…`, `find -exec|-execdir|
   -ok|-okdir`, a heredoc or here-string feeding a shell, the `echo`/`printf`
   text or here-string of ANY earlier stage of a pipeline ending in a shell —
   through `tee`, `cat`, `sed`, … and inside `for`/`while`/`if`/`case`/function
   bodies, as written and escape-expanded — `xargs sh -c`, and the body of a
-  `<(…)` handed to a shell or `source`/`.`. Text that expands an
+  `<(…)` handed to a shell or `source`/`.`, and a makefile read from `-f -`,
+  `-f /dev/stdin` or `-f <(…)`. Text that expands an
   alias variable (`echo "$p" | sh`, `sh <<< "$p"`) asks too.
 - **Data:** the word as an argument of a data consumer or a known launcher's
   real verb, a `for`/`select` word list, `tmux send-keys`, a quoted heredoc
@@ -1176,7 +1188,10 @@ direction: an unknown launcher followed by the bare word (`parallel -j4 grep
 eval ::: f`, `flock /tmp/l grep eval f`, `poetry run`, `docker run … grep eval`),
 a quoted `'>f'` used as a command name, and a shell invoked with a payload
 that merely mentions the variable (`p=eval; sh -c 'echo $p'`). **Not detected:**
-a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}
+a data consumer that can itself run a command line, except `sed` and `git` above
+(`awk system()`, `python -c os.system`, `perl system`, `vim -c '!…'`, `tar
+--to-command`, `rsync -e`, `git filter-branch --*-filter` — pinned as still
+allowed so the claim cannot drift); a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}
 x`), `alias a=eval; a x`, `$1 x` outside a `-c` payload, `e${x}val`, a name
 assigned in another command, program text from a producer other than
 `echo`/`printf`/heredoc/here-string (`cat file | sh`, `curl … | sh`), a

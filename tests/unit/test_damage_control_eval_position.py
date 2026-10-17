@@ -161,6 +161,18 @@ DATA_CORPUS += [
 
 
 
+EXECUTING_CORPUS += [
+    f"for c in {W} ls; do $c x; done", f"for c in {W} x; do sh <<< \"$c\"; done", f"for c in {W}; do bash -c \"$c x\"; done",
+    f"for c in {W}; do echo $c | sh; done", f"select c in {W}; do $c; done",
+    f"echo {W} x | while read c; do $c; done", f"while read c; do $c; done <<< '{W} x'",
+    f"make -f <(echo 'x: ; {W} y') x", f"echo 'x: ; {W} y' | make -f - x", f"npm exec --call='{W} x'",
+    f"npm exec -c '{W} x'", f"npx -c '{W} x'", f"sed '1e {W} x' f", f"sed 's/x/{W} y/e' f",
+    f"git rebase --exec '{W} x' main", f"git bisect run sh -c '{W} x'", f"git submodule foreach '{W} x'",
+    f"bash -o pipefail -c '{W} x'", f"bash +e -c '{W} x'", f"sh -c '$1' _ {W}", f"p='{W} x'; sh -c \"$p\"",
+    f"cat <<< '{W} x' | sh", f"for i in 1; do echo '{W} x' | sh; done", f"script --command='{W} x' f",
+]
+
+
 @pytest.fixture(scope="module")
 def cfg():
     c = load_config(RULES_DIR)
@@ -716,7 +728,7 @@ def test_word_lists_and_quoted_values_are_data():
 # "ask" is a DECLARED wrongful ask with its reason, so the cost of the inverted failure direction
 # is a reviewed list, not a surprise.
 HARMLESS_CORPUS = [
-    ("git status", "allow"), ("git diff --stat origin/main", "allow"), ("git log --oneline -5", "allow"),
+    ("git status", "allow"), (f"npx jest -t {W}", "allow"), (f"pnpm exec vitest -t {W}", "allow"), (f"poetry run pytest -k {W}", "allow"), (f"dotnet test --filter {W}", "allow"), (f"docker build -t {W} .", "allow"), (f"kubectl get pods {W}", "allow"), (f"helm template {W} ./chart", "allow"), (f"sudo systemctl restart {W}", "allow"), (f"brew install {W}", "allow"), (f"uv add {W}", "allow"), ("git diff --stat origin/main", "allow"), ("git log --oneline -5", "allow"),
     ("git commit -m 'fix the loop'", "allow"), (f"git commit -m 'damage-control: {W} by position'", "allow"),
     (f"gh issue create --title t --body 'the {W} builtin asks'", "allow"),
     (f"gh pr create --draft --body 'Closes #1115. {W} no longer asks on prose'", "allow"),
@@ -768,7 +780,7 @@ def test_realistic_harmless_corpus_matches_its_expected_verdicts(cfg):
 # project runners, pipeline sequencing.
 # ---------------------------------------------------------------------------
 
-EXPECTED_DATA_CONSUMERS = ['[', 'ack', 'ag', 'agentwire', 'awk', 'base64', 'basename', 'bat', 'bun', 'cat', 'cd', 'chmod', 'chown', 'cmp', 'column', 'comm', 'cp', 'curl', 'cut', 'date', 'deno', 'df', 'diff', 'dirname', 'du', 'echo', 'egrep', 'export', 'false', 'fgrep', 'file', 'fmt', 'fold', 'gawk', 'gh', 'git', 'grep', 'gunzip', 'gzip', 'head', 'help', 'hexdump', 'info', 'join', 'jq', 'kill', 'less', 'ln', 'ls', 'lsof', 'man', 'md5', 'mkdir', 'more', 'mv', 'nl', 'node', 'od', 'open', 'openssl', 'paste', 'pbcopy', 'perl', 'pgrep', 'php', 'pip', 'pkill', 'printf', 'ps', 'pwd', 'pytest', 'python', 'python2', 'python3', 'read', 'readlink', 'realpath', 'rg', 'rm', 'rsync', 'ruby', 'ruff', 'say', 'scp', 'sed', 'shasum', 'sleep', 'sort', 'split', 'ssh-keygen', 'stat', 'strings', 'tail', 'tar', 'tee', 'test', 'touch', 'tr', 'tree', 'true', 'type', 'uniq', 'unset', 'unzip', 'wc', 'wget', 'whatis', 'whence', 'whereis', 'which', 'xxd', 'yq', 'zgrep', 'zip']
+EXPECTED_DATA_CONSUMERS = ["jest", "vitest", "mocha", "tsc", "eslint", "prettier", "dotnet", '[', 'ack', 'ag', 'agentwire', 'awk', 'base64', 'basename', 'bat', 'bun', 'cat', 'cd', 'chmod', 'chown', 'cmp', 'column', 'comm', 'cp', 'curl', 'cut', 'date', 'deno', 'df', 'diff', 'dirname', 'du', 'echo', 'egrep', 'export', 'false', 'fgrep', 'file', 'fmt', 'fold', 'gawk', 'gh', 'git', 'grep', 'gunzip', 'gzip', 'head', 'help', 'hexdump', 'info', 'join', 'jq', 'kill', 'less', 'ln', 'ls', 'lsof', 'man', 'md5', 'mkdir', 'more', 'mv', 'nl', 'node', 'od', 'open', 'openssl', 'paste', 'pbcopy', 'perl', 'pgrep', 'php', 'pip', 'pkill', 'printf', 'ps', 'pwd', 'pytest', 'python', 'python2', 'python3', 'read', 'readlink', 'realpath', 'rg', 'rm', 'rsync', 'ruby', 'ruff', 'say', 'scp', 'sed', 'shasum', 'sleep', 'sort', 'split', 'ssh-keygen', 'stat', 'strings', 'tail', 'tar', 'tee', 'test', 'touch', 'tr', 'tree', 'true', 'type', 'uniq', 'unset', 'unzip', 'wc', 'wget', 'whatis', 'whence', 'whereis', 'which', 'xxd', 'yq', 'zgrep', 'zip']
 EXPECTED_INTERPRETERS = ["perl", "python", "python2", "python3", "node", "ruby", "php", "deno", "bun"]
 EXPECTED_SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "su", "ash", "fish", "csh", "tcsh", "source", "."]
 EXPECTED_PROJECT_RUNNERS = ["make", "just", "cargo", "npm", "pnpm", "yarn", "fd", "go", "bundle"]
@@ -852,3 +864,103 @@ def test_unparsed_option_shapes_fall_back_to_scanning_for_c():
     bad = [c for c in (f"bash -O3 -c '{W} x'", f"bash -O3 -x -lc '{W} x'", f"bash - -c '{W} x'")
            if ambiguity_conceals_verb(c) is None]
     assert not bad, bad
+
+
+# ---------------------------------------------------------------------------
+# Round 4: loop variables, makefile programs, npm --call, sed's executing forms,
+# git payload subcommands, and the package/service/test-filter data forms.
+# ---------------------------------------------------------------------------
+
+def test_loop_variable_carries_the_word_into_the_body():
+    use = ["$c x", "${c} x", "\"$c\" x", "sh <<< \"$c\"", "bash -c \"$c x\"", "echo $c | sh", "echo \"$c\" | bash",
+           "command $c x", "sudo $c x"]
+    bad = []
+    for kw in ("for", "select"):
+        for body in use:
+            for lst in (W, f"{W} ls", f"ls {W}", f"'{W}' x", "e''val x"):
+                cmd = f"{kw} c in {lst}; do {body}; done"
+                if ambiguity_conceals_verb(cmd) is None:
+                    bad.append(cmd)
+    for cmd in (f"echo {W} x | while read c; do $c; done", f"while read c; do $c; done <<< '{W} x'",
+                f"while read -r a b; do $a $b; done < <(echo {W} x)", f"echo {W} | while IFS= read line; do sh -c \"$line\"; done"):
+        if ambiguity_conceals_verb(cmd) is None:
+            bad.append(cmd)
+    # the list is DATA while the variable stays out of command position
+    for cmd in (f"for f in a {W}; do echo $f; done", f"for f in {W}; do ls \"$f\"; done",
+                f"for f in {W}; do grep -n $f x; done", "echo hi | while read c; do echo $c; done",
+                "for f in a b; do $f x; done", "echo hi | while read c; do $c; done"):
+        if ambiguity_conceals_verb(cmd) is not None:
+            bad.append(("data", cmd))
+    assert not bad, bad
+
+
+def test_makefile_programs_are_shell_text():
+    bad = [c for c in (f"make -f <(echo 'x: ; {W} y') x", f"echo 'x: ; {W} y' | make -f - x",
+                       f"make -f - x <<< 'x: ; {W} y'", f"make -f /dev/stdin <<< $'x:\\n\\t{W} y'",
+                       f"gmake -f <(printf 'x: ; {W} y') x", f"cat <<'EOF' | make -f -\nx:\n\t{W} y\nEOF")
+           if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in ("make -f <(echo 'x: ; echo hi') x", f"make -f Makefile {W}", "echo hi | make -f - x")
+            if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+def test_npm_family_call_options_and_exec_payloads():
+    bad = [c for c in (f"npm exec --call='{W} x'", f"npm exec --call '{W} x'", f"npm exec -c '{W} x'",
+                       f"npx -c '{W} x'", f"pnpm exec sh -c '{W} x'", f"yarn exec bash -c '{W} x'",
+                       f"npm exec -- sh -c '{W} x'", f"pnpm dlx {W} x", f"npm exec {W} x")
+           if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in (f"npx jest -t {W}", f"pnpm exec vitest -t {W}", f"npm exec -- jest -t {W}",
+                        f"npm run {W}", f"npm install {W}")
+            if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+def test_sed_executing_forms():
+    bad = [c for c in (f"sed '1e {W} x' f", f"sed -e '1e {W} x' f", f"sed -n '/p/e {W} z' f",
+                       f"sed '$e {W} x' f", f"sed '2{{e {W} x\n}}' f", f"sed 's/x/{W} y/e' f",
+                       f"sed 's|x|{W} y|e' f", f"sed -e 's/x/{W} y/ge' f", f"gsed '1e {W} x' f")
+           if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in (f"sed -n '/{W}/p' f", f"sed 's/{W}/x/' f", f"sed 's/a/{W}/g' f", "sed -e '1d' f",
+                        f"sed 's/{W}/y/e' f".replace(f"s/{W}/y/e", f"s/{W}/y/g"), f"sed '/{W}/d' f",
+                        f"sed 's/e/{W}/' f", "sed '1e echo hi' f", "sed 's/a/b/e' f")
+            if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+def test_git_subcommands_that_run_a_command_line():
+    bad = [c for c in (f"git rebase --exec '{W} x' main", f"git rebase -x '{W} x'", f"git rebase --exec='{W} x'",
+                       f"git bisect run sh -c '{W} x'", f"git bisect run {W} x", f"git submodule foreach '{W} x'",
+                       f"git submodule foreach --recursive '{W} x'")
+           if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in ("git rebase --exec 'make test' main", f"git bisect run make {W}", f"git log --grep {W}",
+                        f"git commit -m '{W}'", "git submodule foreach 'git pull'")
+            if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+def test_package_service_and_test_filter_verbs_take_the_word_as_a_name():
+    data = [f"uv add {W}", f"uv sync --extra {W}", f"brew install {W}", f"pip install {W}", f"pip3 install {W}",
+            f"sudo systemctl restart {W}", f"systemctl status {W}", f"kubectl get pods {W}", f"kubectl describe pod {W}",
+            f"helm template {W} ./chart", f"docker build -t {W} .", f"docker logs {W}", f"docker ps --filter name={W}",
+            f"npx jest -t {W}", f"pnpm exec vitest -t {W}", f"poetry run pytest -k {W}", f"dotnet test --filter {W}",
+            f"npm install {W}"]
+    ask = [f"docker run img sh -c '{W} x'", f"docker exec c sh -c '{W} x'", f"kubectl exec p -- sh -c '{W} x'",
+           f"poetry run sh -c '{W} x'", f"uv run bash -c '{W} x'", f"docker run img {W} x", f"kubectl exec p -- {W} x",
+           f"sudo systemctl restart {W}".replace("restart", "edit") if False else f"docker compose run svc sh -c '{W} x'"]
+    bad = [c for c in data if ambiguity_conceals_verb(c) is not None]
+    bad += [c for c in ask if ambiguity_conceals_verb(c) is None]
+    assert not bad, bad
+
+
+# Declared: a data consumer that can itself run a command line is not modelled except sed's
+# `e`/`s///e` and git's rebase --exec / bisect run / submodule foreach. These still allow.
+UNMODELLED_EXEC_SHAPES = [
+    f"awk 'BEGIN{{system(\"{W} x\")}}'", f"python3 -c 'import os; os.system(\"{W} x\")'",
+    f"perl -e 'system(\"{W} x\")'", f"vim -c '!{W} x' f", f"tar --to-command='{W} x' -xf a.tar",
+    f"rsync -e '{W} x' a b", f"git filter-branch --tree-filter '{W} x'",
+]
+
+
+def test_unmodelled_data_consumer_exec_shapes_are_declared_not_claimed():
+    still_allowed = [c for c in UNMODELLED_EXEC_SHAPES if ambiguity_conceals_verb(c) is None]
+    assert still_allowed == UNMODELLED_EXEC_SHAPES, "a shape became modelled: move it out of the declared list"
