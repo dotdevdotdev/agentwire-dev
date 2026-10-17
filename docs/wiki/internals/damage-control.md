@@ -1629,16 +1629,28 @@ applies).
 `case x in a|b) rm -rf /tmp/x;; esac` was allowed while the bare `rm -rf /tmp/x`
 was blocked, and the same hole covered `if`/`while`/`for`/`{ }`/`( )`/function
 bodies, `!`, `coproc`: an anchored rule matches only at a command position, and
-the position chain (`_allowed_match_spans`) stopped at the first non-wrapper word
-(`case`, `then`, `{`, `a|b)`). **Guaranteed now:** reserved words that open a
-command position (`if then else elif while until do { ( ! coproc function`), a
-`case` header up to the `)` that ends an arm's pattern list, and a bare `pat)` at
-segment start (later arms, `f()`) keep the chain open, so the body command is
-matched exactly as at top level; the directory-tracking pass (`_CD_RE`) sees the
-directory change after the same words. Pattern words are never match starts, so a
-verb in an arm pattern is data. Pinned by a differential (command x 27 wrappers,
-decision must equal top level) in `tests/unit/test_compound_command_positions.py`,
-plus must-allow controls.
+the position chain stopped at the first non-wrapper word (`case`, `then`, `{`,
+`a|b)`), and the ssh/global-option/concealment walkers each had their own copy of
+that blind spot. **Guaranteed now, in ONE place:** `strip_command_openers` (and
+the plain-word twin `strip_command_opener_words`) drops compound syntax from the
+front of every command before any walker runs, so the body command is seen
+exactly as at top level. It follows bash: the keywords (`if then else elif while
+until do ! time coproc function`) and `{` are reserved only as WHOLE words
+(`{rm`, `do{` stay plain words), while `(` and `)` always break words, so
+`(rm`, `then(`, `!(`, `f(){`, `f ( ) {`, `a)rm` open a command position glued or
+spaced. A `case` header is dropped through the `)` that ends the first arm's
+pattern list, a bare `pat)` at segment start covers later arms, and `time -p`
+options go with `time`. Pattern words are never match starts, so a verb in an
+arm pattern is data. Wired into: the masked-entry builder (anchored rules, ssh
+and git-config payloads, global-option stripping), `ambiguity_conceals_verb`,
+`_stage_reads_program` and the prose-blanking runner check; the last two have no
+behavioural repro of their own (other layers already agree) and are wiring only.
+`_CD_RE` (directory tracking for control-plane writers) is a regex over raw text,
+so it carries the same opener list plus `time`/`nohup`/`env`/`sudo`/`VAR=1`
+prefixes. The unattended scope evaluator refuses groups outright (fail closed).
+Pinned by a differential (command x 40+ wrappers, decision equal to top level, in
+all four kill-switch x unattended states) in
+`tests/unit/test_compound_command_positions.py`, plus must-allow controls.
 
 **Declared residuals** (both pre-existing, both the false-BLOCK direction): a
 quoted multi-word case pattern with the verb inside (`case x in 'rm -rf x') …`)

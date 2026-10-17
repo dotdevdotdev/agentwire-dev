@@ -32,6 +32,14 @@ DANGEROUS = [
     "chmod -R 777 /",
     "cd ~/.agentwire && touch damagecontrol.yml",
     "echo x >| ~/.agentwire/damagecontrol.yml",
+    "git reset --hard HEAD~3",
+    "git clean -fdx",
+    "kill -9 -1",
+    "sudo rm -rf /tmp/x",
+    "ssh host rm -rf /tmp/x",
+    "ssh host 'rm -rf /tmp/x'",
+    "time -p cd ~/.agentwire && touch damagecontrol.yml",
+    "nohup cd ~/.agentwire && touch damagecontrol.yml",
 ]
 
 WRAPPERS = {
@@ -64,6 +72,22 @@ WRAPPERS = {
     "time": "time {c}",
     "coproc": "coproc {c}",
     "coproc-named": "coproc NAME { {c}; }",
+    "until-condition": "until {c}; do true; done",
+    "elif-condition": "if false; then true; elif {c}; then true; fi",
+    "while-condition": "while {c}; do true; done",
+    # glued openers/closers (#1112 review): `(` `)` always break words in bash
+    "subshell-case": "(case x in a) {c};; esac)",
+    "subshell-spaced-case": "( case x in a) {c};; esac )",
+    "func-glued-brace": "f(){ {c}; }; f",
+    "func-keyword-glued": "function f(){ {c}; }; f",
+    "func-spaced-parens": "f ( ) { {c}; }; f",
+    "case-first-arm-glued-body": "case x in a){c};; esac",
+    "case-second-arm-glued-body": "case x in a)true;;b){c};; esac",
+    "case-glued-leading-paren": "case x in (a){c};; esac",
+    "then-glued-paren": "if true; then({c}); fi",
+    "do-glued-paren": "for i in 1; do({c}); done",
+    "negated-subshell": "!({c})",
+    "case-no-in-header": "case x a) {c};; esac",
 }
 
 HARMLESS = ["echo hi", "ls -la", "git status"]
@@ -102,6 +126,31 @@ def test_wrapped_decision_equals_top_level(config):
     assert not bad, bad
 
 
+STATES = {
+    "default": (True, False),
+    "kill-switch-off": (False, False),
+    "unattended": (True, True),
+    "kill-switch-off-unattended": (False, True),
+}
+
+
+def test_differential_holds_with_kill_switch_off_and_unattended_on(config, monkeypatch):
+    bad = []
+    for state, (enabled, unattended) in STATES.items():
+        cfg = dict(config, safety=dict(config["safety"], enabled=enabled))
+        if unattended:
+            monkeypatch.setenv("AGENTWIRE_UNATTENDED", "1")
+        else:
+            monkeypatch.delenv("AGENTWIRE_UNATTENDED", raising=False)
+        for command in DANGEROUS:
+            top = _decision(cfg, command)
+            for name, wrapper in WRAPPERS.items():
+                got = _decision(cfg, wrapper.replace("{c}", command))
+                if got != top:
+                    bad.append((state, name, command, top, got))
+    assert not bad, bad
+
+
 def test_case_inside_substitution_equals_plain_substitution(config):
     bad = []
     for command in DANGEROUS:
@@ -132,6 +181,52 @@ def test_harmless_commands_stay_allowed_in_every_wrapper(config):
     "case x in a) grep -c rm -rf notes.txt;; esac",
     "if true; then echo rm -rf /tmp/x; fi",
     "for rm in a b; do echo hi; done",
+    # bash reserves `{` and the keywords only as whole words, so these are plain
+    # words and must not be read as openers
+    "echo {rm,ls} -rf /tmp/x",
+    "{echo hi; }",
+    "echo ${x} {a,b}",
+    "[[ a == (x) ]] && echo hi",
+    "grep -E '(a|b)' file",
+    "echo '(rm -rf /tmp/x)'",
+    "f() { echo hi; }; f",
+    "f(){ echo hi; }; f",
+    "case x in a)echo hi;; esac",
+    "(echo hi)",
+    "case x in a) echo hi;; esac",
+    "case x in a|b|c) echo hi;; esac",
+    "if true; then echo hi; fi",
 ])
 def test_verb_as_data_in_a_compound_stays_allowed(config, script):
     assert _decision(config, script) == "allow"
+
+
+def test_opener_stripper_exact_shapes():
+    from agentwire.safety._core import strip_command_opener_words as strip
+
+    cases = {
+        # a case header with no pattern end (the `a|b)` first segment) is left whole
+        "case x in a": ["case", "x", "in", "a"],
+        "time -p rm -rf x": ["rm", "-rf", "x"],
+        "if true": ["true"],
+        "{rm -rf x": ["{rm", "-rf", "x"],
+        "do{ rm": ["do{", "rm"],
+        "echo then rm": ["echo", "then", "rm"],
+        "f ( ) { rm x": ["rm", "x"],
+        "case x in a)rm y": ["rm", "y"],
+        "(rm y": ["rm", "y"],
+    }
+    bad = {k: strip(k.split()) for k, want in cases.items() if strip(k.split()) != want}
+    assert not bad, bad
+
+
+def test_concealment_sees_through_openers():
+    from agentwire.safety._core import ambiguity_conceals_verb
+
+    payload = 'ssh host "$(cat x)"'
+    bad = [
+        w for w in ("if true; then {c}; fi", "while true; do {c}; done", "! {c}")
+        if ambiguity_conceals_verb(w.replace("{c}", payload)) is None
+    ]
+    assert ambiguity_conceals_verb(payload) is not None
+    assert not bad, bad
