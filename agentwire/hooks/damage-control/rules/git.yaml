@@ -5,11 +5,11 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # GIT DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
-  - pattern: '\bgit\s+reset\s+--hard\b'
+  - pattern: '\bgit\s+reset\s+{ARGS}--hard\b'
     reason: git reset --hard (use --soft or stash)
     anchored: true
 
-  - pattern: '\bgit\s+clean\s+(-[^\s]*)*-[fd]'
+  - pattern: '\bgit\s+clean\s+{ARGS}-(?!-)(?![a-z]*n)[a-z]*[fd][a-z]*(?=[\s;&|)`]|$)'
     reason: git clean with force/directory flags
     anchored: true
 
@@ -18,7 +18,7 @@ bashToolPatterns:
     reason: git push --force (use --force-with-lease)
     anchored: true
 
-  - pattern: '\bgit\s+push\s+(-[^\s]*)*-f\b'
+  - pattern: '\bgit\s+push\s+{ARGS}-(?!-)[a-z]*f[a-z]*(?=[\s;&|)`]|$)'
     reason: git push -f (use --force-with-lease)
     anchored: true
 
@@ -65,12 +65,12 @@ bashToolPatterns:
     ask: true
     anchored: true
 
-  - pattern: '\bgit\s+branch\s+(-[^\s]*)*-D'
+  - pattern: '\bgit\s+branch\s+{ARGS}-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\s;&|)`]|$)'
     reason: Force deletes branch (even if unmerged)
     ask: true
     anchored: true
 
-  - pattern: '\bgit\s+push\s+\S+\s+--delete\b'
+  - pattern: '\bgit\s+push\s+{ARGS}--delete\b'
     reason: Deletes remote branch
     ask: true
     anchored: true

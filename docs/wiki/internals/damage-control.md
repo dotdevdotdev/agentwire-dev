@@ -440,6 +440,10 @@ defense-in-depth on top of the split, not implemented here.
 
 Patterns live in **categorized YAML files** under `agentwire/hooks/damage-control/rules/` (15 files, one per topic). To override or extend, drop YAML files into `~/.agentwire/damage-control/` — when that directory exists with `*.yaml` files, hooks load from there instead of the bundled rules.
 
+### Flag position: `{ARGS}` (#1125)
+
+GNU tools and git accept options after operands, so `rm foo -rf x` is the same operation as `rm -rf foo x`. A rule spelled `verb\s+(-[^\s]*)*-f` only sees flags before the first operand. A bash pattern may therefore contain `{ARGS}` ("any leading arguments of this command segment"), expanded at match time from `_core.RULE_ARGS_FRAGMENT`: it skips argument tokens but stops at a segment separator (`; & |`) and at the bare `--` (everything after is an operand, so `rm -- -rf` stays allowed). Quoted operands are already masked in the anchored haystack. Short flags match as cluster members (`-vrf`, `-fdx`); `git branch` uses a case-sensitive `D` so `-d` stays allowed, and `git clean` skips clusters containing `-n` (dry run). Rules using it: `rm` (short/`--recursive`/`--force`), `chown -R … root`, `git reset --hard`, `git clean`, `git push -f`, `git push --delete`, `git branch -D`. New flag-position rules should use `{ARGS}`, not a hand-widened regex. Pinned by `tests/unit/test_damage_control_flag_order.py` (rule family × flag position × wrapper × {default, kill switch, unattended}).
+
 ### Pattern Types
 
 #### 1. bashToolPatterns (Bash commands)

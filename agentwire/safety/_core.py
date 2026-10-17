@@ -46,6 +46,21 @@ def _rx(pattern: str, flags: int = re.IGNORECASE) -> "re.Pattern[str]":
     return re.compile(pattern, flags)
 
 
+#: ``{ARGS}`` in a rule pattern means "any number of leading arguments of this
+#: command segment" (#1125). GNU tools and git accept options after operands, so
+#: a rule spelled ``verb\s+(-[^\s]*)*-f`` sees the flag only BEFORE the first
+#: operand; ``verb\s+{ARGS}-f`` scans every later argument instead. A token is an
+#: argument unless it is a segment separator (``;`` ``&`` ``|`` — flags past
+#: those belong to the next command) or the bare ``--`` that ends option
+#: parsing (everything after it is an operand, so a file named ``-rf`` stays
+#: allowed). Quoted operands are already masked in the anchored haystack.
+RULE_ARGS_FRAGMENT = r"(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?"
+
+
+def expand_rule_pattern(pattern: str) -> str:
+    return pattern.replace("{ARGS}", RULE_ARGS_FRAGMENT)
+
+
 # ============================================================================
 # CONSTANTS
 # ============================================================================
@@ -6136,7 +6151,7 @@ def _decide_command(
         rule_id = pattern_obj.get("id")
         if rule_id and rule_id in disabled_rules:
             continue
-        pattern = pattern_obj.get("pattern", "")
+        pattern = expand_rule_pattern(pattern_obj.get("pattern", ""))
         reason = pattern_obj.get("reason", "Matched pattern")
         should_ask = pattern_obj.get("ask", False)
         bypassable = pattern_obj.get("bypassable", False)

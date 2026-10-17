@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "a020389f609326cb7b46a291e0a1d566555f9ab48ca299e1f9a2b9e5b0ecb90c", "generated_at": "2026-10-17T13:36:29Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "0619ee3d6fa0ed3086d84d4faaecc4cbb9b5daa32aeb30bed986558bd8b0ba3c", "generated_at": "2026-10-17T18:57:04Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -79,6 +79,21 @@ def _rx(pattern: str, flags: int = re.IGNORECASE) -> "re.Pattern[str]":
     ``except re.error`` still fires at the same place.
     """
     return re.compile(pattern, flags)
+
+
+#: ``{ARGS}`` in a rule pattern means "any number of leading arguments of this
+#: command segment" (#1125). GNU tools and git accept options after operands, so
+#: a rule spelled ``verb\s+(-[^\s]*)*-f`` sees the flag only BEFORE the first
+#: operand; ``verb\s+{ARGS}-f`` scans every later argument instead. A token is an
+#: argument unless it is a segment separator (``;`` ``&`` ``|`` — flags past
+#: those belong to the next command) or the bare ``--`` that ends option
+#: parsing (everything after it is an operand, so a file named ``-rf`` stays
+#: allowed). Quoted operands are already masked in the anchored haystack.
+RULE_ARGS_FRAGMENT = r"(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?"
+
+
+def expand_rule_pattern(pattern: str) -> str:
+    return pattern.replace("{ARGS}", RULE_ARGS_FRAGMENT)
 
 
 # ============================================================================
@@ -6171,7 +6186,7 @@ def _decide_command(
         rule_id = pattern_obj.get("id")
         if rule_id and rule_id in disabled_rules:
             continue
-        pattern = pattern_obj.get("pattern", "")
+        pattern = expand_rule_pattern(pattern_obj.get("pattern", ""))
         reason = pattern_obj.get("reason", "Matched pattern")
         should_ask = pattern_obj.get("ask", False)
         bypassable = pattern_obj.get("bypassable", False)

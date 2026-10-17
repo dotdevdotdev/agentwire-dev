@@ -5,19 +5,16 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # DESTRUCTIVE FILE OPERATIONS
   # ---------------------------------------------------------------------------
-  - pattern: '\brm\s+(-[^\s]*)*-[rRf]'
+  # {ARGS} (#1125): the flag may follow any operand (`rm foo -rf x`), up to `--`.
+  - pattern: '\brm\s+{ARGS}-(?!-)[a-z]*[rf][a-z]*(?=[\s;&|)`]|$)'
     reason: rm with recursive or force flags
     anchored: true
 
-  - pattern: '\brm\s+-[rRf]'
-    reason: rm with recursive or force flags
-    anchored: true
-
-  - pattern: '\brm\s+--recursive'
+  - pattern: '\brm\s+{ARGS}--recursive'
     reason: rm with --recursive flag
     anchored: true
 
-  - pattern: '\brm\s+--force'
+  - pattern: '\brm\s+{ARGS}--force'
     reason: rm with --force flag
     anchored: true
 
@@ -62,7 +59,7 @@ bashToolPatterns:
     reason: recursive chmod 777
     anchored: true
 
-  - pattern: '\bchown\s+-[Rr].*\broot\b'
+  - pattern: '\bchown\s+(?=[^;&|]*\broot\b){ARGS}-(?!-)[a-z]*r[a-z]*(?=[\s;&|)`]|$)'
     reason: recursive chown to root
     anchored: true
 
