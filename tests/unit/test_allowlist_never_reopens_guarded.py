@@ -120,18 +120,22 @@ NO_DELETE_TARGETS = [
     "~/.agentwire/sessions/s1/metadata.json",
     "~/.claude/projects/p1",
 ]
-# ``find -delete`` and ``mv`` away are not in this sweep: ``mv`` is not a delete
-# verb to the no-delete ladder at ANY home (HOME-independent allow), and
-# ``find -delete`` is re-permitted by the bypassable-rule override at HOME=/tmp
-# (filed as its own issue — that override still takes the unfiltered allowlist).
-DELETE_SHAPES = ["rm @T", "rmdir @T", "unlink @T", "rm -r @T"]
+# ``mv`` away is not here: it is not a delete verb to the no-delete ladder at ANY
+# home (a HOME-independent policy question, tracked separately). ``find -delete``
+# IS: the bypassable-rule override once waived it via ``/tmp/*`` (#1126).
+DELETE_SHAPES = [
+    "rm @T", "rmdir @T", "unlink @T", "rm -r @T",
+    "find @T -delete",
+    "find @T -type f -delete",
+    "find @T -exec rm {} +",
+]
 READ_ONLY_TARGETS = ["~/.bashrc", "~/.zshrc", "~/.bash_history"]
 WRITE_SHAPES = ["echo x >> @T", "tee @T < /dev/null", "sed -i s/a/b/ @T"]
 
 
 def test_no_delete_set_is_blocked_for_every_delete_verb_wherever_home_is(cfg, tmp_path, monkeypatch):
     bad = []
-    for home in _homes(tmp_path):
+    for home in [*_homes(tmp_path), "/tmp/x", "/Users/x", f"/tmp/claude-{os.getuid()}/h"]:  # last: inside the rm/find scratch carve-out
         monkeypatch.setenv("HOME", home)
         for spelling in NO_DELETE_TARGETS:
             target = os.path.expanduser(spelling)
@@ -205,3 +209,13 @@ def test_anchor_home_resolves_a_symlinked_home(tmp_path, monkeypatch):
     _core._live_homes.cache_clear()
     assert _core._anchor_home(f"{real.resolve()}/.agentwire/*") == _core._CANONICAL_HOME + "/.agentwire/*"
     assert _core._anchor_home(f"{link}/.agentwire/*") == _core._CANONICAL_HOME + "/.agentwire/*"
+
+
+def test_unguarded_scratch_delete_still_waived_by_the_location_entry(cfg, monkeypatch):
+    """Other half of #1126: the per-path split keeps /tmp scratch work working."""
+    monkeypatch.setenv("HOME", "/Users/x")
+    wrongly_blocked = [
+        c for c in ("find /tmp/work -name '*.o' -delete", "rm /tmp/work/out.log", "rm /var/tmp/build/a.o")
+        if check_command(c, cfg)["decision"] == "block"
+    ]
+    assert not wrongly_blocked, wrongly_blocked

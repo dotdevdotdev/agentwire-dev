@@ -34,7 +34,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "d3f411d26a29afe9682b36677a5891d48973d5f2509a55e5f68d2fd4a74e80da", "generated_at": "2026-10-17T18:38:29Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "937ca493a870707fe3a8a0e41ad0d91e606dede35c15d4ee459acaf3b04745d6", "generated_at": "2026-10-17T18:53:54Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -618,20 +618,27 @@ def is_command_path_allowed(
     command: str,
     allowed_paths: List[Dict[str, Any]],
     operation: str = "write",
+    guarded_patterns: Optional[List[str]] = None,
 ) -> bool:
     """ALL paths in ``command`` must have ``operation`` permitted by allowlist.
 
     Security: ALL paths must match (not any) — this stops e.g.
     ``rm /tmp/safe.txt /etc/passwd`` from being allowed just because /tmp is
     allowlisted.
+
+    With ``guarded_patterns``, a path that falls in a guarded class is judged
+    against :func:`guarded_allowlist` (a location entry cannot re-permit it,
+    #1126) while every other path keeps the full allowlist.
     """
     if not allowed_paths:
         return False
     paths = _extract_command_paths(command)
     if not paths:
         return False
+    guarded_entries = guarded_allowlist(allowed_paths, guarded_patterns) if guarded_patterns else allowed_paths
     for p in paths:
-        if not is_path_allowed_for_op(p, allowed_paths, operation):
+        entries = guarded_entries if guarded_patterns and any(match_path(p, g) for g in guarded_patterns) else allowed_paths
+        if not is_path_allowed_for_op(p, entries, operation):
             return False
     return True
 
@@ -6290,7 +6297,10 @@ def _decide_command(
         if reason.startswith("find -delete") and find_delete_only_in_scratch(command, cwd):
             continue
         operation = _infer_operation_from_reason(reason)
-        if not is_command_path_allowed(command, allowed, operation):
+        if not is_command_path_allowed(
+            command, allowed, operation,
+            [*_protected_path_patterns(), *zero_access, *read_only, *no_delete],
+        ):
             return {
                 "decision": "block",
                 "reason": reason,
