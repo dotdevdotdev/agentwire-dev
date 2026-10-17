@@ -183,10 +183,15 @@ class TestClaudeDirIsResolvedPerCall:
         import subprocess
         import sys
 
+        # -I ignores PYTHONPATH, so without this the child imports whichever
+        # agentwire is INSTALLED, not the tree under test. Pin it, and verify.
+        root = Path(__file__).resolve().parents[2]
         script = (
             "import importlib, pkgutil, sys\n"
             "from pathlib import Path\n"
+            f"sys.path.insert(0, {str(root)!r})\n"
             "import agentwire\n"
+            f"assert Path(agentwire.__file__).resolve().is_relative_to({str(root)!r}), agentwire.__file__\n"
             "real = Path.home() / '.claude'\n"
             "for info in pkgutil.walk_packages(agentwire.__path__, prefix='agentwire.'):\n"
             "    try: importlib.import_module(info.name)\n"
