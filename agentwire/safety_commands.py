@@ -726,6 +726,21 @@ DAMAGE_CONTROL_MATCHERS = {
 }
 
 
+def _owned_hook_entries(pre: Any, matcher: str, command: str) -> List[Dict[str, Any]]:
+    """The (matcher, command) hook dicts in a PreToolUse list; malformed entries are skipped."""
+    owned: List[Dict[str, Any]] = []
+    if not isinstance(pre, list):
+        return owned
+    for entry in pre:
+        if not isinstance(entry, dict) or entry.get("matcher") != matcher:
+            continue
+        inner = entry.get("hooks")
+        if not isinstance(inner, list):
+            continue
+        owned.extend(h for h in inner if isinstance(h, dict) and h.get("command") == command)
+    return owned
+
+
 def register_damage_control_in_settings() -> int:
     """Ensure every damage-control PreToolUse matcher is in ``~/.claude/settings.json``.
 
@@ -742,8 +757,13 @@ def register_damage_control_in_settings() -> int:
     else:
         settings = {}
 
-    hooks = settings.setdefault("hooks", {})
-    pre = hooks.setdefault("PreToolUse", [])
+    hooks = settings.setdefault("hooks", {}) if isinstance(settings, dict) else None
+    pre = hooks.setdefault("PreToolUse", []) if isinstance(hooks, dict) else None
+    if not isinstance(pre, list):
+        # Malformed settings.json: rewriting it would destroy what the user has.
+        print("settings.json has a malformed hooks.PreToolUse — damage-control "
+              "hooks not registered; fix the file and re-run", file=sys.stderr)
+        return 0
 
     added = 0
     for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
@@ -752,13 +772,7 @@ def register_damage_control_in_settings() -> int:
         # matchers (Read/Grep/Glob) legitimately share one hook script, so a
         # command-only check would register only the first and silently drop the
         # rest.
-        owned = [
-            h
-            for entry in pre
-            if entry.get("matcher") == matcher
-            for h in entry.get("hooks", [])
-            if h.get("command") == command
-        ]
+        owned = _owned_hook_entries(pre, matcher, command)
         if owned:
             # An existing agentwire-owned entry keeps its place but gets the
             # timeout: one registered without it (every pre-#1108 install)
@@ -1031,17 +1045,12 @@ def missing_damage_control_matchers() -> List[str]:
         settings = json.loads(settings_file.read_text())
     except (OSError, json.JSONDecodeError):
         settings = {}
-    pre = settings.get("hooks", {}).get("PreToolUse", []) if isinstance(settings, dict) else []
-    registered_pairs = {
-        (entry.get("matcher"), h.get("command"))
-        for entry in pre if isinstance(entry, dict)
-        for h in (entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else [])
-        if isinstance(h, dict)
-    }
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    pre = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
     missing = []
     for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
         command = f"~/.agentwire/hooks/damage-control/{hook_file}"
-        if (matcher, command) not in registered_pairs:
+        if not _owned_hook_entries(pre, matcher, command):
             missing.append(matcher)
     return missing
 
@@ -1057,16 +1066,12 @@ def damage_control_timeout_drift() -> List[str]:
         settings = json.loads(settings_file.read_text())
     except (OSError, json.JSONDecodeError):
         return []
-    pre = settings.get("hooks", {}).get("PreToolUse", []) if isinstance(settings, dict) else []
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    pre = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
     drifted = []
     for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
         command = f"~/.agentwire/hooks/damage-control/{hook_file}"
-        owned = [
-            h
-            for entry in pre if isinstance(entry, dict) and entry.get("matcher") == matcher
-            for h in (entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else [])
-            if isinstance(h, dict) and h.get("command") == command
-        ]
+        owned = _owned_hook_entries(pre, matcher, command)
         if any(h.get("timeout") != HOOK_TIMEOUT_SECONDS for h in owned):
             drifted.append(matcher)
     return drifted

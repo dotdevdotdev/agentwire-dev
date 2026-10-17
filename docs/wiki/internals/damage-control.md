@@ -1555,11 +1555,37 @@ the same 10 s deadline (over it: an unverifiable `ask`, id `core.scan-budget`).
 Edit/write/read never scan `content` / `old_string` / `new_string` (50 MB
 payloads pass in ~0.1 s); only the path is checked.
 
+**An audit-log failure never changes a decision.** Every `log_*` call in all
+five hooks goes through `audit_best_effort`: a full disk or an unwritable
+`logs/` dir prints one short stderr line and the computed decision stands. An
+allow stays an allow, and a genuine block keeps its real reason (not the audit
+error). Only a failure of the DECISION machinery fails closed.
+
+**Exit code is the decision code.** `run_hook_guarded` ends with `hard_exit`
+(`os._exit` after a guarded flush), so closed pipes cannot turn a block into the
+interpreter's exit 120. If stdout cannot be flushed the decision cannot be
+delivered, so the exit becomes 2; a dead stderr is ignored.
+
+**The kill switch and the budget.** `enabled: false` in `damagecontrol.yml` is
+read first (`kill_switch_off`) and turns the budget off with everything else: no
+size gate, and a scan or MCP screen that outruns the deadline is allowed
+(disabled), not asked, so a disabled hook no longer stalls unattended tasks
+with big commands. What runs BEFORE the switch by design is unchanged: the
+protected control plane (and protected commands) still block while disabled,
+under the 10 s deadline. A corrupt or unreadable `damagecontrol.yml` is the
+existing fail-secure behavior: `enabled` stays true.
+
 **Timeouts.** Hook registration writes `timeout: 30` (`HOOK_TIMEOUT_SECONDS`).
 `agentwire hooks install` UPDATES the timeout on existing agentwire-owned
-entries and `agentwire doctor` flags `[!!]` any registered matcher without it.
-A hook registered with NO timeout was measured not to be killed at 100 s, so
-the harness default is > 100 s, far above the 10 s scan deadline.
+entries and `agentwire doctor` flags `[!!]` any registered matcher whose
+timeout is missing or differs from 30 (so also one below the deadline plus
+margin). The installer OVERWRITES a user-tuned value (2, 5, 120, `"30"`, 0,
+`true`): this is an upgrade, not a preference it respects. A malformed
+`settings.json` (`hooks: []`, a non-list `PreToolUse`, non-dict entries) is
+skipped entry by entry in doctor and left untouched, with a warning, by the
+installer; neither crashes. A hook registered with NO timeout was measured not
+to be killed at 100 s, so the harness default is > 100 s, far above the 10 s
+scan deadline.
 
 **Re-measuring on a new Claude Code version.** In an empty temp dir, put a
 project-local `.claude/settings.local.json` registering a PreToolUse Bash hook
@@ -1572,8 +1598,14 @@ Speed: the protected/zero-access path patterns are prefiltered on the path's
 required literal and `_PATH_ODDITY` is anchored at token starts. This makes
 long UNQUOTED tokens linear (10 k chars: 9.8 s -> 0.2 s) and plain quoted
 strings linear (30 k chars: 0.2 s). Quoted strings full of path-like text are
-still super-linear (30 K of `a/b/` takes ~2 s, 30 K of `../` ~8 s); those,
+still super-linear (30 K of `a/b/` takes ~2 s, a quoted `../` run ~8.5 s); those,
 and runs of `\` or `{a,`, are bounded by the clock budget rather than fixed.
+A writer verb next to a protected path stays blocked with a long quoted string
+before it, after it, or holding the path, balanced or not (pinned; a differential
+against main over that slice found no decision differences).
+
+The read hook has no deadline but is linear in the path length (a 20 MB path
+takes ~4 s); edit/write scan only the path.
 
 Declared residuals: the clock budget needs `SIGALRM` on the main thread (every
 hook process; not a portal worker thread or Windows, where only the size gate

@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "8c34f4b3321ad2ff4a35e2c9b53735618a9bb9ae9a7b2a1ef04a21d2e6c16e70", "generated_at": "2026-10-17T00:25:07Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "5ec4abadb2845e75da54bf835cd0508fa9e2061f1b3848fe6b9e717be2d322b7", "generated_at": "2026-10-17T02:39:10Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -5690,20 +5690,41 @@ def scan_deadline(seconds: float):
         signal.signal(signal.SIGALRM, previous)
 
 
+def kill_switch_off(config: Dict[str, Any]) -> bool:
+    """True when ``enabled: false`` is set — the one documented way to turn damage control off."""
+    safety_cfg = config.get("safety")
+    return isinstance(safety_cfg, dict) and safety_cfg.get("enabled", True) is False
+
+
 def check_command(
     command: str,
     config: Dict[str, Any],
     cwd: Optional[str] = None,
     deadline_seconds: float = SCAN_DEADLINE_SECONDS,
 ) -> Dict[str, Any]:
-    """:func:`_decide_command` under the scan budget — over budget means ASK."""
-    refusal = _size_budget_refusal(command)
-    if refusal:
-        return refusal
+    """:func:`_decide_command` under the scan budget — over budget means ASK.
+
+    The kill switch is read first and the budget honors it: a disabled hook has
+    no size gate, and a scan that outruns the deadline is allowed (disabled),
+    not asked. The control-plane checks that precede the switch still run.
+    """
+    disabled = kill_switch_off(config)
+    if not disabled:
+        refusal = _size_budget_refusal(command)
+        if refusal:
+            return refusal
     try:
         with scan_deadline(deadline_seconds):
             return _decide_command(command, config, cwd)
     except ScanBudgetExceeded:
+        if disabled:
+            return {
+                "decision": "allow",
+                "reason": "Damage control disabled (scan budget not enforced)",
+                "pattern": None,
+                "command": command,
+                "disabled": True,
+            }
         return _budget_refusal(
             command,
             f"Command scan exceeded its {deadline_seconds:g}s budget — too slow to analyze safely",
@@ -5738,8 +5759,6 @@ def read_hook_input(stream: Any = None) -> Dict[str, Any]:
         )
     try:
         data = json.loads(raw)
-    except RecursionError:
-        raise HookInputError("hook input nested too deeply to analyze safely")
     except ValueError as e:
         raise HookInputError(f"invalid JSON on stdin ({e})")
     if not isinstance(data, dict):
@@ -5747,25 +5766,68 @@ def read_hook_input(stream: Any = None) -> Dict[str, Any]:
     return data
 
 
+def audit_best_effort(log: Any) -> Any:
+    """Wrap an audit ``log_*`` function so its failure never changes a decision.
+
+    A full disk or unwritable logs dir must not turn an allow into a block, or a
+    real block reason into the audit error. Reports one short stderr line.
+    """
+
+    def wrapper(*args: Any, **kwargs: Any) -> None:
+        try:
+            log(*args, **kwargs)
+        except Exception as e:
+            try:
+                print(f"agentwire: audit log failed ({type(e).__name__}) — decision unchanged",
+                      file=sys.stderr)
+            except Exception:
+                pass
+
+    return wrapper
+
+
+def hard_exit(code: int) -> None:
+    """Exit with ``code`` whatever state the std pipes are in.
+
+    Interpreter shutdown turns a failed flush on a closed pipe into exit 120.
+    A decision that cannot be delivered on stdout is not an allow, so that
+    failure becomes a block; a closed stderr is ignored.
+    """
+    try:
+        sys.stdout.flush()
+    except Exception:
+        code = 2
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(code)
+
+
 def run_hook_guarded(main: Any) -> None:
     """Run a hook ``main``; any unexpected exception becomes a blocking exit 2."""
+    code = 0
     try:
         main()
-        return
-    except SystemExit:
-        raise
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 2)
     except HookInputError as e:
-        reason = str(e)
+        code = _block_exit(str(e))
     except ScanBudgetExceeded:
-        reason = "the scan exceeded its time budget"
+        code = _block_exit("the scan exceeded its time budget")
     except RecursionError:
-        reason = "input nested too deeply to analyze safely"
+        code = _block_exit("input nested too deeply to analyze safely")
     except BaseException as e:  # KeyboardInterrupt included: never exit 1
-        reason = f"the hook failed ({type(e).__name__}: {e})"
+        code = _block_exit(f"the hook failed ({type(e).__name__}: {e})")
+    hard_exit(code)
+
+
+def _block_exit(reason: str) -> int:
     try:
         print(f"SECURITY: Blocked: {reason} — failing closed", file=sys.stderr)
-    finally:
-        sys.exit(2)
+    except Exception:
+        pass
+    return 2
 
 
 def _decide_command(
@@ -6251,6 +6313,11 @@ def check_mcp_tool(tool_name: str, config: Dict[str, Any]) -> Dict[str, Any]:
         "matched": False,
     }
 # === END GENERATED ===
+
+# An audit-log failure never changes the decision (#1108).
+log_allowed, log_blocked, log_disabled = (
+    audit_best_effort(f) for f in (log_allowed, log_blocked, log_disabled)
+)
 
 
 # ============================================================================

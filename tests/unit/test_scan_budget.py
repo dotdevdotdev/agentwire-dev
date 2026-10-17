@@ -174,3 +174,151 @@ def test_the_alarm_interrupts_a_real_pathological_scan(cfg):
     elapsed = time.perf_counter() - t
     assert (result["decision"], result.get("id")) == ("ask", "core.scan-budget")
     assert elapsed < 3, elapsed
+
+
+def test_the_kill_switch_turns_the_budget_off_too(cfg):
+    off = {**cfg, "safety": {"enabled": False, "disabled_rules": []}}
+    big_line = "echo " + "a" * 40_000
+    assert check_command(big_line, cfg)["id"] == "core.command-too-large"
+    result = check_command(big_line, off)
+    assert (result["decision"], result.get("disabled")) == ("allow", True)
+
+    # a scan that outruns the clock is allowed (disabled), not asked
+    slow = "echo '" + "../" * 10_000 + "'"
+    assert check_command(slow, cfg, deadline_seconds=0.3)["id"] == "core.scan-budget"
+    assert check_command(slow, off, deadline_seconds=0.3)["decision"] == "allow"
+
+    # the control plane precedes the switch by design: it still blocks
+    assert check_command("echo x > ~/.agentwire/damagecontrol.yml", off)["decision"] == "block"
+
+
+def test_a_corrupt_damagecontrol_file_keeps_damage_control_on(tmp_path):
+    corrupt = tmp_path / "damagecontrol.yml"
+    corrupt.write_text("enabled: [unclosed\n  : :")
+    assert core.load_safety_config(global_config_path=corrupt, cwd=str(tmp_path))["enabled"] is True
+
+
+def test_the_hooks_honor_the_kill_switch_interactive_and_unattended(monkeypatch, capsys):
+    import importlib.util
+    import io
+    import json
+    import os
+    import sys
+
+    hooks_dir = RULES_DIR.parent
+    sys.path.insert(0, str(hooks_dir))
+    try:
+        mods = {}
+        for name in ("bash", "mcp"):
+            spec = importlib.util.spec_from_file_location(f"kill_{name}", hooks_dir / f"{name}-tool-damage-control.py")
+            mods[name] = mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            for log in ("log_allowed", "log_asked", "log_blocked", "log_disabled", "log_escape"):
+                setattr(mod, log, lambda *a, **k: None)
+    finally:
+        sys.path.remove(str(hooks_dir))
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(os, "_exit", fake_exit)
+
+    def run(mod, payload, enabled, unattended):
+        monkeypatch.setattr(mod, "load_safety_config", lambda: {"enabled": enabled, "disabled_rules": []})
+        monkeypatch.setattr(mod, "is_unattended", lambda: unattended)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+        capsys.readouterr()
+        try:
+            mod.run_hook_guarded(mod.main)
+        except SystemExit as e:
+            return e.code, bool(capsys.readouterr().out)
+
+    bash = {"tool_name": "Bash", "tool_input": {"command": "echo " + "a" * 40_000}}
+
+    def over_budget(*args, **kwargs):
+        raise mods["mcp"].ScanBudgetExceeded()
+
+    monkeypatch.setattr(mods["mcp"], "_screen_tool_paths", over_budget)
+    mcp = {"tool_name": "mcp__agentwire__session_send", "tool_input": {"x": "/tmp/a"}}
+    seen = {
+        (hook, enabled, unattended): run(mods[hook], payload, enabled, unattended)
+        for hook, payload in (("bash", bash), ("mcp", mcp))
+        for enabled in (False, True)
+        for unattended in (False, True)
+    }
+    # (exit code, printed an ask)
+    assert seen == {
+        ("bash", False, False): (0, False), ("bash", False, True): (0, False),
+        ("bash", True, False): (0, True), ("bash", True, True): (2, False),
+        ("mcp", False, False): (0, False), ("mcp", False, True): (0, False),
+        ("mcp", True, False): (0, True), ("mcp", True, True): (2, False),
+    }
+
+
+def test_malformed_settings_never_crash_registration_or_doctor(tmp_path, monkeypatch):
+    import json
+
+    from agentwire import safety_commands
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_file = tmp_path / ".claude" / "settings.json"
+    settings_file.parent.mkdir()
+    shapes = {
+        "hooks-list": {"hooks": []},
+        "pre-dict": {"hooks": {"PreToolUse": {}}},
+        "entry-hooks-empty-list": {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]}},
+        "entry-hooks-not-list": {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": {}}]}},
+        "entry-not-dict": {"hooks": {"PreToolUse": ["Bash", None, 3]}},
+        "inner-not-dict": {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": ["x", 1]}]}},
+        "top-level-list": [],
+    }
+    crashed = {}
+    for name, shape in shapes.items():
+        settings_file.write_text(json.dumps(shape))
+        try:
+            safety_commands.damage_control_timeout_drift()
+            safety_commands.missing_damage_control_matchers()
+            safety_commands.register_damage_control_in_settings()
+        except Exception as e:  # noqa: BLE001 - collecting every offender
+            crashed[name] = repr(e)
+    assert not crashed, crashed
+
+
+QUOTED_WRITERS = {
+    "redirect": "echo x > {p}",
+    "rm": "rm {p}",
+    "cp": "cp x {p}",
+    "tee": "echo x | tee {p}",
+    "sed-i": "sed -i.bak s/a/b/ {p}",
+    "mv": "mv x {p}",
+    "ln": "ln -sf x {p}",
+    "curl-o": "curl -o {p} http://e.com",
+    "dd": "dd if=x of={p}",
+    "python": "python3 -c \"open('{p}','w').write('x')\"",
+}
+
+
+def test_a_long_quoted_string_never_hides_a_writer_next_to_a_protected_path(cfg):
+    """The quoted-string linearization must not drop a writer: all variants stay blocked.
+
+    Differential against main over this slice (3K and 31K pads) found 0 decision
+    differences; the only allows are a writer and path BOTH inside one quoted
+    string, which is text, on main too.
+    """
+    pad = "x" * 3000
+    control_plane = "~/.agentwire/damagecontrol.yml"
+    variants = {
+        "outside-balanced": lambda w: f"echo '{pad}'; " + w.format(p=control_plane),
+        "outside-unbalanced": lambda w: f"echo '{pad}; " + w.format(p=control_plane),
+        "outside-double-quoted": lambda w: f'echo "{pad}"; ' + w.format(p=control_plane),
+        "outside-after-pathy-pad": lambda w: f'echo "{"a/b/" * 750}"; ' + w.format(p=control_plane),
+        "path-in-quote-balanced": lambda w: w.format(p=f"'{pad}/.damagecontrol.yml'"),
+        "path-in-quote-unbalanced": lambda w: w.format(p=f"'{pad}/.damagecontrol.yml"),
+    }
+    not_blocked = [
+        f"{writer}/{variant}"
+        for writer, template in QUOTED_WRITERS.items()
+        for variant, build in variants.items()
+        if check_command(build(template), cfg)["decision"] != "block"
+    ]
+    assert not not_blocked, not_blocked
