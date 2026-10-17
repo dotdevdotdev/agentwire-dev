@@ -772,6 +772,37 @@ class TestZeroEnterFalsePositive:
         assert actions["enters"] == 0  # never pressed into a box with no paste
 
 
+class TestBoxIsExactly:
+    """#1105 round 2: the heal's identity test is equality, not containment."""
+
+    MSG = "[MSG from w · done] PR drafted  ⟨#abc123⟩"
+    LONG = "[MSG from w · done] " + "word " * 60 + " ⟨#abc123⟩"
+
+    def test_mixed_boxes_are_not_exactly_ours(self):
+        for box in (
+            self.MSG + " my reply", "re: " + self.MSG, self.MSG[:10] + "X" + self.MSG[10:],
+            "> " + self.MSG + "\nreply", self.MSG + " th",
+        ):
+            assert not session_ready.box_is_exactly(box, self.MSG), box
+
+    def test_whitespace_differences_are_still_ours(self):
+        wrapped = self.MSG.replace(" ", "\n  ", 3) + "  \n"
+        assert session_ready.box_is_exactly(wrapped, self.MSG)
+
+    def test_tail_window_is_ours_but_not_with_a_reply_after_it(self):
+        tail = self.LONG[-150:]
+        assert session_ready.box_is_exactly(tail, self.LONG)
+        assert not session_ready.box_is_exactly(tail + " reply", self.LONG)
+        assert not session_ready.box_is_exactly("reply " + tail, self.LONG)
+        assert not session_ready.box_is_exactly(self.LONG[-150:-12], self.LONG)
+
+    def test_heal_does_not_press_enter_on_a_mixed_box(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        actions = _env(monkeypatch, lambda a: render_box(self.MSG + " my reply"))
+        assert session_ready.heal_submit("s", self.MSG) == "box_changed"
+        assert actions["enters"] == 0
+
+
 class TestHealSubmit:
     """#689 healing primitive — Enter-only, never a paste, and (#1105 review)
     re-verified before every Enter with POSITIVE confirmation only."""

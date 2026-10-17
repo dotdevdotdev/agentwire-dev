@@ -711,6 +711,34 @@ def _submit_phase(session: str, message: str, pane_index: int) -> bool:
         cap = _snapshot(session, pane_index)
 
 
+def box_is_exactly(box: str, message: str) -> bool:
+    """Is the box content EXACTLY our paste — nothing before, nothing after?
+
+    The heal's identity test (#1105 round 2). :func:`box_shows_message` is a
+    substring test, right for "did the paste land?" but wrong for "may I press
+    Enter?": a box holding our message PLUS a human's reply contains it too,
+    and Enter submits the lot. Here the whitespace-normalized box must EQUAL
+    the whitespace-normalized message (trailing spaces/newlines are ours), or —
+    for a paste taller than the box, whose head scrolled out — be a SUFFIX of it
+    (nothing follows the visible window), at least ``MIN_BOX_FRAGMENT`` long and
+    carrying the message's unique id token.
+    """
+    nb = "".join(box.split())
+    nm = "".join(message.split())
+    if not nb or not nm:
+        return False
+    if nb == nm:
+        return True
+    token = _delivery_token(message)
+    return (
+        len(nb) >= MIN_BOX_FRAGMENT
+        and len(nb) < len(nm)
+        and nm.endswith(nb)
+        and bool(token)
+        and token in nb
+    )
+
+
 def heal_submit(session: str, message: str, pane_index: int = 0) -> str:
     """Enter-only submit of OUR paste sitting in the box — strictly verified.
 
@@ -719,7 +747,8 @@ def heal_submit(session: str, message: str, pane_index: int = 0) -> str:
     in two ways, because the heal fires on a box nobody just pasted into:
 
     * **Re-verify before EVERY Enter.** The box is re-read immediately before
-      each press and the press happens only while it still holds our text. If
+      each press and the press happens only while it is EXACTLY our text
+      (:func:`box_is_exactly` — not merely containing it). If
       it was cleared or replaced in between (a human took over), we stop —
       pressing Enter into a draft that is not ours submits it.
     * **Positive confirmation only.** "The box no longer holds our text" is
@@ -741,9 +770,7 @@ def heal_submit(session: str, message: str, pane_index: int = 0) -> str:
         while True:
             cap = _snapshot(session, pane_index)
             box = input_box(cap)
-            if box is not None and not box_shows_message(
-                box, message, allow_chip=False
-            ):
+            if box is not None and not box_is_exactly(box, message):
                 if presses == 0:
                     return "box_changed"
                 confirmed = _poll(
@@ -763,9 +790,8 @@ def heal_submit(session: str, message: str, pane_index: int = 0) -> str:
             press_enter(session, pane_index=pane_index)
             presses += 1
             _poll(
-                lambda: not box_shows_message(
-                    input_box(_snapshot(session, pane_index)) or "", message,
-                    allow_chip=False,
+                lambda: not box_is_exactly(
+                    input_box(_snapshot(session, pane_index)) or "", message
                 ),
                 SUBMIT_TIMEOUT,
             )

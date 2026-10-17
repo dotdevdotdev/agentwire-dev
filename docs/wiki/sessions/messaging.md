@@ -142,20 +142,26 @@ lands in a durable inbox and is injected only at a safe boundary.
    `box_not_empty`, penalized every tick, the text never submitted (reproduced
    in a real 30-column Claude pane: attempts 0→1→2). A window is now accepted,
    but Enter is pressed only into a box that is **provably our paste**.
-   `inbox._stuck_in_box` requires ALL of: **(1) provenance** — the entry
+   `inbox._stuck_in_box` requires BOTH of: **(1) provenance** — the entry
    carries `pasted_ts`, stamped by the drain *before* it pastes, within the last
-   10 minutes (`PASTE_HEAL_WINDOW_MS`); a box that merely resembles a pending
-   message but was never pasted by that entry is a draft. **(2)** the box is a
-   **suffix** of the oldest-first batch the drain would have pasted, at least
-   `MIN_BOX_FRAGMENT` (80) non-space chars, **containing the final `⟨#id⟩`
-   token** (or the whole render is in the box). **What a false accept now
-   takes:** a human must have *replaced* our landed paste with text that
-   reproduces ≥80 chars of its tail including the unique id token, inside the
-   10-minute window — i.e. retyped our message from memory. Quoting it
-   without the token, quoting it after the window, or quoting a message the
-   drain never pasted all stay foreign. (The earlier "clobber protection is
-   unchanged" claim was wrong for the quoted-tail shape; this is the narrowed
-   guarantee.)
+   10 minutes (`PASTE_HEAL_WINDOW_MS`), and **cleared on every outcome that
+   leaves nothing of ours in the box** (a refused paste, a dialog, a foreign
+   draft, an unproven paste, `box_changed`); only `pasted_unsubmitted` keeps it.
+   **(2) identity by EQUALITY** (`session_ready.box_is_exactly`) — the
+   whitespace-normalized box must equal the whitespace-normalized pasted batch
+   (trailing spaces/newlines are ours), or, for a paste taller than the box, be
+   a **suffix** of it (nothing after the visible window), at least
+   `MIN_BOX_FRAGMENT` (80) chars, containing the final `⟨#id⟩` token. The same
+   predicate gates every Enter in `heal_submit`. Substring containment is NOT
+   enough: a box holding our message **plus** a reply, a prefix, text inserted
+   in the middle or a trailing partial is a draft and never gets an Enter.
+   **What a false accept takes:** within 10 minutes of the drain's paste, the
+   box must hold, whitespace aside, exactly our paste (or exactly its tail
+   window including the id token) — i.e. a human would have to replace it with a
+   verbatim copy. (The earlier "unchanged" and "retype 80+ chars" sentences were
+   wider than the code; this is the guarantee.) The `send --verify` /
+   `flush --force` paste path (`_deliver_once`'s already-landed check) still uses
+   the looser containment test; it is outside the heal and unchanged.
 
    **The heal confirms only on positive proof, and re-checks before every
    Enter.** `session_ready.heal_submit` re-reads the box immediately before
@@ -168,8 +174,13 @@ lands in a durable inbox and is injected only at a safe boundary.
    busy agent that queues it without any echo stays pending until the echo
    appears; the `queued_placeholder` gate keeps the drain from re-pasting while
    the queue indicator shows. Heals are **bounded**: `stuck_in_box` and
-   `pasted_unsubmitted` stay no-penalty for `MAX_HEALS` (10) attempts, then the
-   entry dead-letters with that reason (load-bearing kinds email the owner).
+   `pasted_unsubmitted` stay no-penalty for `MAX_HEALS` (10) attempts. At the
+   bound the drain first looks for a positive signal
+   (`_exhaustion_verdict`): the message echoed on scrollback (head + id token) →
+   it was delivered, unlinked, never dead-lettered; the agent's
+   queued-messages placeholder → busy, keep waiting; otherwise it dead-letters
+   with reason `delivery could not be confirmed` (so the owner mail says
+   unconfirmed, not lost; load-bearing kinds email).
    The genuinely-busy reasons (`target_busy`, `queued_placeholder`,
    `box_static`, `target_parked`) remain unbounded.
 
@@ -202,7 +213,7 @@ lands in a durable inbox and is injected only at a safe boundary.
    carries its last deferral `reason`, `reason_ts` and a `detail`, stamped on
    penalized and no-penalty deferrals, and `msg inbox` prints it. `detail`
    never contains box text (the box may hold a human's draft): a foreign box is
-   recorded as `foreign_draft len=N sha=xxxxxxxx`. `--json` has the fields
+   recorded as `foreign_draft len=N` (length only — a hash of a short draft such as a PIN is brute-forceable). `--json` has the fields
    (plus `pasted_ts`, `heals`).
 
    As a last-resort

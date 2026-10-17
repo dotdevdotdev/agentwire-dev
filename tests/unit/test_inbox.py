@@ -1457,7 +1457,7 @@ class TestDeferralVisibility:
         (m,) = inbox.list_messages("s")
         assert m.reason == "box_not_empty"
         assert m.reason_ts > 0
-        assert m.detail.startswith("foreign_draft len=16 sha=")
+        assert m.detail == "foreign_draft len=16"
 
     def test_no_penalty_deferral_is_stamped_too(self, isolate, monkeypatch):
         inbox.enqueue("s", "hi", sender="x")
@@ -1540,7 +1540,7 @@ class TestHealClobberAndBounds:
         (left,) = inbox.list_messages("s")
         assert left.reason == "box_changed" and left.attempts == 1
 
-    def test_heals_are_bounded_and_dead_letter_visibly(self, isolate, monkeypatch):
+    def test_exhausted_heals_dead_letter_as_unconfirmed(self, isolate, monkeypatch):
         m = _enq("s", self.LONG, kind="request", sender="w")[0]
         self._patch(monkeypatch, m.render()[-150:], outcome="unconfirmed")
         monkeypatch.setattr(inbox, "_escalate_dead_letters", lambda *a, **k: None)
@@ -1550,7 +1550,66 @@ class TestHealClobberAndBounds:
         inbox.flush_session("s")
         assert inbox.list_messages("s") == []
         (dead,) = inbox.list_dead("s")
-        assert dead.reason == "stuck_in_box" and dead.heals == inbox.MAX_HEALS
+        assert dead.reason == "delivery could not be confirmed"
+        assert dead.heals == inbox.MAX_HEALS
+
+    def test_exhaustion_email_says_unconfirmed_not_lost(self, isolate, monkeypatch):
+        m = _enq("s", self.LONG, kind="request", sender="w")[0]
+        self._patch(monkeypatch, m.render()[-150:], outcome="unconfirmed")
+        reasons = []
+        monkeypatch.setattr(
+            inbox, "_escalate_dead_letters", lambda batch, r: reasons.append(r))
+        for _ in range(inbox.MAX_HEALS):
+            inbox.flush_session("s")
+        assert reasons[-1] == "delivery could not be confirmed"
+
+    def _verdict(self, monkeypatch, scrollback, box_sgr):
+        from agentwire import session_ready
+
+        m = _enq("s", self.LONG, kind="request", sender="w")[0]
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, p=0: scrollback(m))
+        monkeypatch.setattr(prompt_router, "capture", lambda s, p=0, **kw: "x")
+        monkeypatch.setattr(
+            prompt_router, "input_box_content_sgr", lambda vis: box_sgr)
+        return inbox._exhaustion_verdict(m)
+
+    def test_verdict_delivered_when_echoed_outside_the_box(self, isolate, monkeypatch):
+        v = self._verdict(
+            monkeypatch,
+            lambda m: f"❯ {m.render()[:60]} … {m.render()[-30:]}\n{RULE}\n❯\n{RULE}",
+            "")
+        assert v == "delivered"
+
+    def test_verdict_queued_when_agent_shows_the_queue_placeholder(
+        self, isolate, monkeypatch
+    ):
+        v = self._verdict(
+            monkeypatch, lambda m: f"{RULE}\n❯\n{RULE}",
+            "Press up to edit queued messages")
+        assert v == "queued"
+
+    def test_verdict_unconfirmed_when_nothing_observable(self, isolate, monkeypatch):
+        v = self._verdict(monkeypatch, lambda m: f"{RULE}\n❯\n{RULE}", "")
+        assert v == "unconfirmed"
+
+    def test_delivered_verdict_unlinks_instead_of_dead_lettering(
+        self, isolate, monkeypatch
+    ):
+        m = _enq("s", self.LONG, kind="request", sender="w")[0]
+        m.heals = inbox.MAX_HEALS - 1
+        inbox._write_message(m.path, m)
+        monkeypatch.setattr(inbox, "_exhaustion_verdict", lambda msg: "delivered")
+        dead = inbox._bump_attempts(inbox.list_messages("s"), "stuck_in_box")
+        assert dead == 0 and inbox.list_messages("s") == []
+        assert inbox.list_dead("s") == []
+
+    def test_queued_verdict_keeps_the_entry_pending(self, isolate, monkeypatch):
+        m = _enq("s", self.LONG, kind="request", sender="w")[0]
+        m.heals = inbox.MAX_HEALS - 1
+        inbox._write_message(m.path, m)
+        monkeypatch.setattr(inbox, "_exhaustion_verdict", lambda msg: "queued")
+        assert inbox._bump_attempts(inbox.list_messages("s"), "stuck_in_box") == 0
+        assert len(inbox.list_messages("s")) == 1 and inbox.list_dead("s") == []
 
     def test_busy_reasons_stay_unbounded(self, isolate, monkeypatch):
         inbox.enqueue("s", "hi", sender="x")
@@ -1567,3 +1626,64 @@ class TestHealClobberAndBounds:
         events = inbox.EVENTS_FILE.read_text()
         for blob in (m.detail, json.dumps(m.to_dict()), events):
             assert "private" not in blob
+
+
+class TestHealEqualityAndStamp:
+    """#1105 round 2: a box holding our message PLUS anything is not ours."""
+
+    SHORT = "PR drafted"
+
+    def _heal(self, monkeypatch, box):
+        m = _enq("s", self.SHORT, kind="done", sender="w")[0]
+        finishes, pasted = TestStuckInBox()._patch(
+            monkeypatch, box(m.render()), finish_ok=True)
+        res = inbox.flush_session("s")
+        return m, finishes, pasted, res
+
+    def test_mixed_boxes_are_never_given_enter(self, isolate, monkeypatch):
+        shapes = {
+            "appended": lambda r: r + " my reply",
+            "prepended": lambda r: "re: " + r,
+            "quoted+reply": lambda r: "> " + r + "\nreply",
+            "middle": lambda r: r[:20] + " INSERTED " + r[20:],
+            "trailing partial": lambda r: r + " th",
+            "multi-line reply": lambda r: r + "\nline one\nline two\nline three",
+        }
+        bad = []
+        for name, shape in shapes.items():
+            m, finishes, pasted, _ = self._heal(monkeypatch, shape)
+            if finishes or pasted or len(inbox.list_messages("s")) != 1:
+                bad.append(name)
+            inbox.purge_pending("s")
+        assert not bad, bad
+
+    def test_trailing_whitespace_only_is_still_ours(self, isolate, monkeypatch):
+        m, finishes, pasted, res = self._heal(monkeypatch, lambda r: r + "  \n ")
+        assert res["delivered"] == 1 and finishes == [m.render()] and not pasted
+
+    def test_refused_paste_leaves_no_stamp(self, isolate, monkeypatch):
+        for reason in ("target_dialog", "box_not_empty", "delivery_unverified"):
+            inbox.enqueue("s", "hi", sender="x")
+            _patch_delivery(monkeypatch, empty=True, deliver=(False, reason))
+            inbox.flush_session("s")
+            (m,) = inbox.list_messages("s")
+            assert m.pasted_ts == 0, reason
+            inbox.purge_pending("s")
+
+    def test_landed_unsubmitted_paste_keeps_its_stamp(self, isolate, monkeypatch):
+        inbox.enqueue("s", "hi", sender="x")
+        _patch_delivery(monkeypatch, empty=True, deliver=(False, "pasted_unsubmitted"))
+        inbox.flush_session("s")
+        (m,) = inbox.list_messages("s")
+        assert m.pasted_ts > 0
+
+    def test_box_changed_clears_the_stamp(self, isolate, monkeypatch):
+        from agentwire import session_ready
+
+        m = _enq("s", self.SHORT, kind="done", sender="w")[0]
+        TestStuckInBox()._patch(monkeypatch, m.render(), finish_ok=True)
+        monkeypatch.setattr(
+            session_ready, "heal_submit", lambda s, t, pane_index=0: "box_changed")
+        inbox.flush_session("s")
+        (left,) = inbox.list_messages("s")
+        assert left.pasted_ts == 0
