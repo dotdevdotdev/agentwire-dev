@@ -516,6 +516,16 @@ def _render_damage_control_section() -> int:
     else:
         print("  [ok] PreToolUse damage-control matchers registered")
 
+    # A hook that outlives its timeout is killed and the call RUNS (#1108).
+    timeout_drift = safety_commands.damage_control_timeout_drift()
+    if timeout_drift:
+        print(f"  [!!] Damage-control hooks registered without timeout {safety_commands.HOOK_TIMEOUT_SECONDS}s: "
+              f"{', '.join(timeout_drift)}")
+        print("       Fix: agentwire hooks install")
+        issues += 1
+    else:
+        print("  [ok] Damage-control hook timeouts match the scan budget")
+
     # Built-in unattended grants that name no live rule (#914 / #916). These
     # read as working policy and are inert — the whole `DEFAULT_UNATTENDED_ALLOW`
     # set went silently dead on this machine because the installed tooldefs are

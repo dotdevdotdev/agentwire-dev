@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "1e1fe9861d77c77c59d695e8cce89dec2e44ea7d9b1d9cac75fb8c5003ef1424", "generated_at": "2026-10-16T20:22:58Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "d1e82a5cc8d23a4500da992b7de7f264d81ff5e5abc6202a27b17f10cf4b84ab", "generated_at": "2026-10-17T04:28:22Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -63,6 +63,7 @@ fail loudly if drift happens.
 """
 
 import codecs
+import contextlib
 import fnmatch
 import functools
 import glob
@@ -73,6 +74,9 @@ import posixpath
 import re
 import shlex
 import shutil
+import signal
+import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -469,8 +473,11 @@ def matches_path_in_command(pattern: str, command: str) -> bool:
         haystacks.extend(v for v in variants if v != hay)
 
     glob = is_glob_pattern(pattern)
+    literals = _path_literals(pattern)
     matched = False
     for hay in haystacks:
+        if not _may_mention_path(hay, literals):
+            continue
         try:
             rx = _rx(regex)
             pos = 0
@@ -682,6 +689,33 @@ def _path_context_regex(path: str) -> str:
     return r'(?:' + re.escape(expanded) + r'|' + re.escape(path) + r')'
 
 
+def _path_literals(path: str) -> Tuple[str, ...]:
+    """Case-folded literals of which at least one must occur for ``path`` to match.
+
+    The ``{path}`` regex is quadratic on a long token (#1108): ``[^\\s/]*``
+    re-scans the rest of the token from every start position. Every match
+    must contain the path's literal text, so a ``casefold`` containment test
+    rules the pattern out in O(n) before the regex ever runs. Empty means no
+    usable literal (a glob ending in ``*``), i.e. no prefilter.
+    """
+    if is_glob_pattern(path):
+        if '[' in path:
+            return ()
+        literal = max(re.split(r'[*?]', path), key=len)
+        return (literal.casefold(),) if literal else ()
+    expanded = os.path.expanduser(path)
+    return tuple(dict.fromkeys(
+        p.rstrip('/').casefold() for p in (expanded, path) if p.rstrip('/')
+    ))
+
+
+def _may_mention_path(text: str, literals: Tuple[str, ...]) -> bool:
+    if not literals:
+        return True
+    folded = text.casefold()
+    return any(lit in folded for lit in literals)
+
+
 def path_ladder_haystacks(command: str, path: str) -> List[str]:
     """Haystacks for the readOnly/noDelete/protected path ladders (#922).
 
@@ -701,7 +735,11 @@ def path_ladder_haystacks(command: str, path: str) -> List[str]:
     except re.error:
         return [command]
 
+    literals = _path_literals(path)
+
     def _mentions_path(token: str) -> bool:
+        if not _may_mention_path(token, literals):
+            return False
         if keep.search(token):
             return True
         canon = canonicalize_command(token)
@@ -720,6 +758,8 @@ def check_path_patterns(
 
     Returns ``(matched, reason)`` where reason names the operation that triggered.
     """
+    if not _may_mention_path(command, _path_literals(path)):
+        return False, ""
     path_regex = _path_context_regex(path)
     for pattern_template, operation in patterns:
         try:
@@ -2309,13 +2349,15 @@ def redact_prose_mentions(command: str, path: str) -> str:
     :func:`_reads_as_prose`).
     """
     path_re = _rx(_path_context_regex(path))
+    literals = _path_literals(path)
     out: List[str] = []
     last = 0
     for m in _QUOTED_LITERAL_RE.finditer(command):
         lit = m.group(0)
         body = lit[1:-1]
         if (
-            path_re.search(body)
+            _may_mention_path(body, literals)
+            and path_re.search(body)
             and _is_standalone_data(command, m.start(), m.end())
             and _reads_as_prose(path_re.sub(" ", body).split())
             and not check_path_patterns(body, path, READ_ONLY_BLOCKED, "")[0]
@@ -2365,6 +2407,8 @@ def _blank_prose_args(hay: str, path: str) -> str:
     Runs on the RAW command: the ladder haystacks are already unquoted, so a
     message and a bare operand look the same there.
     """
+    if not _may_mention_path(hay, _path_literals(path)):
+        return hay
     path_re = _rx(_path_context_regex(path))
 
     wrapper_payload = _rx(r"\s-\S*c\s+$")
@@ -2426,6 +2470,8 @@ def _xargs_rescans(command: str, path: str) -> List[str]:
     ``… | xargs rm`` is judged as ``rm <path>`` and ``… | xargs echo`` as
     ``echo <path>`` — the verb decides, exactly as it would unwrapped.
     """
+    if not _may_mention_path(command, _path_literals(path)):
+        return []
     mention = _rx(_path_context_regex(path)).search(command)
     if not mention:
         return []
@@ -3247,7 +3293,7 @@ def _redirect_variant(command: str) -> List[str]:
     return [out] if out != command else []
 
 
-_PATH_ODDITY = _rx(r"[^\s'\"`;|&<>()]*(?://|/\./|/\.\./|/\.(?=[\s'\"`;|&<>()]|$)|/\.\.(?=[\s'\"`;|&<>()]|$))[^\s'\"`;|&<>()]*")
+_PATH_ODDITY = _rx(r"(?<![^\s'\"`;|&<>()])[^\s'\"`;|&<>()]*(?://|/\./|/\.\./|/\.(?=[\s'\"`;|&<>()]|$)|/\.\.(?=[\s'\"`;|&<>()]|$))[^\s'\"`;|&<>()]*")
 
 
 def _normalized_path_variant(command: str) -> List[str]:
@@ -5576,7 +5622,300 @@ def git_clean_only_explicit_untracked(command: str, cwd: Optional[str]) -> bool:
 
 
 
+# ---- Scan budget (#1108) ---------------------------------------------------
+#
+# Claude Code treats a PreToolUse hook that outlives its timeout as NO DECISION
+# and runs the tool call — measured empirically (docs/wiki/internals/
+# damage-control.md). A command that stalls the scan is therefore a bypass of
+# the whole ladder, so the scan has a budget that FAILS CLOSED (ask, never
+# allow) well inside the harness timeout, on two independent axes:
+#
+#   * size   — a deterministic O(n) gate before any regex runs;
+#   * clock  — a SIGALRM deadline, because some pattern will always be
+#              pathological on some input (the size gate is a bound, not a proof).
+#
+# Limits are set from the audit log of real commands (7.7k rows, 2026-10):
+# longest command 28.9 KB, longest single line 2.9 KB. 256 KB / 32 KB leave
+# ~9x / ~11x headroom, so ordinary large generated scripts and heredoc commit
+# messages pass untouched.
+MAX_COMMAND_CHARS = 256 * 1024
+MAX_LINE_CHARS = 32 * 1024
+HOOK_TIMEOUT_SECONDS = 30  # what hook registration writes into settings.json
+SCAN_DEADLINE_SECONDS = 10  # decide here, a third of the way to the timeout
+
+
+class ScanBudgetExceeded(BaseException):
+    """The scan outran its clock budget; the caller must fail closed.
+
+    A BaseException on purpose: the scan has broad ``except Exception`` guards
+    that would otherwise swallow the alarm and let the scan run on.
+    """
+
+
+def _budget_refusal(command: str, reason: str, rule_id: str) -> Dict[str, Any]:
+    """The fail-closed verdict: an ask that bypass cannot demote and no grant covers."""
+    return {
+        "decision": "ask",
+        "reason": f"{reason} — a human must confirm it (not demoted by bypass)",
+        "pattern": f"budget:{rule_id}",
+        "command": command,
+        "id": rule_id,
+        "unverifiable": True,
+    }
+
+
+def _size_budget_refusal(command: str) -> Optional[Dict[str, Any]]:
+    longest = max(map(len, command.split("\n")))
+    if len(command) > MAX_COMMAND_CHARS:
+        return _budget_refusal(
+            command,
+            f"Command too large to analyze safely ({len(command):,} chars, "
+            f"limit {MAX_COMMAND_CHARS:,})",
+            "core.command-too-large",
+        )
+    if longest > MAX_LINE_CHARS:
+        return _budget_refusal(
+            command,
+            f"Command too large to analyze safely (a single line of {longest:,} "
+            f"chars, limit {MAX_LINE_CHARS:,})",
+            "core.command-too-large",
+        )
+    return None
+
+
+def _on_scan_alarm(signum: int, frame: Any) -> None:
+    raise ScanBudgetExceeded()
+
+
+@contextlib.contextmanager
+def scan_deadline(seconds: float):
+    """Raise :class:`ScanBudgetExceeded` in the body once ``seconds`` elapse.
+
+    Needs ``signal.setitimer`` on the main thread (every hook process);
+    elsewhere (a portal worker thread, Windows) it is a no-op — declared
+    residual. The alarm is disarmed INSIDE the guarded region before leaving
+    it, so it cannot fire in the gap between the body finishing and cleanup;
+    callers still catch the exception around the whole ``with``.
+    """
+    if not (hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()):
+        yield
+        return
+    previous = signal.signal(signal.SIGALRM, _on_scan_alarm)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def kill_switch_off(config: Dict[str, Any]) -> bool:
+    """True when ``enabled: false`` is set — the one documented way to turn damage control off."""
+    safety_cfg = config.get("safety")
+    return isinstance(safety_cfg, dict) and safety_cfg.get("enabled", True) is False
+
+
+CONTROL_PLANE_DEADLINE_SECONDS = 2
+
+
+@functools.lru_cache(maxsize=1)
+def _control_plane_literals() -> Tuple[str, ...]:
+    """Loose casefolded literals of every protected control-plane path.
+
+    Looser than :func:`_path_literals` on purpose: the ``~/`` prefix is dropped
+    (so ``$HOME/...`` matches) and a plain path also contributes its basename (so
+    ``~/.agentwire/./x`` and a bare ``x`` after a ``cd`` match). Over-matching
+    only costs an ask when the scan already ran out of budget.
+    """
+    lits = set()
+    for path in PROTECTED_CONTROL_PLANE_PATHS:
+        stripped = path[2:] if path.startswith("~/") else path
+        if is_glob_pattern(stripped):
+            segs = [x for x in re.split(r"[*?\[\]]", stripped) if x]
+            if segs:
+                lits.add(max(segs, key=len).casefold())
+        else:
+            lits.add(stripped.casefold())
+            lits.add(posixpath.basename(stripped).casefold())
+    return tuple(sorted(lits))
+
+
+def mentions_control_plane(text: str) -> bool:
+    """O(n) containment test: does ``text`` name any protected control-plane path?"""
+    folded = text.casefold()
+    return any(lit in folded for lit in _control_plane_literals())
+
+
+def _control_plane_verdict_on_timeout(
+    command: str, config: Dict[str, Any], deadline_seconds: float
+) -> Dict[str, Any]:
+    """The scan ran out of budget: never allow a command that names the control plane.
+
+    Only the lines that name a protected path are re-checked (linear split), under
+    their own short deadline, so padding elsewhere cannot hide a write. A positive
+    write classification is a BLOCK; anything unconcluded is the unverifiable ask.
+    """
+    lines = [ln for ln in command.split("\n") if mentions_control_plane(ln)]
+    try:
+        with scan_deadline(CONTROL_PLANE_DEADLINE_SECONDS):
+            blocked, reason = check_protected_command("\n".join(lines), load_allowed_paths(config))
+    except ScanBudgetExceeded:
+        blocked, reason = False, ""
+    if blocked:
+        return {
+            "decision": "block",
+            "reason": reason,
+            "pattern": "protectedControlPlane",
+            "command": command,
+            "protected": True,
+        }
+    return _budget_refusal(
+        command,
+        f"Command scan exceeded its {deadline_seconds:g}s budget and names a protected "
+        "control-plane path — too slow to analyze safely",
+        "core.scan-budget",
+    )
+
+
 def check_command(
+    command: str,
+    config: Dict[str, Any],
+    cwd: Optional[str] = None,
+    deadline_seconds: float = SCAN_DEADLINE_SECONDS,
+) -> Dict[str, Any]:
+    """:func:`_decide_command` under the scan budget — over budget means ASK.
+
+    The kill switch is read first and the budget honors it: a disabled hook has
+    no size gate, and a scan that outruns the deadline is allowed (disabled),
+    not asked — UNLESS the command names a protected control-plane path, which
+    the switch never exempts: that is re-checked line by line and blocked or asked.
+    """
+    disabled = kill_switch_off(config)
+    if not disabled:
+        refusal = _size_budget_refusal(command)
+        if refusal:
+            return refusal
+    try:
+        with scan_deadline(deadline_seconds):
+            return _decide_command(command, config, cwd)
+    except ScanBudgetExceeded:
+        if mentions_control_plane(command):
+            return _control_plane_verdict_on_timeout(command, config, deadline_seconds)
+        if disabled:
+            return {
+                "decision": "allow",
+                "reason": "Damage control disabled (scan budget not enforced)",
+                "pattern": None,
+                "command": command,
+                "disabled": True,
+            }
+        return _budget_refusal(
+            command,
+            f"Command scan exceeded its {deadline_seconds:g}s budget — too slow to analyze safely",
+            "core.scan-budget",
+        )
+
+
+# ---- Hook entrypoint guard (#1108) ------------------------------------------
+#
+# A PreToolUse hook that crashes exits 1, which the harness treats as
+# NON-blocking — the tool call runs. So every hook entrypoint turns ANY
+# unexpected failure (malformed stdin, a recursion limit, an alarm that
+# escapes, a bug) into exit 2 with a reason.
+
+MAX_HOOK_INPUT_CHARS = 64 * 1024 * 1024
+
+
+class HookInputError(Exception):
+    """The hook payload could not be read safely; the hook must block."""
+
+
+def read_hook_input(stream: Any = None) -> Dict[str, Any]:
+    """The hook's JSON payload from stdin, or :class:`HookInputError`."""
+    stream = stream if stream is not None else sys.stdin
+    try:
+        raw = stream.read(MAX_HOOK_INPUT_CHARS + 1)
+    except (OSError, ValueError) as e:
+        raise HookInputError(f"could not read hook input ({type(e).__name__}: {e})")
+    if len(raw) > MAX_HOOK_INPUT_CHARS:
+        raise HookInputError(
+            f"hook input too large to analyze safely (limit {MAX_HOOK_INPUT_CHARS:,} chars)"
+        )
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        raise HookInputError(f"invalid JSON on stdin ({e})")
+    if not isinstance(data, dict):
+        raise HookInputError("hook input is not a JSON object")
+    return data
+
+
+def audit_best_effort(log: Any) -> Any:
+    """Wrap an audit ``log_*`` function so its failure never changes a decision.
+
+    A full disk or unwritable logs dir must not turn an allow into a block, or a
+    real block reason into the audit error. Reports one short stderr line.
+    """
+
+    def wrapper(*args: Any, **kwargs: Any) -> None:
+        try:
+            log(*args, **kwargs)
+        except Exception as e:
+            try:
+                print(f"agentwire: audit log failed ({type(e).__name__}) — decision unchanged",
+                      file=sys.stderr)
+            except Exception:
+                pass
+
+    return wrapper
+
+
+def hard_exit(code: int) -> None:
+    """Exit with ``code`` whatever state the std pipes are in.
+
+    Interpreter shutdown turns a failed flush on a closed pipe into exit 120.
+    A decision that cannot be delivered on stdout is not an allow, so that
+    failure becomes a block; a closed stderr is ignored.
+    """
+    try:
+        sys.stdout.flush()
+    except Exception:
+        code = 2
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(code)
+
+
+def run_hook_guarded(main: Any) -> None:
+    """Run a hook ``main``; any unexpected exception becomes a blocking exit 2."""
+    code = 0
+    try:
+        main()
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 2)
+    except HookInputError as e:
+        code = _block_exit(str(e))
+    except ScanBudgetExceeded:
+        code = _block_exit("the scan exceeded its time budget")
+    except RecursionError:
+        code = _block_exit("input nested too deeply to analyze safely")
+    except BaseException as e:  # KeyboardInterrupt included: never exit 1
+        code = _block_exit(f"the hook failed ({type(e).__name__}: {e})")
+    hard_exit(code)
+
+
+def _block_exit(reason: str) -> int:
+    try:
+        print(f"SECURITY: Blocked: {reason} — failing closed", file=sys.stderr)
+    except Exception:
+        pass
+    return 2
+
+
+def _decide_command(
     command: str, config: Dict[str, Any], cwd: Optional[str] = None
 ) -> Dict[str, Any]:
     """Decide whether a bash command should be allowed/blocked/asked.
@@ -6060,6 +6399,11 @@ def check_mcp_tool(tool_name: str, config: Dict[str, Any]) -> Dict[str, Any]:
     }
 # === END GENERATED ===
 
+# An audit-log failure never changes the decision (#1108).
+log_allowed, log_asked, log_blocked, log_disabled, log_escape = (
+    audit_best_effort(f) for f in (log_allowed, log_asked, log_blocked, log_disabled, log_escape)
+)
+
 
 # ============================================================================
 # HOOK ENTRY POINT
@@ -6158,14 +6502,16 @@ _WRITEISH_BRIDGE_RE = re.compile(
 
 
 def _iter_string_values(obj):
-    if isinstance(obj, str):
-        yield obj
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            yield from _iter_string_values(v)
-    elif isinstance(obj, (list, tuple)):
-        for v in obj:
-            yield from _iter_string_values(v)
+    """Every string in ``obj``, iteratively (no recursion limit to crash on)."""
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, str):
+            yield cur
+        elif isinstance(cur, dict):
+            stack.extend(cur.values())
+        elif isinstance(cur, (list, tuple)):
+            stack.extend(cur)
 
 
 def _pathlike_args(tool_input: dict):
@@ -6175,7 +6521,11 @@ def _pathlike_args(tool_input: dict):
     screened. A missed candidate degrades to today's behaviour (unscreened),
     never to a false block.
     """
+    seen = set()
     for s in _iter_string_values(tool_input):
+        if s in seen:
+            continue
+        seen.add(s)
         if not s or " " in s or "\t" in s or "\n" in s or "://" in s:
             continue
         if "/" in s or s.startswith("~"):
@@ -6205,14 +6555,7 @@ def main() -> None:
     config = load_config(_resolve_rules_dir(), _resolve_tooldefs_dir())
     config["safety"] = load_safety_config()
 
-    try:
-        input_data = json.load(sys.stdin)
-    except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON input: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error reading input: {e}", file=sys.stderr)
-        sys.exit(1)
+    input_data = read_hook_input()
 
     # Session attribution for audit rows (#940): hand the parsed payload to
     # audit_logger so every log_* call carries the conversation id. Fail-open.
@@ -6251,7 +6594,27 @@ def main() -> None:
         if mutates is None and not config.get("mcpToolPolicies"):
             # Stale rules dir with no policies loaded — see _WRITEISH_BRIDGE_RE.
             mutates = bool(_WRITEISH_BRIDGE_RE.search(tool_name.split("__")[-1]))
-        _screen_tool_paths(tool_name, tool_input, config, bool(mutates))
+        budget_exceeded = False
+        try:
+            with scan_deadline(SCAN_DEADLINE_SECONDS):
+                _screen_tool_paths(tool_name, tool_input, config, bool(mutates))
+        except ScanBudgetExceeded:
+            # Arguments too large to screen in time: fail closed (#1108) — an
+            # unverifiable ask, so bypass cannot demote it and unattended blocks.
+            # The kill switch turns the budget off with everything else.
+            # A protected control-plane path anywhere in the arguments is never
+            # exempted by the switch.
+            if not kill_switch_off(config) or any(
+                mentions_control_plane(s) for s in _iter_string_values(tool_input)
+            ):
+                budget_exceeded = True
+                decision = "ask"
+                rule_id = "core.scan-budget"
+                reason = (
+                    f"MCP tool arguments exceeded the {SCAN_DEADLINE_SECONDS:g}s screening "
+                    "budget — too large to analyze safely; a human must confirm "
+                    "(not demoted by bypass)"
+                )
 
         if decision == "ask" and is_unattended():
             # No human present: fail closed unless the policy's id is granted.
@@ -6279,7 +6642,7 @@ def main() -> None:
                       f"'{rule_id}' to its .agentwire.tasks.yml task `unattended_allow`.",
                       file=sys.stderr)
             sys.exit(2)
-        elif decision == "ask" and permission_mode not in bypass_modes:
+        elif decision == "ask" and (permission_mode not in bypass_modes or budget_exceeded):
             log_asked(tool_name, tool_name, reason)
             print(json.dumps({
                 "hookSpecificOutput": {
@@ -6361,4 +6724,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_hook_guarded(main)
