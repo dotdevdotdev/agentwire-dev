@@ -68,13 +68,53 @@ if [[ "$notification_type" == "idle_prompt" ]]; then
   # one. Defer covers every path below (parent notice, worker-pane reap,
   # scheduled-task summary/exit). The bound only ever answers `qualify` for a
   # plain pane-0 parent notice; a reap or /exit stays deferred (a live task is
-  # never ended by a timer) and uncertainty holds. Only "nothing readable" or a
-  # gate error behaves as before this gate.
+  # never ended by a timer) and uncertainty holds. Only "nothing readable" on
+  # a plain pane 0 behaves as before this gate; a gate that gives no answer
+  # HOLDS any path that would kill.
   idle_text="is idle and done working"
   if [[ -n "$tmux_session" && -n "$pane_index" ]]; then
-    gate_json=$($AGENTWIRE idle-gate --json --conversation-id "$session_id" --cwd "$cwd" 2>>"$DEBUG_LOG") || gate_json=""
-    gate_action=$(echo "$gate_json" | jq -r '.action // "proceed"' 2>/dev/null || echo proceed)
-    log "idle-gate: action=$gate_action ${gate_json:-<no output>}"
+    # Which path is this? Decided HERE, in shell, BEFORE the gate runs, so a
+    # gate that crashes, hangs, is killed, or is missing cannot hide it. A
+    # worker pane or a scheduled task reaches a KILL below; only a plain pane 0
+    # may fall through to "send the notice" when the gate gives no answer.
+    kills=0
+    [[ "$pane_index" != "0" ]] && kills=1
+    [[ -f "$HOME/.agentwire/tasks/${tmux_session}.json" ]] && kills=1
+
+    # Bounded: a hung gate must neither stall the hook nor hold forever.
+    gate_out=$(mktemp "${TMPDIR:-/tmp}/idle-gate.XXXXXX")
+    $AGENTWIRE idle-gate --json --conversation-id "$session_id" --cwd "$cwd" >"$gate_out" 2>>"$DEBUG_LOG" &
+    gate_pid=$!
+    ( sleep "${AGENTWIRE_GATE_TIMEOUT:-8}"; kill -9 "$gate_pid" 2>/dev/null ) >/dev/null 2>&1 &
+    timer_pid=$!
+    wait "$gate_pid" 2>/dev/null
+    gate_rc=$?
+    kill "$timer_pid" 2>/dev/null
+    gate_json=$(cat "$gate_out" 2>/dev/null)
+    rm -f "$gate_out"
+
+    gate_action=""
+    if [[ "$gate_rc" == "0" ]]; then
+      gate_action=$(echo "$gate_json" | jq -r '.action // ""' 2>/dev/null)
+    fi
+    case "$gate_action" in
+      defer|proceed|qualify) ;;
+      *) gate_action="" ;;
+    esac
+    log "idle-gate: rc=$gate_rc action=${gate_action:-<none>} kills=$kills ${gate_json:-<no output>}"
+
+    if [[ -z "$gate_action" ]]; then
+      # No usable answer (exit 1, traceback, kill -9, timeout, missing or old
+      # binary, garbage). A KILL path holds and retries on the next idle.
+      if [[ "$kills" == "1" ]]; then
+        log "idle-gate unusable on a kill path (${tmux_session}.${pane_index}) — holding"
+        jq -nc --arg s "$tmux_session" --argjson p "$pane_index" --arg rc "$gate_rc" \
+          '{ts: now, event: "gate_unusable", session: $s, pane: $p, rc: $rc}' \
+          >> "$HOME/.agentwire/idle-deferred-events.jsonl" 2>/dev/null
+        exit 0
+      fi
+      gate_action="proceed"
+    fi
     if [[ "$gate_action" == "defer" ]]; then
       exit 0
     elif [[ "$gate_action" == "qualify" ]]; then

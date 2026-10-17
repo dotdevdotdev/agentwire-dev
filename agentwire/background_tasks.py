@@ -382,6 +382,34 @@ def clear_marker(session: str, pane: int) -> None:
         pass
 
 
+GATE_FAILURE_WINDOW = 3600
+GATE_FAILURE_THRESHOLD = 3
+
+
+def recent_gate_failures(now: "float | None" = None) -> list[dict]:
+    """``gate_failed`` / ``gate_unusable`` events in the last hour, if there are
+    enough of them to be a persistent fault rather than a blip.
+
+    A failing gate HOLDS every path that would kill, so a persistent one keeps
+    worker panes alive silently; this is the owner-visible signal.
+    """
+    now = time.time() if now is None else now
+    try:
+        lines = events_path().read_text().splitlines()
+    except OSError:
+        return []
+    found = []
+    for line in lines[-500:]:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("event") in ("gate_failed", "gate_unusable") \
+                and now - float(row.get("ts", 0)) <= GATE_FAILURE_WINDOW:
+            found.append(row)
+    return found if len(found) >= GATE_FAILURE_THRESHOLD else []
+
+
 def qualifier(count: "int | None", waited: float) -> str:
     what = ("background work may still be running" if not count else
             f"{count} background task{'' if count == 1 else 's'} still running")
@@ -392,8 +420,9 @@ def qualifier(count: "int | None", waited: float) -> str:
 #: gone (a same-name session reborn must not inherit its clock). Deliberately
 #: the bound itself, not shorter: a task that wakes the session every 12
 #: minutes must still reach it with no watchdog loaded. Identity is the
-#: conversation id when the hook supplies one, so the gap only matters for an
-#: id-less marker.
+#: conversation id when the hook supplies one, and a call that carries an id is
+#: NEVER restarted by a gap (only by a different id); the gap applies only to a
+#: call with no id.
 MARKER_GRACE = DEFER_BOUND
 
 
@@ -437,7 +466,8 @@ def gate(
 
     marker = read_marker(session, pane)
     if marker is not None and (
-        now - float(marker.get("last_seen_at", now)) > MARKER_GRACE
+        (not conversation_id
+         and now - float(marker.get("last_seen_at", now)) > MARKER_GRACE)
         or (conversation_id and marker.get("conversation_id")
             and marker["conversation_id"] != conversation_id)
     ):

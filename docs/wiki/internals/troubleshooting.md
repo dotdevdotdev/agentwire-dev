@@ -433,7 +433,26 @@ text, or a gate crash on a reap path reads as *uncertain*, which every consumer
 treats as pending. Two cases stay distinct: an unparsable fragment holds, but a
 clean `N <noun>` footer segment whose noun is not a task kind (`2 MCP servers
 failed`, `3 files changed`) is simply not a task. A bare shell with no signal at
-all behaves as before. The worker-pane summary/`kill --pane` and the
+all behaves as before.
+
+**A gate that gives no answer holds too.** The hook decides *in shell, before the
+gate runs*, whether this idle reaches a kill (pane index > 0, or a scheduled-task
+context file exists). The gate call is bounded (`AGENTWIRE_GATE_TIMEOUT`, default
+8s) and counts only if it exits 0 with a parseable `defer|proceed|qualify`. Exit
+1, a traceback, `kill -9`, a timeout, garbage, or a missing/old binary on a kill
+path **holds** (logged, `gate_unusable` event, retried on the next idle); only a
+plain pane 0 falls through to the notice. A persistently failing gate therefore
+keeps worker panes alive silently, so `agentwire doctor` flags `[!!]` when the
+gate failed 3+ times in the last hour.
+
+**Declared trade-offs.** A footer-only reading (no turn-end line) with a noun off
+the allowlist (`· 1 job`) reads 0/ok: the turn-end line covers the normal case.
+A digit-bearing segment that is not `N noun` (`· 95%`) reads uncertain
+(informational; not seen on real mode lines). A stuck monitor with a long timeout
+gets ONE qualified notice to its pane-0 parent; a worker or scheduled pane stays
+held until the task ends, then is reaped normally — the owner signal is `doctor`
+("N task(s), Xm, qualified"). Verified on real Claude 2.1.302: Esc and Ctrl-C do
+not clear "still running" (the task survives), so the pane stays truthful. The worker-pane summary/`kill --pane` and the
 scheduled-task `/exit` fail to KEEP; the parent notice is held, then released
 by the bound. Only "nothing readable at all" (no agent pane, no transcript)
 behaves as before the gate.
@@ -446,9 +465,10 @@ worker pane: by the stage, to its owning pane 0). A worker pane and a scheduled
 task stay held for as long as the task may be running; a live task is not ended
 by a timer. `qualified` is recorded only after the enqueue succeeded (a failed
 one retries next tick); a session with nobody to tell is marked `unroutable`,
-never "sent". A session incarnation is the conversation id the hook supplies (a different id
-restarts the clock); only an id-less marker falls back to a gap, and that gap is
-the bound itself, so a task waking the session every 12 minutes still reaches it.
+never "sent". A session incarnation is the conversation id the hook supplies: a different id
+restarts the clock, and a call that carries an id is NEVER restarted by a gap (so
+neither a slow wake nor a restart re-arms `qualified`). Only a call with no id
+falls back to a gap, and that gap is the bound itself.
 Without the watchdog loaded a stuck task that never wakes its session is never
 told about: `agentwire doctor` flags that as `[!!]`. State: `~/.agentwire/idle-deferred/`, events:
 `~/.agentwire/idle-deferred-events.jsonl`; `agentwire doctor` lists held

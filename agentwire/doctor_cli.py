@@ -1012,6 +1012,16 @@ def _render_idle_deferred_section() -> int:
 
     from . import background_tasks
 
+    failing = background_tasks.recent_gate_failures()
+    issues = 0
+    if failing:
+        where = sorted({"%s.%s" % (e.get("session"), e.get("pane")) for e in failing})
+        print(f"  [!!] The idle gate failed {len(failing)} time(s) in the last hour "
+              f"({', '.join(where)}). "
+              "A worker pane or scheduled task whose gate fails is HELD, not reaped, so it "
+              "stays alive until the gate works. Check ~/.agentwire/idle-deferred-events.jsonl "
+              "and /tmp/claude-hook-debug.log; fix: git pull --ff-only && agentwire rebuild.")
+        issues = 1
     try:
         markers = sorted(background_tasks.state_dir().glob("*.json"))
     except OSError:
@@ -1027,7 +1037,7 @@ def _render_idle_deferred_section() -> int:
                     f"{', qualified' if data.get('qualified') else ''})")
     if not held:
         print("  [ok] No idle notices held for background tasks")
-        return 0
+        return issues
     print("  [..] Idle notices held while background tasks run: " + ", ".join(held))
     from . import limits_cli
 
@@ -1036,7 +1046,7 @@ def _render_idle_deferred_section() -> int:
               "idle event, so a stuck task that never wakes its session holds its notice "
               "forever. Load it: agentwire limits install")
         return 1
-    return 0
+    return issues
 
 
 def _scheduler_daemon_started_at() -> float | None:

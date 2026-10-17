@@ -197,26 +197,28 @@ def cmd_idle_gate(args) -> int:
     """
     from agentwire import background_tasks
 
-    session = pane_manager.get_current_session()
-    pane = pane_manager.get_current_pane_index()
-    if session is None or pane is None:
-        decision = {"action": "proceed", "pending": None, "source": "unknown",
-                    "notes": ["not_in_tmux"], "text": ""}
-    else:
-        try:
+    session = pane = None
+    try:
+        session = pane_manager.get_current_session()
+        pane = pane_manager.get_current_pane_index()
+        if session is None or pane is None:
+            decision = {"action": "proceed", "pending": None, "source": "unknown",
+                        "notes": ["not_in_tmux"], "text": ""}
+        else:
             decision = background_tasks.gate(
                 session, pane, args.conversation_id or "", args.cwd or "")
-        except Exception as e:  # noqa: BLE001 — never silent
-            background_tasks.log_event("gate_failed", session=session, error=str(e))
-            # A crash on a path whose idle KILLS (worker-pane reap, scheduled
-            # exit) holds this cycle and retries next idle; only the plain
-            # parent notice may fail open to "send".
-            try:
-                kills = background_tasks.reap_path(session, pane)
-            except Exception:  # noqa: BLE001
-                kills = pane != 0
-            decision = {"action": "defer" if kills else "proceed", "pending": None,
-                        "source": "unknown", "notes": [f"gate_error:{e}"], "text": ""}
+    except Exception as e:  # noqa: BLE001 — never silent
+        background_tasks.log_event("gate_failed", session=session, pane=pane, error=str(e))
+        # A crash on a path whose idle KILLS (worker-pane reap, scheduled
+        # exit) holds this cycle and retries next idle; only the plain parent
+        # notice may fail open to "send". When we cannot even tell which pane
+        # this is, hold.
+        try:
+            kills = True if pane is None else background_tasks.reap_path(session, pane)
+        except Exception:  # noqa: BLE001
+            kills = pane != 0
+        decision = {"action": "defer" if kills else "proceed", "pending": None,
+                    "source": "unknown", "notes": [f"gate_error:{e}"], "text": ""}
     if args.json:
         _output_json(decision)
     else:

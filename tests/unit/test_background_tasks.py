@@ -470,3 +470,131 @@ def test_doctor_flags_held_notices_without_a_watchdog(isolated_config, monkeypat
     assert "[!!]" in capsys.readouterr().out
     monkeypatch.setattr(limits_cli, "watchdog_loaded", lambda: True)
     assert doctor_cli._render_idle_deferred_section() == 0
+
+
+# --- G1: the hook with a gate that gives NO usable answer ------------------
+
+_GATE_FAILURES = {
+    "exit1": "exit 1",
+    "traceback": "echo Traceback >&2; exit 1",
+    "partial_nonzero": 'echo \'{"action":"proceed"\'; exit 3',
+    "valid_json_nonzero": 'echo \'{"action":"proceed"}\'; exit 1',
+    "empty": "true",
+    "garbage": "echo not json",
+    "kill9": "kill -9 $$",
+    "hang": 'sleep 30; echo \'{"action":"proceed"}\'',
+    "missing": None,
+}
+
+
+def _run_hook_cell(root: Path, gate_script, pane_index: str, scheduled: bool, timeout: str = "20"):
+    """Real idle-handler.sh with a stubbed tmux + agentwire; returns the calls."""
+    bindir = root / "bin"
+    bindir.mkdir(parents=True)
+    calls = root / "calls.log"
+    calls.write_text("")
+    (bindir / "tmux").write_text(
+        '#!/bin/bash\ncase "$*" in *pane_index*) echo %s;; *session_name*) echo proj-w;; esac\n'
+        % pane_index)
+    aw = bindir / "agentwire"
+    if gate_script is None:
+        aw_bin = root / "no-such-binary"
+    else:
+        aw.write_text('#!/bin/bash\necho "$@" >> %s\nif [[ "$1" == "idle-gate" ]]; then\n%s\nfi\n'
+                      % (calls, gate_script))
+        aw_bin = aw
+    for f in bindir.iterdir():
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+    home = root / "home"
+    (home / ".agentwire" / "tasks").mkdir(parents=True)
+    if scheduled:
+        (home / ".agentwire" / "tasks" / "proj-w.json").write_text(json.dumps(
+            {"task": "t", "summary_file": "s.md", "idle_count": 0}))
+    cwd = root / "cwd"
+    cwd.mkdir()
+    env = {**os.environ, "HOME": str(home), "TMUX_PANE": "%1", "AGENTWIRE_BIN": str(aw_bin),
+           "AGENTWIRE_GATE_TIMEOUT": timeout, "PATH": f"{bindir}:{os.environ['PATH']}"}
+    subprocess.run(["bash", str(HOOK)], env=env, text=True, capture_output=True, timeout=60,
+                   input=json.dumps({"notification_type": "idle_prompt", "cwd": str(cwd),
+                                     "session_id": "sid-1"}))
+    return calls.read_text().splitlines(), home
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
+def test_a_gate_with_no_answer_holds_every_kill_path_and_only_a_plain_pane_0_sends(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    cells = [(name, script, pane, sched) for name, script in _GATE_FAILURES.items()
+             for pane, sched in (("0", False), ("1", False), ("0", True))]
+
+    def run(cell):
+        name, script, pane, sched = cell
+        # Only the hang cell needs a short timeout; the rest must not trip it
+        # when 27 hooks start at once.
+        return cell, _run_hook_cell(tmp_path / f"{name}-{pane}-{int(sched)}", script, pane,
+                                    sched, "1" if name == "hang" else "20")
+
+    with ThreadPoolExecutor(max_workers=9) as pool:
+        results = list(pool.map(run, cells))
+
+    bad = []
+    for (name, _, pane, sched), (calls, home) in results:
+        killed = [c for c in calls if c.startswith(("send", "kill"))]
+        notified = [c for c in calls if c.startswith("notify-parent")]
+        plain = pane == "0" and not sched
+        if name == "missing":
+            # No binary to log calls: the hold is observable as the event the
+            # hook writes before it would have reached the kill path.
+            if not plain and not (home / ".agentwire" / "idle-deferred-events.jsonl").exists():
+                bad.append((name, pane, sched, "no gate_unusable event"))
+            continue
+        if plain and (killed or len(notified) != 1):
+            bad.append((name, pane, sched, "plain pane 0 must send", calls))
+        if not plain and (killed or notified):
+            bad.append((name, pane, sched, "kill path must hold", calls))
+        if not plain and not (home / ".agentwire" / "idle-deferred-events.jsonl").exists():
+            bad.append((name, pane, sched, "no gate_unusable event"))
+    assert not bad, bad
+
+
+# --- G3: an id-ful marker is never restarted by a gap -----------------------
+
+
+def test_an_id_ful_marker_survives_a_gap_and_qualifies_exactly_once(isolated_config):
+    t0 = 1_000_000.0
+    gap = bt.MARKER_GRACE + 60
+    acts = [bt.gate("s", 0, "conv", pending=_pend(1), now=t0 + gap * i)["action"] for i in range(4)]
+    assert acts == ["defer", "qualify", "defer", "defer"]
+    # An id-less call still restarts on a gap (nothing says it is the same session).
+    bt.gate("u", 0, pending=_pend(1), now=t0)
+    assert bt.gate("u", 0, pending=_pend(1), now=t0 + gap)["action"] == "defer"
+
+
+# --- G2: a persistently failing gate is visible in doctor -------------------
+
+
+def test_doctor_flags_a_persistently_failing_gate(isolated_config, capsys):
+    from agentwire import doctor_cli
+
+    now = time.time()
+    for i in range(2):
+        bt.log_event("gate_failed", session="w", pane=1, error="boom")
+    assert doctor_cli._render_idle_deferred_section() == 0  # a blip is not a fault
+    capsys.readouterr()
+    bt.log_event("gate_unusable", session="w", pane=1)
+    assert doctor_cli._render_idle_deferred_section() == 1
+    assert "[!!] The idle gate failed 3 time(s)" in capsys.readouterr().out
+    assert bt.recent_gate_failures(now=now + 2 * bt.GATE_FAILURE_WINDOW) == []
+
+
+def test_gate_failure_before_the_pane_is_known_holds(monkeypatch, capsys):
+    import argparse
+
+    from agentwire import notify_cli, pane_manager
+
+    def boom():
+        raise OSError("tmux gone")
+
+    monkeypatch.setattr(pane_manager, "get_current_session", boom)
+    notify_cli.cmd_idle_gate(argparse.Namespace(conversation_id="", cwd="", json=True))
+    assert json.loads(capsys.readouterr().out)["action"] == "defer"
