@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "bc2d82a2988e0e4d2607351e06936d802f6fd4f6eaf3fba300d4946efcb93438", "generated_at": "2026-10-17T19:06:42Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "75da6d2dad2b85c7646002c00d8ce3071ab9920f139f68d7ee468199bc7355f1", "generated_at": "2026-10-17T19:18:02Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -1709,7 +1709,7 @@ def command_scope_dirs(
     command, mask_err = _mask_command_substitutions(command)
     if mask_err:
         return [], mask_err
-    if _EVAL_RE.search(command):
+    if has_command_position_eval(command):
         return [], "eval"
     if _BASE64_PIPE_RE.search(command):
         return [], "base64-decode pipeline"
@@ -3829,7 +3829,573 @@ def detect_escape_hatch(command: str) -> Optional[str]:
 # substitution (``echo "$(basename $p)"``) is demoted by bypass.
 
 _SUBSTITUTION_RE = re.compile(r"\$\(|`")
-_EVAL_RE = re.compile(r"(?:^|[\s;&|({])eval(?:\s|$)")
+
+# Launchers that keep the command position open, with the options that TAKE A
+# VALUE. The table only REDUCES false blocks for launchers we know
+# (``sudo -E grep eval f`` is a grep); it never decides an allow. A launcher in
+# neither this table nor _EVAL_DATA_CONSUMERS is UNKNOWN, and for an unknown
+# command every later word is scanned (see _eval_unknown): the failure direction
+# is ask, not allow.
+_EVAL_WRAPPER_VALUE_OPTS: Dict[str, frozenset] = {
+    "sudo": frozenset({"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-r", "-t", "-a", "-c",
+                       "--user", "--group", "--host", "--prompt", "--close-from", "--chdir",
+                       "--chroot", "--role", "--type", "--login-class", "--other-user"}),
+    "doas": frozenset({"-u", "-C"}),
+    "env": frozenset({"-u", "-C", "-S", "-P", "--unset", "--chdir", "--split-string"}),
+    "xargs": frozenset({"-I", "-n", "-L", "-P", "-s", "-d", "-a", "-E", "-J", "-R", "-S",
+                        "--max-args", "--max-procs", "--delimiter", "--arg-file", "--max-lines",
+                        "--max-chars", "--eof"}),
+    "timeout": frozenset({"-k", "-s", "--kill-after", "--signal"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "-n", "-p", "--class", "--classdata", "--pid"}),
+    "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+    "time": frozenset({"-f", "-o", "--format", "--output"}),
+    "watch": frozenset({"-n", "--interval"}),
+    "exec": frozenset({"-a"}),
+    "nohup": frozenset(), "command": frozenset(), "builtin": frozenset(), "setsid": frozenset(),
+    # package launchers: ``uv run [opts] <tool>``, ``npx [opts] <tool>``. A value option missing here
+    # leaves its value in the verb slot, which is an UNKNOWN word and asks (never allows).
+    "uv": frozenset({"--with", "--python", "-p", "--directory", "--project", "--extra", "--group",
+                     "--env-file", "--with-requirements", "--index", "--package", "--from"}),
+    "uvx": frozenset({"--from", "--with", "--python", "-p", "--with-requirements"}),
+    "npx": frozenset({"-p", "--package", "--cache", "--userconfig", "-c", "--call"}),
+    "bunx": frozenset(), "pnpx": frozenset(),
+    "poetry": frozenset({"-C", "--directory", "--project", "-P"}),
+}
+# Subcommands after which the rest names a package, unit, image or resource: data, whatever its spelling.
+_EVAL_DATA_SUBCOMMANDS: Dict[str, frozenset] = {
+    "uv": frozenset({"add", "remove", "sync", "lock", "pip", "tree", "init", "build", "publish"}),
+    "docker": frozenset({"build", "images", "ps", "logs", "pull", "push", "inspect", "tag", "rmi", "stop", "rm"}),
+    "kubectl": frozenset({"get", "describe", "logs", "apply", "delete", "config", "rollout", "top"}),
+    "helm": frozenset({"template", "install", "upgrade", "lint", "list", "repo", "show", "uninstall"}),
+    "brew": frozenset({"install", "uninstall", "upgrade", "info", "search", "list", "update", "reinstall"}),
+    "pip": frozenset({"install", "uninstall", "show", "download", "freeze", "list"}),
+    "pip3": frozenset({"install", "uninstall", "show", "download", "freeze", "list"}),
+    "systemctl": frozenset({"restart", "start", "stop", "status", "enable", "disable", "reload", "is-active", "show"}),
+    "journalctl": frozenset(),
+}
+# Subcommand words a launcher takes before the program it launches (``uv run``).
+_EVAL_WRAPPER_SUBCOMMANDS = {"uv": ("run",), "poetry": ("run",)}
+# The option whose value is a program, per launcher (``env -S``, ``npx -c``).
+_EVAL_PAYLOAD_OPTS = {"env": ("S", "--split-string"), "npx": ("c", "--call")}
+# Commands that only READ their arguments: the word after them is data, not a verb.
+_EVAL_DATA_CONSUMERS = frozenset({
+    "echo", "printf", "grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ack", "cat", "bat", "less",
+    "more", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "sed", "awk", "gawk", "diff", "cmp",
+    "comm", "jq", "yq", "ls", "tree", "mkdir", "touch", "rm", "cp", "mv", "ln", "stat", "file",
+    "man", "info", "which", "type", "whereis", "whatis", "whence", "help", "git", "gh", "agentwire",
+    "tee", "curl", "wget", "open", "pbcopy", "sleep", "date", "true", "false", "test", "[", "read", "mapfile", "readarray",
+    "cd", "pwd", "export", "unset", "python", "python2", "python3", "node", "ruby", "perl", "php",
+    "deno", "bun", "pytest", "ruff", "pip", "ssh-keygen", "scp", "rsync",
+    "say", "jest", "vitest", "mocha", "tsc", "eslint", "prettier", "dotnet", "tar", "zip", "unzip", "gzip", "gunzip", "base64", "openssl", "shasum", "md5", "du", "df", "ps",
+    "kill", "pkill", "pgrep", "lsof", "chmod", "chown", "basename", "dirname", "realpath", "readlink",
+    "xxd", "hexdump", "od", "strings", "nl", "fold", "fmt", "column", "paste", "join", "split",
+})
+# Interpreters read stdin as THEIR language, not as shell: a body piped to one is not shell text.
+_EVAL_INTERPRETERS = frozenset({"perl", "python", "python2", "python3", "node", "ruby", "php", "deno", "bun"})
+_EVAL_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "su", "ash", "fish", "csh", "tcsh", "source", "."})
+# Project runners whose arguments are targets / script names / test selectors (``make eval``,
+# ``cargo test eval``, ``npm run eval``): data, unless the invocation can hand a program to a
+# shell (``exec``/``dlx``/``x`` subcommands, a shell name, ``SHELL=``), which falls back to UNKNOWN.
+_EVAL_PROJECT_RUNNERS = frozenset({"make", "just", "cargo", "npm", "pnpm", "yarn", "fd", "go", "bundle"})
+_EVAL_REDIRECT_RE = _rx(r"^(?:\d+|\{[A-Za-z_]\w*\})?(?:>>?|<<<?|<>|>\||<&|>&|&>>?|<)(.*)$", 0)
+_EVAL_PROCSUB_RE = _rx(r"[<>]\(", 0)
+_EVAL_PROCSUB_BODY_RE = _rx(r"[<>]\(([^()]*)\)", 0)
+# fd duplication / closing (``2>&1``, ``>&2``, ``<&-``, ``{fd}>&-``) carries no word of its own;
+# ``&>`` / ``>|`` are plain redirects whose ``&`` / ``|`` the tokenizer would read as separators.
+_EVAL_FD_DUP_RE = _rx(r"(?:\{[A-Za-z_]\w*\}|\d+)?[<>]&[\d-]*", 0)
+_EVAL_AMP_REDIRECT_RE = _rx(r"&>>?|>\|", 0)
+_EVAL_ANSI_QUOTE_RE = _rx(r"\$'((?:[^'\\]|\\.)*)'", 0)
+_EVAL_DOLLAR_DQUOTE_RE = _rx(r"\$(?=\")", 0)
+_EVAL_ALIAS_ASSIGN_RE = _rx(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=(?:'eval\b|\"eval\b|eval(?=[\s;&|)]|$))", 0)
+_EVAL_FOR_LIST_RE = _rx(r"(?:^|[\s;&|(])(?:for|select)\s+([A-Za-z_]\w*)\s+in\s+([^;\n]*)", 0)
+_EVAL_READ_RE = _rx(r"(?:^|[\s;&|(])(read|mapfile|readarray)\b([^;&|\n<]*)", 0)
+_EVAL_ALIAS_COPY_RE = _rx(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=[\"']?\$\{?([A-Za-z_]\w*)", 0)
+_EVAL_ESCAPE_RE = _rx(r"\\(?:x([0-9A-Fa-f]{1,2})|([0-7]{1,3})|(.))", re.DOTALL)
+_EVAL_TMUX_RUNNERS = frozenset({"new-session", "new", "new-window", "neww", "split-window", "splitw",
+                                "respawn-pane", "respawnp", "respawn-window", "respawnw", "run-shell", "run", "if-shell", "if"})
+_EVAL_FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+_EVAL_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", "a": "\a", "b": "\b", "f": "\f", "v": "\v", "e": "\x1b"}
+
+
+def _eval_unescape(text: str) -> str:
+    """Backslash escapes as ``echo -e`` / ``printf`` / ``$'…'`` expand them."""
+    def sub(m):
+        if m.group(1) is not None:
+            return chr(int(m.group(1), 16))
+        if m.group(2) is not None:
+            return chr(int(m.group(2), 8) & 0xFF)
+        return _EVAL_ESCAPES.get(m.group(3), "\\" + m.group(3))
+    return _EVAL_ESCAPE_RE.sub(sub, text)
+
+
+def _eval_decode_dollar_quotes(command: str) -> str:
+    """``$'a\\neval x'`` -> ``'a<NL>eval x'`` and ``$"x"`` -> ``"x"``: the tokenizer knows neither."""
+    def sub(m):
+        return "'" + _eval_unescape(m.group(1)).replace("'", "'\\''") + "'"
+    return _EVAL_DOLLAR_DQUOTE_RE.sub("", _EVAL_ANSI_QUOTE_RE.sub(sub, command))
+
+
+def _eval_shell_consumer(words: List[str]) -> bool:
+    """Whether ``words`` (one command, or a pipeline) feeds its stdin to a SHELL, not to an interpreter."""
+    # compound openers (``do sh``, ``then bash``) head their stage: strip them per stage first
+    stages: List[List[str]] = [[]]
+    for w in words:
+        if w in _WORD_OPERATORS:
+            stages.append([])
+        else:
+            stages[-1].append(w)
+    words = [w for k, st in enumerate(stages) for w in (["|"] if k else []) + strip_command_opener_words(st)]
+    if _eval_makefile_reader(words):
+        return True
+    if not _stdin_is_program(words):
+        return False
+    names = {os.path.basename(w) for w in words}
+    return bool(names & _EVAL_SHELLS) or not (names & _EVAL_INTERPRETERS)
+
+
+_EVAL_PROGRAM_FILE_HEADS = frozenset({"make", "gmake", "just"})
+_EVAL_FILE_LONG_OPTS = frozenset({"--file", "--makefile", "--justfile"})
+
+
+def _eval_file_operands(words: List[str]) -> Tuple[List[str], bool]:
+    """``(file operands, pending)`` of a make/just invocation's file options.
+
+    ``-f F``, ``-fF``, clusters (``-sf F``), ``--file|--makefile|--justfile`` as ``=F`` or ``F``.
+    ``pending`` is True when the last option still awaits its value (the next word, e.g. a
+    ``<(…)`` that the caller cut out of the line).
+    """
+    vals: List[str] = []
+    pending = False
+    i, n = 0, len(words)
+    while i < n:
+        w = words[i]
+        pending = False
+        if w.startswith("--"):
+            name, eq, val = w.partition("=")
+            if name in _EVAL_FILE_LONG_OPTS:
+                if eq:
+                    vals.append(val)
+                    pending = val == ""
+                elif i + 1 < n:
+                    vals.append(words[i + 1])
+                    i += 1
+                else:
+                    pending = True
+        elif w.startswith("-") and len(w) > 1:
+            k = w.find("f", 1)
+            if k != -1 and (w[1:k].isalpha() or k == 1):
+                if len(w) > k + 1:
+                    vals.append(w[k + 1 :])
+                elif i + 1 < n:
+                    vals.append(words[i + 1])
+                    i += 1
+                else:
+                    pending = True
+        i += 1
+    return vals, pending
+
+
+def _eval_is_stdin_operand(v: str) -> bool:
+    return v in ("-", "/dev/stdin") or v.startswith(("/dev/fd/", "/proc/self/fd/"))
+
+
+def _eval_makefile_reader(words: List[str]) -> bool:
+    """``make -f -`` / ``-f /dev/stdin|/dev/fd/N`` / ``just --justfile -``: the file text is a program of shell recipes."""
+    for i, w in enumerate(words):
+        if os.path.basename(w) in _EVAL_PROGRAM_FILE_HEADS:
+            vals, _pending = _eval_file_operands(words[i + 1 :])
+            if any(_eval_is_stdin_operand(v) for v in vals):
+                return True
+    return False
+
+
+def _eval_sed_script_reader(words: List[str]) -> bool:
+    """``sed -f -`` / ``-f /dev/stdin``: the script arrives on stdin."""
+    return bool({os.path.basename(w) for w in words} & {"sed", "gsed"}) and any(
+        (a in ("-f", "--file") and _eval_is_stdin_operand(b))
+        or (a.startswith("-f") and _eval_is_stdin_operand(a[2:]))
+        or (a.startswith("--file=") and _eval_is_stdin_operand(a[7:]))
+        for a, b in zip(words, words[1:] + [""])
+    )
+
+
+def _eval_producer_texts(stage: str) -> List[str]:
+    """Candidate program texts one pipeline stage writes: a here-string, or ``echo``/``printf`` output
+    both as written (``\\eval`` stays an escaped spelling) and escape-expanded."""
+    out: List[str] = []
+    m = _HERE_STRING_RE.search(stage)
+    if m:
+        out.append(" ".join(_words(m.group(1))))
+    words = strip_command_opener_words(_words(stage))
+    if words and os.path.basename(words[0]) in ("echo", "printf"):
+        raw = " ".join(words[1:])
+        out += [raw, _eval_unescape(raw)]
+    return out
+
+
+def _eval_fed_programs(command: str, consumer=None) -> List[str]:
+    """Text handed to a shell on its stdin: heredoc / here-string bodies, piped ``echo``, ``<(…)`` bodies."""
+    consumer = consumer or _eval_shell_consumer
+    shell_kind = consumer is _eval_shell_consumer
+    out: List[str] = []
+    for h in _heredocs(command):
+        if consumer(_feed_words(h.line)):
+            out.append(h.body)
+    for m in _HERE_STRING_RE.finditer(command):
+        line = command[command.rfind("\n", 0, m.start()) + 1 : m.start()]
+        if consumer(_feed_words(line)):
+            out.append(" ".join(_words(m.group(1))))
+    stages = _pipe_stages(_hide_heredoc_bodies(command, keep_programs=False)) if "|" in command else []
+    for k, (op, stage) in enumerate(stages):
+        words = _feed_words(stage)
+        if op != "|" or not (
+            consumer(words)
+            or (shell_kind and "xargs" in words and any(os.path.basename(w) in _SHELL_NAMES for w in words))
+        ):
+            continue
+        # the shell consumes the stdout of EVERY stage before it in this pipeline,
+        # through whatever pass-through stages (tee, cat, sed, base64 -d …) sit between
+        j = k - 1
+        while j >= 0:
+            out.extend(_eval_producer_texts(stages[j][1]))
+            if stages[j][0] != "|":
+                break
+            j -= 1
+    for m in _EVAL_PROCSUB_BODY_RE.finditer(command if shell_kind else ""):
+        prefix = re.split(r"[;&|\n]", command[: m.start()])[-1]
+        pwords = _words(_EVAL_PROCSUB_BODY_RE.sub(" ", prefix))
+        heads = {os.path.basename(w) for w in pwords}
+        if _EVAL_SHELLS & heads or (heads & _EVAL_PROGRAM_FILE_HEADS and _eval_file_operands(pwords)[1]):
+            for _op, stage in _pipe_stages(m.group(1)):
+                out.extend(_eval_producer_texts(stage))
+    return out
+
+
+def _eval_brace_expand(word: str, _budget: int = 256) -> List[str]:
+    """Bash brace expansion of ``word`` (``{eval,ls}``, ``ev{al,}``), bounded; over the bound the
+    word is returned with the builtin included, because an unexpandable list errs toward asking."""
+    m = re.search(r"\{([^{}]*,[^{}]*)\}", word)
+    if not m:
+        return [word]
+    parts = m.group(1).split(",")
+    if len(parts) > _budget:
+        return ["eval"]
+    out: List[str] = []
+    for part in parts:
+        # the budget halves per group, so a product past the bound reaches ``len(parts) > _budget`` above
+        out.extend(_eval_brace_expand(word[: m.start()] + part + word[m.end() :], _budget // len(parts)))
+    return out
+
+
+def _eval_aliases(command: str) -> frozenset:
+    """Variables a same-command assignment sets to the builtin, directly or through another alias (``y=$x``)."""
+    names = {m.group(1) for m in _EVAL_ALIAS_ASSIGN_RE.finditer(command)}
+    # a ``for``/``select`` variable iterating a list that holds the builtin carries it into the body
+    for m in _EVAL_FOR_LIST_RE.finditer(command):
+        if any("eval" in _eval_brace_expand(w) for w in _words(m.group(2))):
+            names.add(m.group(1))
+    # ``read c`` / ``mapfile a`` / ``read -a a`` fed by a producer that holds it (pipe, here-string,
+    # ``< <(…)``, heredoc): in a command that holds the word, the variables they set may carry it
+    if _EVAL_READ_RE.search(command) and any(
+        "eval" in t.split() for toks in _scan_masked_tokens(command) for t, _fq, _ex in toks
+    ):
+        for m in _EVAL_READ_RE.finditer(command):
+            ids = [w for w in m.group(2).split() if re.fullmatch(r"[A-Za-z_]\w*", w)]
+            names.update(ids or ["MAPFILE" if m.group(1) != "read" else "REPLY"])
+    while True:
+        more = {m.group(1) for m in _EVAL_ALIAS_COPY_RE.finditer(command) if m.group(2) in names} - names
+        if not more:
+            return frozenset(names)
+        names |= more
+
+
+def _eval_param_name(text: str) -> str:
+    """The variable a leading ``$x`` / ``${x}`` / ``${x[0]}`` / ``"$x"`` expansion names."""
+    m = re.match(r"\$\{?([A-Za-z_]\w*)", text)
+    return m.group(1) if m else ""
+
+
+def _eval_refs_alias(text: str, aliases: frozenset) -> bool:
+    return any(re.search(r"\$\{?%s\b" % re.escape(name), text) for name in aliases)
+
+
+def has_command_position_eval(command: str, _depth: int = 0, _guess: bool = False) -> bool:
+    """Whether the dynamic-evaluation builtin is the VERB of some command (#1115).
+
+    Guards the operation, not the phrasing: ``echo eval``, ``grep -rn eval``, a
+    commit/PR/issue message, a ``send`` payload and a quoted heredoc body all
+    contain the word and run nothing. Each command is read from the resolved
+    token view (``e''val``, ``\\eval``, ``"eval"``, ``$'ev\\x61l'`` normalize to
+    the literal), after backslash-newline joining, with leading compound-command
+    syntax removed by the shared ``strip_command_openers`` (#1112). The verb is
+    the first word after redirects (the whole bash redirect grammar), assignments
+    and known launcher wrappers; ``eval`` there conceals, and so does a variable
+    assigned the word earlier in the same command and used as the verb.
+
+    The failure direction is ASK. A command word that is neither a known
+    launcher nor a known pure data consumer is UNKNOWN: every later word is
+    scanned for a shell ``-c`` payload and for the bare builtin, so a launcher
+    this file has never heard of cannot hide a payload. Program text the shell
+    is FED — ``-c`` payloads, ``ssh``, ``watch``, ``trap``, ``tmux`` runners,
+    ``find -exec`` vectors, heredocs, here-strings, ``echo|printf … | sh`` through
+    any pass-through stages, ``<(…)`` bodies handed to a shell — is re-checked as
+    a command in its own right.
+    """
+    if _depth > _RESCAN_MAX_DEPTH:
+        return True
+    command = _eval_decode_dollar_quotes(command.replace("\\\n", ""))
+    aliases = _eval_aliases(command)
+    for text in _eval_fed_programs(command):
+        if has_command_position_eval(text, _depth + 1) or _eval_refs_alias(text, aliases):
+            return True
+    if any(_eval_sed_executes(text) for text in _eval_fed_programs(command, _eval_sed_script_reader)):
+        return True
+    command = _EVAL_PROCSUB_RE.sub("; ( ", _strip_heredoc_bodies(command))
+    command = _EVAL_AMP_REDIRECT_RE.sub(">", _EVAL_FD_DUP_RE.sub(" ", command))
+    for toks in _scan_masked_tokens(command):
+        if _eval_is_verb(strip_command_openers(toks), _depth, aliases, _guess):
+            return True
+    return False
+
+
+def _eval_skip_options(toks: List[Tuple[str, bool, bool]], i: int, base: str) -> Tuple[int, Optional[str]]:
+    """Past ``base``'s leading options (getopt clusters: ``-Eu root``, ``-I{}``); ``env -S`` yields its payload."""
+    opts = _EVAL_WRAPPER_VALUE_OPTS[base]
+    shorts = {o[1] for o in opts if len(o) == 2}
+    n = len(toks)
+    while i < n and not toks[i][1] and toks[i][0].startswith("-") and toks[i][0] != "-":
+        w = toks[i][0]
+        if w == "--":
+            return i + 1, None
+        if w.startswith("--"):
+            name, eq, value = w.partition("=")
+            if name == _EVAL_PAYLOAD_OPTS.get(base, ("", ""))[1]:
+                return n, (value if eq else (toks[i + 1][0] if i + 1 < n else ""))
+            i += 2 if name in opts and not eq else 1
+            continue
+        k = next((c for c, ch in enumerate(w[1:]) if ch in shorts), None)
+        if k is None:
+            i += 1
+            continue
+        glued = w[2 + k :]
+        if w[1 + k] == _EVAL_PAYLOAD_OPTS.get(base, ("", ""))[0]:
+            return n, (glued or (toks[i + 1][0] if i + 1 < n else ""))
+        i += 1 if glued else 2
+    return i, None
+
+
+def _eval_shell_invocation(words: List[str], wrapper_style: bool) -> Tuple[Optional[str], List[str]]:
+    """``(payload, arguments)`` of a shell run with ``-c`` / ``--command``, else ``(None, [])``.
+
+    Plain shells (bash/sh/zsh/dash/ksh) parse options up to the first non-option word: ``-o|+o|-O|+O
+    NAME`` and ``--rcfile|--init-file F`` take a value, other ``--long`` options are boolean, clusters
+    (``-ec``, ``-lc``, ``-eo pipefail``) may hold ``c`` anywhere, ``--`` ends options, and the payload
+    is the first non-option word. ``su``/``runuser``/``script``/``sg`` take positionals before ``-c``.
+    """
+    n = len(words)
+    c_seen = terminated = False
+    i = 0
+    while i < n:
+        w = words[i]
+        if w == "--":
+            i += 1
+            terminated = True
+            break
+        if w.startswith("--command="):
+            return w.partition("=")[2], words[i + 1 :]
+        if w == "--command":
+            c_seen = True
+        elif w.startswith("--"):
+            i += 1 if w not in ("--rcfile", "--init-file") else 2
+            continue
+        elif len(w) > 1 and w[0] in "-+" and w[1:].isalpha():
+            letters = w[1:]
+            c_seen = c_seen or (w[0] == "-" and "c" in letters)
+            i += 2 if letters[-1] in "oO" else 1
+            continue
+        elif wrapper_style and not c_seen:
+            i += 1  # su root -c …
+            continue
+        else:
+            break
+        i += 1
+    if c_seen and i < n:
+        return words[i], words[i + 1 :]
+    # Stopped on an option shape this grammar does not model (``-O3``, ``-``): not parsed with
+    # confidence, so any later ``-…c`` cluster / ``--command`` still names a payload (the first
+    # non-option word after it). Over-asks, never under-asks. A stop on a plain word is a script
+    # file; its arguments (``bash script.sh -c x``) are data.
+    if terminated or i >= n or words[i][:1] not in "-+":
+        return None, []
+    for j, w in enumerate(words):
+        if w == "--command" or re.fullmatch(r"-[A-Za-z]*c", w):
+            k = next((m for m in range(j + 1, n) if words[m] != "--" and not words[m].startswith("-")), None)
+            if k is not None:
+                return words[k], words[k + 1 :]
+    return None, []
+
+
+_EVAL_POSITIONAL_VERB_RE = _rx(r"(?:^|[;&|(]\s*|\b(?:exec|command|env|xargs|time|nohup)\s+)\"?\$(?:[0-9@*]|\{[0-9@*#])", 0)
+
+
+def _eval_run_shell(base: str, rest: List[str], aliases: frozenset, rescan, rescan_guess) -> bool:
+    """A shell (or ``su``-style runner) at the verb: is its ``-c`` payload, or what the payload runs, the builtin?"""
+    payload, args = _eval_shell_invocation(rest, base in ("su", "runuser", "script", "sg"))
+    if payload is None:
+        return False
+    if rescan([payload]):
+        return True
+    if _eval_refs_alias(payload, aliases):
+        return True  # the payload expands a variable holding the builtin
+    if _EVAL_POSITIONAL_VERB_RE.search(payload):
+        # ``sh -c '$1' _ eval x``: the arguments ARE the command text
+        return any(w == "eval" or (any(c.isspace() for c in w) and rescan_guess([w])) for w in args)
+    return False
+
+
+_EVAL_SED_E_COMMAND_RE = _rx(r"(?:^|[;{}\n]|[0-9$/IM]|\\([^\w\s\\])(?:(?!\1).)*\1)\s*!?\s*e(?:\s|$)", 0)
+_EVAL_SED_S_FLAG_E_RE = _rx(r"s([^\w\s\\])(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[a-zA-Z0-9]*e", 0)
+
+
+def _eval_sed_executes(arg: str) -> bool:
+    """A sed script whose ``e`` command or ``s///e`` flag runs text that is, or holds, the builtin.
+
+    ``sed '1e eval x'``, ``sed -e '/p/e eval x'``, ``sed 's/a/eval x/e'``. Only these two executing
+    forms are modelled; a script that does not hold the word is data whatever it does.
+    """
+    if not re.search(r"(?<![\w-])eval(?![\w-])", arg):
+        return False
+    return bool(_EVAL_SED_E_COMMAND_RE.search(arg) or _EVAL_SED_S_FLAG_E_RE.search(arg))
+
+
+def _eval_git_payload(rest: List[str], rescan) -> bool:
+    """git subcommands that run a command line: ``rebase --exec|-x``, ``bisect run``, ``submodule foreach``."""
+    if "rebase" in rest:
+        for j, w in enumerate(rest):
+            if w in ("--exec", "-x") and j + 1 < len(rest) and rescan([rest[j + 1]]):
+                return True
+            if w.startswith("--exec=") and rescan([w.partition("=")[2]]):
+                return True
+    if "bisect" in rest and "run" in rest:
+        return rescan(rest[rest.index("run") + 1 :])
+    if "submodule" in rest and "foreach" in rest:
+        return rescan([w for w in rest[rest.index("foreach") + 1 :] if not w.startswith("--")])
+    return False
+
+
+def _eval_unknown(rest: List[str], rescan_guess) -> bool:
+    """An UNKNOWN command word: scan everything it was given (ask, never allow).
+
+    The bare word asks, and so does any quoted multi-word argument whose own verb is the builtin
+    (a ``-c`` payload, ``parallel 'eval {}'``, ``flock f -c '…'``).
+    """
+    return any(w == "eval" or (any(c.isspace() for c in w) and rescan_guess([w])) for w in rest)
+
+
+def _eval_is_verb(toks: List[Tuple[str, bool, bool]], depth: int, aliases: frozenset, guess: bool) -> bool:
+    """One command's tokens (openers already stripped): is its verb the builtin, or a payload runner of it?"""
+    def rescan(words: List[str]) -> bool:
+        return bool(words) and has_command_position_eval(" ".join(words), depth + 1)
+
+    def rescan_guess(words: List[str]) -> bool:
+        return bool(words) and has_command_position_eval(" ".join(words), depth + 1, True)
+
+    # an unquoted word starting ``#`` opens a comment that runs to the end of the line
+    comment = next((k for k, (t, fq, _ex) in enumerate(toks) if not fq and t.startswith("#")), None)
+    if comment is not None:
+        toks = toks[:comment]
+    texts = [t for t, _fq, _ex in toks]
+    i, n = 0, len(toks)
+    while i < n:
+        text, fq, _ex = toks[i]
+        if not fq:
+            m = _EVAL_REDIRECT_RE.match(text)
+            if m:
+                i += 1 if m.group(1) else 2  # a bare operator takes the NEXT word as target
+                continue
+            if _ASSIGN_TOKEN_RE.match(text):
+                i += 1
+                continue
+        if text == "eval" or (text[:1] == "$" and (_eval_param_name(text) in aliases or "eval" in text)):
+            return True
+        base = text.rsplit("/", 1)[-1]
+        rest = texts[i + 1 :]
+        if base in _EVAL_WRAPPER_VALUE_OPTS:
+            if base == "command" and any(re.fullmatch(r"-[A-Za-z]*[vV][A-Za-z]*", w) for w in rest[:2]):
+                return False  # a lookup, not an execution
+            i, payload = _eval_skip_options(toks, i + 1, base)
+            if payload is not None:
+                return rescan([payload])
+            if i < n and texts[i] in _EVAL_DATA_SUBCOMMANDS.get(base, ()):
+                return False
+            for sub in _EVAL_WRAPPER_SUBCOMMANDS.get(base, ()):
+                if i < n and texts[i] == sub:
+                    i, payload = _eval_skip_options(toks, i + 1, base)
+                    if payload is not None:
+                        return rescan([payload])
+            if base == "timeout":
+                i += 1  # the duration
+            if base == "watch":
+                return rescan(texts[i:])
+            continue
+        if base in _SHELL_NAMES or base in ("runuser", "script", "sg"):
+            # ``runuser -u u -- sh -c …`` runs a command of its own: nothing parsed here means scan it
+            return _eval_run_shell(base, rest, aliases, rescan, rescan_guess) or (
+                base not in _SHELL_NAMES and _eval_unknown(rest, rescan_guess)
+            )
+        if base in ("for", "select"):
+            return False  # a word LIST (``for f in a eval``), not a command; the body is its own segment
+        if base in _EVAL_DATA_SUBCOMMANDS and base not in _EVAL_WRAPPER_VALUE_OPTS:
+            first = next((w for w in rest if not w.startswith("-")), None)
+            if first in _EVAL_DATA_SUBCOMMANDS[base]:
+                return False
+        if base == "git" and _eval_git_payload(rest, rescan):
+            return True
+        if base in ("sed", "gsed") and any(
+            _eval_sed_executes(w) or _eval_sed_executes(w.partition("=")[2] if w.startswith("--expression=") else w[2:] if w.startswith("-e") else "")
+            for w in rest
+        ):
+            return True
+        if base in _EVAL_PROJECT_RUNNERS:
+            for w in rest:
+                if w.startswith("--call=") and rescan([w.partition("=")[2]]):
+                    return True
+            launched = next((j for j, w in enumerate(rest) if w in ("exec", "dlx", "x")), None)
+            if launched is not None and base != "make":
+                cmd = list(rest[launched + 1 :])
+                while cmd and cmd[0].startswith("-"):  # options, ``--``, and ``-c``/``--call`` before the payload
+                    cmd = cmd[1:]
+                return rescan(cmd)
+            if any(w in ("exec", "dlx", "x") or w.startswith(("SHELL=", ".SHELLFLAGS=", "SHELL:="))
+                   or os.path.basename(w) in _EVAL_SHELLS for w in rest):
+                return _eval_unknown(rest, rescan_guess)
+            return False
+        if base == "trap":
+            args = [w for w in rest if w != "--"]
+            return rescan(args[:1])
+        if base == "tmux":
+            # send-keys types into a pane (another session, guarded by its own hook): data here
+            if not _EVAL_TMUX_RUNNERS.intersection(rest):
+                return False
+            return any(rescan([w]) for w in rest if " " in w)
+        if base in ("ssh", "slogin"):
+            return rescan([w for w in _ssh_remote_command(rest) if w != "--"])
+        if base == "find":
+            for j, w in enumerate(rest):
+                if w in _EVAL_FIND_EXEC:
+                    # only the vector's head decides; a later -exec is visited by this loop
+                    if rescan(rest[j + 1 :]):
+                        return True
+            return False
+        if base in _EVAL_DATA_CONSUMERS:
+            return False
+        if guess:
+            return False
+        return _eval_unknown(rest, rescan_guess)
+    return False
+
+
 _BASE64_PIPE_RE = re.compile(r"\bbase64\b[^\n|]*(?:-d|--decode)[^\n|]*\|", re.IGNORECASE)
 _ASSIGN_RE = re.compile(
     r"(?:^|[\n;&|]|&&|\|\|)\s*([A-Za-z_]\w*)=('[^']*'|\"[^\"]*\"|[^\s;|&]*)"
@@ -3872,12 +4438,29 @@ def _heredoc_feeds_shell(prefix: str) -> bool:
     )
 
 
+def _heredoc_piped_to_program(command: str, h: "_Heredoc") -> bool:
+    """Whether the pipe on a heredoc's marker line carries its body to a shell (``cat <<'EOF' | sh``)."""
+    _marker, pipe, consumer = command[h.start : h.body_start].partition("|")
+    return bool(pipe) and _eval_shell_consumer(_command_words(consumer))
+
+
+def _heredoc_feeds_program_file(h: "_Heredoc") -> bool:
+    """Whether a heredoc is read as a makefile / justfile / sed script (``make -f - <<'EOF'``): its body is a program."""
+    words = _feed_words(h.line)
+    return _eval_makefile_reader(words) or _eval_sed_script_reader(words)
+
+
 def _neutralize_literal_heredocs(command: str) -> str:
     """Replace each literal heredoc body with one inert line (see INERT VIEW)."""
     out: List[str] = []
     pos = 0
     for h in _heredocs(command):
-        if not h.quoted or _heredoc_feeds_shell(command[: h.start]):
+        if (
+            not h.quoted
+            or _heredoc_feeds_shell(command[: h.start])
+            or _heredoc_piped_to_program(command, h)
+            or _heredoc_feeds_program_file(h)
+        ):
             continue
         out.append(command[pos : h.body_start])
         out.append(_HEREDOC_BODY + "\n")
@@ -3932,7 +4515,7 @@ def detect_obfuscation(command: str) -> Optional[str]:
     """
     if _SUBSTITUTION_RE.search(command):
         return "command substitution"
-    if _EVAL_RE.search(command):
+    if has_command_position_eval(command):
         return "eval"
     if _BASE64_PIPE_RE.search(command):
         return "base64-decode pipeline"
@@ -3994,7 +4577,7 @@ def ambiguity_conceals_verb(command: str) -> Optional[str]:
     masked, mask_err = _mask_command_substitutions(inert_view(command))
     if mask_err:
         return mask_err
-    if _EVAL_RE.search(masked):
+    if has_command_position_eval(masked):
         return "eval"
     if _BASE64_PIPE_RE.search(masked):
         return "base64-decode pipeline"
