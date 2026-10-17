@@ -7,7 +7,7 @@ optionally auto-fixes the local ones. ``network status`` is the read-only
 network-health glance.
 
 The hook/skill drift helpers (``get_hooks_source``, ``_managed_hook_files``,
-``_managed_file_state``, ``skill_drift``, ``CLAUDE_SKILLS_DIR``) are owned by
+``_managed_file_state``, ``skill_drift``, ``claude_skills_dir``) are owned by
 the hooks domain and live in ``hooks_cli``; doctor reads them via a
 function-local deferred import to stay single-source-of-truth.
 """
@@ -278,6 +278,48 @@ def cmd_network_status(args) -> int:
     return 0 if not issues else 1
 
 
+def _render_hooks_section() -> int:
+    """Print the agentwire-owned hook files (existence, drift, link target); return issues."""
+    from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
+
+    issues_found = 0
+    try:
+        hooks_source = get_hooks_source()
+    except FileNotFoundError:
+        hooks_source = None
+
+    from .safety import provenance as prov
+
+    for hook_name, target_dir, _event, label, required, why in _managed_hook_files():
+        target = target_dir / hook_name
+        source = hooks_source / hook_name if hooks_source else None
+        state = _managed_file_state(target, source) if source and source.exists() \
+            else ("ok" if target.exists() else "missing")
+
+        # A symlink aimed outside the canonical install is the #1118 incident:
+        # every session runs that tree's code. Name the target, always scored.
+        link_problem = prov.hook_link_problem(target)
+        if link_problem:
+            print(f"  [!!] {label}: BAD LINK — {link_problem}")
+            print("     Run (from the installed tool, not a worktree): agentwire hooks install")
+            issues_found += 1
+        elif state == "ok":
+            print(f"  [ok] {label}: {target}")
+        elif state == "stale":
+            print(f"  [!!] {label}: STALE — installed copy differs from packaged source")
+            print("     Run: agentwire hooks install")
+            issues_found += 1
+        elif required:
+            print(f"  [!!] {label}: not found ({why})")
+            print("     Run: agentwire hooks install")
+            issues_found += 1
+        else:
+            print(f"  [..] {label}: not found ({why})")
+            print("     Run: agentwire hooks install")
+
+    return issues_found
+
+
 def _render_skill_section() -> int:
     """Print the global-skill drift block. Returns the count of issues found.
 
@@ -286,11 +328,11 @@ def _render_skill_section() -> int:
     (running from a checkout, where skills only live in the built wheel) is NOT a
     drift problem — there's nothing to install from — so it never bumps the count.
     """
-    from .hooks_cli import CLAUDE_SKILLS_DIR, skill_drift
+    from .hooks_cli import claude_skills_dir, skill_drift
 
     issues = 0
     for name, state in sorted(skill_drift().items()):
-        target = CLAUDE_SKILLS_DIR / name
+        target = claude_skills_dir() / name
         if state == "ok":
             print(f"  [ok] /{name} skill: {target}")
         elif state == "source-unavailable":
@@ -1557,7 +1599,6 @@ def _render_beta_section() -> int:
 
 def cmd_doctor(args) -> int:
     """Auto-diagnose and fix common issues."""
-    from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
     from .network import NetworkContext
     from .tunnels import TunnelManager, test_service_health, test_ssh_connectivity
     from .validation import validate_config
@@ -1663,30 +1704,7 @@ def cmd_doctor(args) -> int:
     # 4. Check agentwire-owned hook files (existence AND drift from packaged source)
     print("\nChecking AgentWire hooks...")
 
-    try:
-        hooks_source = get_hooks_source()
-    except FileNotFoundError:
-        hooks_source = None
-
-    for hook_name, target_dir, _event, label, required, why in _managed_hook_files():
-        target = target_dir / hook_name
-        source = hooks_source / hook_name if hooks_source else None
-        state = _managed_file_state(target, source) if source and source.exists() \
-            else ("ok" if target.exists() else "missing")
-
-        if state == "ok":
-            print(f"  [ok] {label}: {target}")
-        elif state == "stale":
-            print(f"  [!!] {label}: STALE — installed copy differs from packaged source")
-            print("     Run: agentwire hooks install")
-            issues_found += 1
-        elif required:
-            print(f"  [!!] {label}: not found ({why})")
-            print("     Run: agentwire hooks install")
-            issues_found += 1
-        else:
-            print(f"  [..] {label}: not found ({why})")
-            print("     Run: agentwire hooks install")
+    issues_found += _render_hooks_section()
 
     # 4a-bis. Global skills (currently just /wiki). Hand-placed at wiki-setup and
     # never resynced, so a stale or missing copy was invisible until #475. Flag

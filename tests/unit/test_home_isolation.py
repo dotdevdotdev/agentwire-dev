@@ -263,6 +263,19 @@ class TestTheAuditHookCanActuallyFail:
             target.unlink(missing_ok=True)
         assert any(str(target) in p for _t, _e, p in self._recorded_since(mark))
 
+    def test_catches_a_symlink_created_under_the_real_claude_dir(self):
+        """#1118: the hook symlinks live in ~/.claude, and ``os.symlink`` reports
+        (src, dst) — the guard must read the DESTINATION, not the link content."""
+        from tests import home_guard
+
+        link, mark = home_guard.REAL_CLAUDE_HOME / "zz-probe-link", self._mark()
+        try:
+            link.symlink_to(home_guard.REAL_AGENTWIRE_HOME)
+        finally:
+            link.unlink(missing_ok=True)
+        events = {e for _t, e, p in self._recorded_since(mark) if p == str(link)}
+        assert {"os.symlink", "os.remove"} <= events, events
+
     def test_ignores_reads(self):
         """A guard that flags reads would flood and get switched off."""
         from tests import home_guard

@@ -15,9 +15,45 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-CLAUDE_HOOKS_DIR = Path.home() / ".claude" / "hooks"
-CLAUDE_COMMANDS_DIR = Path.home() / ".claude" / "commands"
-CLAUDE_SKILLS_DIR = Path.home() / ".claude" / "skills"
+
+# Resolved at CALL time, never frozen at import: an import-time constant keeps
+# naming the real ~/.claude after a test redirects $HOME, which is how a unit
+# test's `install_hooks(allow_foreign=True)` unlinked and relinked the owner's
+# real hook symlinks into a worktree (#1118).
+def claude_hooks_dir() -> Path:
+    return Path.home() / ".claude" / "hooks"
+
+
+def claude_commands_dir() -> Path:
+    return Path.home() / ".claude" / "commands"
+
+
+def claude_skills_dir() -> Path:
+    return Path.home() / ".claude" / "skills"
+
+
+class LinkRefusedError(RuntimeError):
+    """A machine-global symlink was refused; the message names source and state."""
+
+
+def _link_into_claude(source: Path, target: Path, *, allow_foreign: bool, directory: bool = False) -> None:
+    """The ONE place a machine-global symlink is created (#1118).
+
+    Refuses loudly, naming the source and why, unless ``source`` is inside the
+    canonical install (or ``allow_foreign`` says the caller means it). The
+    check runs BEFORE the existing occupant is removed, so a refusal never
+    leaves the slot empty.
+    """
+    from agentwire.safety import provenance as prov
+
+    if not allow_foreign:
+        refusal = prov.link_target_refusal(source)
+        if refusal is not None:
+            raise LinkRefusedError("\n".join(refusal))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        _remove_skill_target(target)
+    target.symlink_to(source.resolve(), target_is_directory=directory)
 
 
 def get_hooks_source() -> Path:
@@ -56,7 +92,7 @@ def get_commands_source() -> Path:
     raise FileNotFoundError("Could not find commands directory in package")
 
 
-def install_commands(force: bool = False) -> list[str]:
+def install_commands(force: bool = False, allow_foreign: bool = False) -> list[str]:
     """Symlink bundled slash commands into ~/.claude/commands/.
 
     Returns list of command names that were installed or updated.
@@ -66,17 +102,14 @@ def install_commands(force: bool = False) -> list[str]:
     except FileNotFoundError:
         return []
 
-    CLAUDE_COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
+    claude_commands_dir().mkdir(parents=True, exist_ok=True)
 
     installed = []
     for src_file in commands_source.glob("*.md"):
-        target = CLAUDE_COMMANDS_DIR / src_file.name
-        if target.exists() or target.is_symlink():
-            if target.is_symlink() and target.resolve() == src_file.resolve() and not force:
-                continue  # Already correctly symlinked
-            target.unlink()
-
-        target.symlink_to(src_file.resolve())
+        target = claude_commands_dir() / src_file.name
+        if target.is_symlink() and target.resolve() == src_file.resolve() and not force:
+            continue  # Already correctly symlinked
+        _link_into_claude(src_file, target, allow_foreign=allow_foreign)
         installed.append(src_file.stem)
 
     return installed
@@ -140,7 +173,7 @@ def _remove_skill_target(target: Path) -> None:
         shutil.rmtree(target)
 
 
-def install_skills(force: bool = False, copy: bool = False) -> dict[str, str]:
+def install_skills(force: bool = False, copy: bool = False, allow_foreign: bool = False) -> dict[str, str]:
     """Install/refresh agentwire-owned global skills into ~/.claude/skills/.
 
     Each managed skill is a directory installed as a symlink (or copied with
@@ -163,19 +196,19 @@ def install_skills(force: bool = False, copy: bool = False) -> dict[str, str]:
             results[name] = "missing-source"
             continue
 
-        target = CLAUDE_SKILLS_DIR / name
+        target = claude_skills_dir() / name
         state = _managed_skill_state(target, source)
         if state == "ok" and not force:
             results[name] = "current"
             continue
 
         existed = target.exists() or target.is_symlink()
-        CLAUDE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-        _remove_skill_target(target)
         if copy:
+            claude_skills_dir().mkdir(parents=True, exist_ok=True)
+            _remove_skill_target(target)
             shutil.copytree(source, target)
         else:
-            target.symlink_to(source.resolve(), target_is_directory=True)
+            _link_into_claude(source, target, allow_foreign=allow_foreign, directory=True)
         results[name] = "updated" if existed else "installed"
 
     return results
@@ -204,7 +237,7 @@ def skill_drift() -> dict[str, str]:
     drift: dict[str, str] = {}
     for name in _managed_global_skills():
         source = skills_source / name
-        target = CLAUDE_SKILLS_DIR / name
+        target = claude_skills_dir() / name
         if not source.exists():
             drift[name] = "source-unavailable"
             continue
@@ -316,18 +349,18 @@ class ManagedHook(NamedTuple):
 def _managed_hook_files() -> list[ManagedHook]:
     return [
         ManagedHook(
-            "agentwire-permission.sh", CLAUDE_HOOKS_DIR, ("PermissionRequest",),
+            "agentwire-permission.sh", claude_hooks_dir(), ("PermissionRequest",),
             "Permission hook", False, "optional for prompted sessions",
         ),
         ManagedHook(
-            "idle-handler.sh", CLAUDE_HOOKS_DIR, ("Notification",),
+            "idle-handler.sh", claude_hooks_dir(), ("Notification",),
             "Idle notification hook", True,
             "required for worker notifications and scheduled tasks",
         ),
         # Records what happened AFTER damage-control decided: ran / failed /
         # denied. Joined to the audit rows by tool_use_id.
         ManagedHook(
-            "outcome_logger.py", CLAUDE_HOOKS_DIR,
+            "outcome_logger.py", claude_hooks_dir(),
             ("PostToolUse", "PostToolUseFailure", "PermissionDenied"),
             "Outcome logger", True, "required for damage-control audit outcomes",
         ),
@@ -356,7 +389,9 @@ def _managed_file_state(target: Path, source: Path) -> str:
         return "stale"
 
 
-def _install_managed_file(source: Path, target: Path, force: bool = False, copy: bool = False) -> bool:
+def _install_managed_file(
+    source: Path, target: Path, force: bool = False, copy: bool = False, allow_foreign: bool = False,
+) -> bool:
     """Install or refresh an agentwire-owned file (symlink by default).
 
     These files carry no user edits to preserve — any drift from the packaged
@@ -365,10 +400,10 @@ def _install_managed_file(source: Path, target: Path, force: bool = False, copy:
     if not force and _managed_file_state(target, source) == "ok":
         return False
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() or target.is_symlink():
-        target.unlink()
     if copy:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() or target.is_symlink():
+            target.unlink()
         shutil.copy2(source, target)
         # Only the copied file gets a chmod. On the symlink path, chmod
         # FOLLOWS the link — and when the package is a source checkout, the
@@ -378,7 +413,7 @@ def _install_managed_file(source: Path, target: Path, force: bool = False, copy:
         # scripts ship 755, so the link needs no chmod of its own.
         target.chmod(0o755)
     else:
-        target.symlink_to(source.resolve())
+        _link_into_claude(source, target, allow_foreign=allow_foreign)
     return True
 
 
@@ -422,7 +457,7 @@ def install_hooks(
 
         target = target_dir / hook_name
         existed = target.exists() or target.is_symlink()
-        if _install_managed_file(source, target, force=force, copy=copy):
+        if _install_managed_file(source, target, force=force, copy=copy, allow_foreign=allow_foreign):
             results[hook_name] = "updated" if existed else "installed"
         else:
             results[hook_name] = "current"
@@ -465,18 +500,19 @@ def install_hooks(
     # Global skills (currently just /wiki) are agentwire-owned too, and rotted
     # silently because nothing ever resynced the hand-placed copies. Heal them
     # on the same install pass — drift-aware, like the hooks above.
-    results.update(install_skills(force=force, copy=copy))
+    results.update(install_skills(force=force, copy=copy, allow_foreign=allow_foreign))
 
     return results
 
 
 def cmd_hooks_install(args) -> int:
     """Install agentwire-owned hook files and slash commands for AgentWire integration."""
-    results = install_hooks(
-        force=args.force,
-        copy=args.copy,
-        allow_foreign=getattr(args, "allow_foreign_source", False),
-    )
+    allow_foreign = getattr(args, "allow_foreign_source", False)
+    try:
+        results = install_hooks(force=args.force, copy=args.copy, allow_foreign=allow_foreign)
+    except LinkRefusedError as e:
+        print(str(e))
+        return 1
     if any(state == "refused-foreign" for state in results.values()):
         # A refusal must never be reportable as a successful install (#936).
         return 1
@@ -487,9 +523,13 @@ def cmd_hooks_install(args) -> int:
         elif state == "current":
             print(f"{hook_name} already current.")
 
-    installed_commands = install_commands(force=args.force)
+    try:
+        installed_commands = install_commands(force=args.force, allow_foreign=allow_foreign)
+    except LinkRefusedError as e:
+        print(str(e))
+        return 1
     if installed_commands:
-        print(f"\nInstalled slash commands to {CLAUDE_COMMANDS_DIR}:")
+        print(f"\nInstalled slash commands to {claude_commands_dir()}:")
         for name in installed_commands:
             print(f"  /{name}")
     else:
@@ -499,7 +539,7 @@ def cmd_hooks_install(args) -> int:
     for name in _managed_global_skills():
         state = results.get(name)
         if state in ("installed", "updated"):
-            print(f"{state.capitalize()} skill -> /{name} ({CLAUDE_SKILLS_DIR / name})")
+            print(f"{state.capitalize()} skill -> /{name} ({claude_skills_dir() / name})")
             refreshed_skills = True
     if not refreshed_skills:
         print("Skills already current.")

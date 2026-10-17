@@ -1,4 +1,4 @@
-"""Detection half of the real-``~/.agentwire`` protection (#893).
+"""Detection half of the real-``~/.agentwire`` / ``~/.claude`` protection (#893, #1118).
 
 Lives in its own module rather than in ``conftest.py`` for a reason that bit
 this guard during development: pytest loads the root conftest as the top-level
@@ -25,7 +25,13 @@ from pathlib import Path
 #: redirects ``$HOME``, so it keeps naming the real one.
 REAL_AGENTWIRE_HOME = Path.home() / ".agentwire"
 
-#: Writes under the real home that nothing sanctioned: the failures.
+#: The owner's real Claude Code directory — where the machine-global hook
+#: symlinks live. Same capture-before-redirect rule. #1118: a unit test unlinked
+#: and relinked these into a worktree while this guard watched only
+#: ``~/.agentwire``.
+REAL_CLAUDE_HOME = Path.home() / ".claude"
+
+#: Writes under either real directory that nothing sanctioned: the failures.
 WRITES: list = []
 
 #: Writes recorded inside :func:`sanctioned_real_home_write` — the evidence
@@ -80,7 +86,7 @@ def install() -> None:
         return
     _INSTALLED[0] = True
 
-    real = str(REAL_AGENTWIRE_HOME)
+    real_roots = (str(REAL_AGENTWIRE_HOME), str(REAL_CLAUDE_HOME))
 
     def hook(event, args):
         if event == "open":
@@ -98,19 +104,26 @@ def install() -> None:
                     return
             elif not (isinstance(flags, int) and flags & _WRITING_FLAGS):
                 return
-            target = args[0]
+            targets = args[:1]
+        elif event == "os.symlink":
+            # (src, dst, ...): ``src`` is only the link's CONTENT; the path
+            # written is ``dst``. Reading args[0] made the guard blind to a
+            # symlink created under the real home.
+            targets = args[1:2]
         elif event in _WRITE_EVENTS:
-            target = args[0] if args else None
+            # rename/replace/link/move carry two paths; either side is a write.
+            targets = args[:2]
         else:
             return
-        try:
-            path = str(target)
-        except Exception:
-            return
-        if not path.startswith(real):
-            return
-        entry = (os.environ.get("PYTEST_CURRENT_TEST", "<session>"), event, path)
-        (SANCTIONED_WRITES if _SANCTIONED[0] else WRITES).append(entry)
+        for target in targets:
+            try:
+                path = str(target)
+            except Exception:
+                continue
+            if not path.startswith(real_roots):
+                continue
+            entry = (os.environ.get("PYTEST_CURRENT_TEST", "<session>"), event, path)
+            (SANCTIONED_WRITES if _SANCTIONED[0] else WRITES).append(entry)
 
     sys.addaudithook(hook)
 
@@ -128,6 +141,6 @@ def report() -> str | None:
         seen.add(key)
         lines.append(f"  {test_id}\n      {event}  {path}")
     return (
-        f"the test suite wrote into the REAL ~/.agentwire ({len(seen)} write(s), #893)\n"
+        f"the test suite wrote into the REAL ~/.agentwire or ~/.claude ({len(seen)} write(s), #893/#1118)\n"
         + "\n".join(lines[:25])
     )

@@ -139,6 +139,23 @@ def _isolate_agentwire_home(request, tmp_path_factory, monkeypatch):
     return fake_config
 
 
+@pytest.fixture(autouse=True)
+def _no_real_home_write_in_this_test():
+    """Fail THE test that wrote under the real ~/.agentwire or ~/.claude (#1118).
+
+    The session backstop below names the offender only at the end of the run;
+    this attributes the failure to the test, where it can be fixed. Popped from
+    the record so the backstop does not report the same write twice.
+    """
+    mark = len(home_guard.WRITES)
+    yield
+    escaped = home_guard.WRITES[mark:]
+    if escaped:
+        del home_guard.WRITES[mark:]
+        lines = "\n".join(f"  {event}  {path}" for _t, event, path in escaped[:10])
+        pytest.fail(f"this test wrote under the REAL ~/.agentwire or ~/.claude:\n{lines}", pytrace=False)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _real_agentwire_home_untouched():
     """Backstop: fail the run loudly if anything escaped the redirect (#893).

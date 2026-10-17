@@ -200,6 +200,72 @@ def refusal_lines(canonical: Optional[Path], running: Path, what: str) -> List[s
         "",
         "  Fix: run this from the installed tool instead —",
         "       git -C <main checkout> pull --ff-only && agentwire rebuild",
+        "       then re-run this same command with the installed `agentwire` (e.g. `agentwire hooks install`).",
         "  Or, if you genuinely mean to install THIS checkout machine-wide:",
         "       pass --allow-foreign-source",
     ]
+
+
+def _enclosing_worktree(path: Path) -> Optional[Path]:
+    """The linked-worktree root containing ``path`` (a ``.git`` FILE), or None."""
+    for parent in (path, *path.parents):
+        if (parent / ".git").is_file():
+            return parent
+    return None
+
+
+def link_target_refusal(source: Path) -> Optional[List[str]]:
+    """Why a machine-global symlink may not point at ``source`` — or None (#1118).
+
+    ``install_provenance`` answers "is the RUNNING package canonical?"; this
+    answers the question the symlink itself cares about: "is the file the link
+    will point AT inside the canonical install?" Checked per link, at the one
+    place a machine-global symlink is created, so no caller — and no test that
+    patches the process-level answer — can aim ``~/.claude`` at a task branch.
+
+    With a canonical install, ``source`` must live under it. With none
+    (bootstrap), ``source`` must merely not sit inside a linked git worktree.
+    """
+    resolved = source.resolve()
+    canonical = canonical_package_dir()
+    if canonical is not None:
+        if resolved == canonical or canonical in resolved.parents:
+            return None
+        state = f"outside the canonical install {canonical}"
+    else:
+        worktree = _enclosing_worktree(resolved)
+        if worktree is None:
+            return None
+        state = f"inside the git worktree {worktree} (no canonical install found)"
+    return [
+        f"REFUSED: machine-global symlink target {resolved} is {state}.",
+        "  A link there would run un-deployed task-branch code in every session (#1118).",
+        "",
+        "  Fix: run `agentwire hooks install` from the installed tool —",
+        "       git -C <main checkout> pull --ff-only && agentwire rebuild && agentwire hooks install",
+        "  Or, if you genuinely mean to link THIS checkout machine-wide:",
+        "       agentwire hooks install --allow-foreign-source",
+    ]
+
+
+def hook_link_problem(target: Path) -> Optional[str]:
+    """What is wrong with an installed hook symlink, naming its target, or None.
+
+    Read-only; the doctor's view of the same rule :func:`link_target_refusal`
+    enforces at write time. A non-symlink (a ``--copy`` install) is not a link
+    problem.
+    """
+    if not target.is_symlink():
+        return None
+    dest = Path(os.readlink(target))
+    if not target.exists():
+        return f"{target} is a dangling symlink -> {dest}"
+    refusal = link_target_refusal(target.resolve())
+    if refusal is not None:
+        return f"{target} -> {target.resolve()} ({refusal[0].split(' is ', 1)[1].rstrip('.')})"
+    if canonical_package_dir() is not None:
+        return None  # link_target_refusal above already proved it is inside the install
+    tmp_roots = {Path("/tmp").resolve(), Path("/private/tmp").resolve(), Path("/var/folders").resolve()}
+    if any(r in target.resolve().parents for r in tmp_roots):
+        return f"{target} -> {target.resolve()} (inside a temp tree)"
+    return None
