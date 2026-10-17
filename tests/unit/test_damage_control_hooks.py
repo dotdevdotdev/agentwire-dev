@@ -723,8 +723,9 @@ class TestGitGlobalOptionBypass:
         anchored = [p for p in patterns if p.get("anchored")]
         # 264 -> 257 in #924/#921: 8 remote.yaml ssh-twins deleted (redundant
         # with the wrapper-payload rescan), 1 unanchored rule added
-        # (git.config-exec-key).
-        assert (len(patterns), len(anchored)) == (258, 238)
+        # (git.config-exec-key). 258 -> 257 in #1125: the duplicate `rm -[rRf]` rule
+        # folded into the {ARGS} scan.
+        assert (len(patterns), len(anchored)) == (257, 237)
         assert any(p.get("source") == "tooldef" for p in patterns)
 
     def test_quoted_path_with_spaces(self, bash_hook, bundled_config):
