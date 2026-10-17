@@ -39,6 +39,31 @@ class LinkRefusedError(RuntimeError):
     """A machine-global symlink was refused; the message names source and state."""
 
 
+def _is_real_dir(path: Path) -> bool:
+    """A real directory (not a symlink). A concurrent install renaming over the
+    slot can make the probe itself raise (EINVAL seen ~4% under 4 procs); that
+    means "not a plain directory right now", never a failure."""
+    try:
+        return path.is_dir() and not path.is_symlink()
+    except OSError:
+        return False
+
+
+def _sweep_stale_link_temps(target: Path) -> None:
+    """Delete ``.<name>.<pid>.new`` temps whose creating process is gone (SIGKILLed
+    mid-install). A live pid's temp belongs to a concurrent install: left alone."""
+    for stale in target.parent.glob(f".{target.name}.*.new"):
+        pid = stale.name[len(target.name) + 2:-len(".new")]
+        if not pid.isdigit():
+            continue
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            stale.unlink(missing_ok=True)
+        except OSError:
+            pass  # exists but not ours to signal: it is alive
+
+
 def _link_into_claude(source: Path, target: Path, *, allow_foreign: bool, directory: bool = False) -> None:
     """The ONE place a machine-global symlink is created (#1118).
 
@@ -56,12 +81,13 @@ def _link_into_claude(source: Path, target: Path, *, allow_foreign: bool, direct
     target.parent.mkdir(parents=True, exist_ok=True)
     # Create the new link under a temp name and rename it over the slot, so a
     # failure at any point leaves the old link (or nothing) — never a hole.
+    _sweep_stale_link_temps(target)
     tmp = target.with_name(f".{target.name}.{os.getpid()}.new")
     if tmp.is_symlink() or tmp.exists():
         tmp.unlink()
     tmp.symlink_to(source.resolve(), target_is_directory=directory)
     try:
-        if target.is_dir() and not target.is_symlink():
+        if _is_real_dir(target):
             _remove_skill_target(target)  # a real directory can't be replaced by a rename
         os.replace(tmp, target)
     except BaseException:

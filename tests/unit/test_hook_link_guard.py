@@ -177,39 +177,62 @@ class TestClaudeDirIsResolvedPerCall:
         assert history.claude_projects_dir() == tmp_path / ".claude" / "projects"
         assert history.history_file() == tmp_path / ".claude" / "history.jsonl"
 
-    def test_no_loaded_module_holds_a_path_constant_under_the_real_claude_dir(self):
+    def test_no_agentwire_module_holds_an_import_time_path_under_claude_dir(self, tmp_path):
+        """Scanned in a FRESH interpreter: in-process, the autouse fixture has already
+        relocated every such constant, so a scan there can never fail (vacuous)."""
+        import subprocess
         import sys
 
-        from tests import home_guard
-
-        real = home_guard.REAL_CLAUDE_HOME
-        frozen = sorted(
-            f"{name}.{attr}"
-            for name, mod in list(sys.modules.items())
-            if name == "agentwire" or name.startswith("agentwire.")
-            for attr, value in list(vars(mod or object).items())
-            if isinstance(value, Path) and (value == real or real in value.parents)
+        script = (
+            "import importlib, pkgutil, sys\n"
+            "from pathlib import Path\n"
+            "import agentwire\n"
+            "real = Path.home() / '.claude'\n"
+            "for info in pkgutil.walk_packages(agentwire.__path__, prefix='agentwire.'):\n"
+            "    try: importlib.import_module(info.name)\n"
+            "    except Exception: pass\n"
+            "bad = sorted(f'{n}.{a}' for n, m in list(sys.modules.items())\n"
+            "    if n == 'agentwire' or n.startswith('agentwire.')\n"
+            "    for a, v in list(vars(m or object).items())\n"
+            "    if isinstance(v, Path) and (v == real or real in v.parents))\n"
+            "print('\\n'.join(bad))\n"
         )
-        assert not frozen, f"import-frozen paths into the real ~/.claude: {frozen}"
+        import os
+
+        env = {**os.environ, "HOME": str(tmp_path)}
+        proc = subprocess.run(
+            [sys.executable, "-I", "-c", script], env=env, capture_output=True, text=True, check=True
+        )
+        assert proc.stdout.strip() == "", f"import-frozen paths into ~/.claude:\n{proc.stdout}"
 
 
-class TestDoctorLegacyLink:
-    def test_unmanaged_link_into_an_agentwire_hooks_dir_is_informational_not_scored(
-        self, machine, capsys, tmp_path
-    ):
+class TestLinkTempsAndRaces:
+    def test_stale_temp_from_a_dead_process_is_swept_and_a_live_ones_is_kept(self, machine):
+        import os
+
         home, canonical, _w = machine
-        legacy_src = tmp_path / "main" / "agentwire" / "hooks" / "outcome-logger.py"
-        legacy_src.parent.mkdir(parents=True)
-        legacy_src.write_text("x")
-        (home / ".claude" / "hooks" / "outcome-logger.py").symlink_to(legacy_src)
-        (home / ".claude" / "hooks" / "unrelated.sh").symlink_to(tmp_path / "elsewhere.sh")
+        hooks = home / ".claude" / "hooks"
+        target = hooks / "idle-handler.sh"
+        dead = hooks / ".idle-handler.sh.999999999.new"  # no such pid
+        live = hooks / f".idle-handler.sh.{os.getppid()}.new"  # a running process
+        for p in (dead, live):
+            p.symlink_to(canonical / "hooks" / "idle-handler.sh")
 
-        before = doctor_cli._render_hooks_section()
-        out = capsys.readouterr().out
-        (home / ".claude" / "hooks" / "outcome-logger.py").unlink()
-        after = doctor_cli._render_hooks_section()
-        capsys.readouterr()
+        hooks_cli._install_managed_file(canonical / "hooks" / "idle-handler.sh", target)
 
-        assert "[..] unmanaged hook link:" in out and str(legacy_src) in out
-        assert "unrelated.sh" not in out
-        assert before == after, "an informational line must not change the issue count"
+        assert not dead.is_symlink(), "a SIGKILLed install's temp must be swept"
+        assert live.is_symlink(), "a concurrent live install's temp must be left alone"
+
+    def test_a_probe_error_racing_the_rename_is_not_a_failure(self, machine, monkeypatch):
+        home, canonical, _w = machine
+        target = home / ".claude" / "hooks" / "idle-handler.sh"
+        real_is_dir = Path.is_dir
+
+        def flaky(self):
+            if self == target:
+                raise OSError(22, "Invalid argument")
+            return real_is_dir(self)
+
+        monkeypatch.setattr(Path, "is_dir", flaky)
+        hooks_cli._install_managed_file(canonical / "hooks" / "idle-handler.sh", target)
+        assert target.resolve() == (canonical / "hooks" / "idle-handler.sh").resolve()

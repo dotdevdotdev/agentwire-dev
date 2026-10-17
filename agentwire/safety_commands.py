@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agentwire.utils.paths import claude_dir
+
 try:
     import yaml
 except ImportError:
@@ -748,7 +750,7 @@ def register_damage_control_in_settings() -> int:
     ``timeout`` on existing agentwire-owned entries. Returns the number of
     entries added or updated.
     """
-    settings_file = Path.home() / ".claude" / "settings.json"
+    settings_file = claude_dir() / "settings.json"
     if settings_file.exists():
         try:
             settings = json.loads(settings_file.read_text())
@@ -1040,7 +1042,7 @@ def missing_damage_control_matchers() -> List[str]:
     silently hiding a real gap in a security hook (e.g. Read guarded but
     Grep/Glob not).
     """
-    settings_file = Path.home() / ".claude" / "settings.json"
+    settings_file = claude_dir() / "settings.json"
     try:
         settings = json.loads(settings_file.read_text())
     except (OSError, json.JSONDecodeError):
@@ -1061,7 +1063,7 @@ def damage_control_timeout_drift() -> List[str]:
     A registered hook with no (or a different) timeout runs under the harness
     default; the scan deadline is only known to fit inside ``HOOK_TIMEOUT_SECONDS``.
     """
-    settings_file = Path.home() / ".claude" / "settings.json"
+    settings_file = claude_dir() / "settings.json"
     try:
         settings = json.loads(settings_file.read_text())
     except (OSError, json.JSONDecodeError):
