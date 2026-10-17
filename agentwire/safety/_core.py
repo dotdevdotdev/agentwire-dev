@@ -2105,23 +2105,55 @@ def control_plane_allowlist_overlaps(
     shipped ``/tmp/*`` build-artifact entry into a false overlap, the exact
     environment-shaped failure #938 itself documents from #920.
     """
-    canonical_home = "/home/agentwire-canonical"
-
-    def _anchor(p: str) -> str:
-        return canonical_home + p[1:] if p.startswith("~") else p
-
     write_ops = ALL_OPERATIONS - {"read"}
     out: List[Tuple[str, str]] = []
     for entry in allowed_paths:
         if not entry.get("allow", set()) & write_ops:
             continue
         for prot in PROTECTED_CONTROL_PLANE_PATHS:
-            sample = _anchor(prot).replace("*", "x")
-            if not os.path.isabs(sample):
-                sample = "/x/" + sample
-            if match_path(sample, _anchor(entry["path"])):
+            if _entry_covers_control_plane(entry["path"], prot):
                 out.append((entry["path"], prot))
     return out
+
+
+_CANONICAL_HOME = "/home/agentwire-canonical"
+
+
+def _anchor_home(p: str) -> str:
+    """``p`` with a leading ``~`` or the live ``$HOME`` prefix moved to the canonical home."""
+    home = os.path.expanduser("~")
+    if p.startswith("~"):
+        return _CANONICAL_HOME + p[1:]
+    if home != "/" and (p == home or p.startswith(home + "/")):
+        return _CANONICAL_HOME + p[len(home):]
+    return p
+
+
+def _entry_covers_control_plane(entry_path: str, protected: str) -> bool:
+    """Whether an allowlist entry's SHAPE covers the protected pattern, wherever ``$HOME`` is."""
+    sample = _anchor_home(protected).replace("*", "x")
+    if not os.path.isabs(sample):
+        sample = "/x/" + sample
+    return match_path(sample, _anchor_home(entry_path))
+
+
+def control_plane_allowlist(allowed_paths: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The allowlist entries that may re-permit a protected control-plane path.
+
+    An entry counts only if its shape covers the control plane at a CANONICAL
+    home. Judged against the live path instead, ``/tmp/*`` (shipped, for
+    scratch work) re-permitted ``$HOME/.agentwire/damagecontrol.yml`` whenever
+    ``$HOME`` lived under ``/tmp`` — the decision followed where the home
+    happened to be, not what the target is (#1121). A human's explicit entry
+    still counts — one that NAMES a protected file (``/repo/.damagecontrol.yml``)
+    or whose shape covers the control plane (``~/.agentwire/*``); a location
+    allowance never does.
+    """
+    return [
+        e for e in allowed_paths
+        if (not is_glob_pattern(e["path"]) and is_protected_control_plane(os.path.expanduser(e["path"])))
+        or any(_entry_covers_control_plane(e["path"], prot) for prot in PROTECTED_CONTROL_PLANE_PATHS)
+    ]
 
 
 def _protected_path_patterns() -> List[str]:
@@ -2180,7 +2212,7 @@ def check_protected_path(
     """
     matched = _matched_protected_pattern(file_path)
     if matched:
-        if is_path_allowed_for_op(file_path, allowed_paths, "edit"):
+        if is_path_allowed_for_op(file_path, control_plane_allowlist(allowed_paths), "edit"):
             return False, ""
         return True, _protected_reason(matched)
     return False, ""
@@ -3536,7 +3568,9 @@ def check_protected_command(
     """
     # ``$HOME`` / ``${HOME}`` / ``~`` name the same file as its absolute form;
     # the ladder patterns carry the ``~`` and expanded spellings of each path.
-    return _check_protected_command(command, allowed_paths, 0, [_RESCAN_BUDGET])
+    return _check_protected_command(
+        command, control_plane_allowlist(allowed_paths), 0, [_RESCAN_BUDGET]
+    )
 
 
 def _check_protected_command(
