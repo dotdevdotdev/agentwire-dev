@@ -426,9 +426,14 @@ per-event notices have none). A transcript task the pane no longer shows is
 stale (from before an `/exit` + `--resume`) and counts as zero.
 
 **The rule: unknown means HOLD, never reap.** A task-kind word the parser has
-not seen ("local agent", "bash", "hook"), a truncated footer with no turn-end
-line, or any unparsable "still running" reads as *uncertain*, which every
-consumer treats as pending. The worker-pane summary/`kill --pane` and the
+not seen next to "still running", a footer cut off (including right after the
+digit: `· 1`), any unparsable digit-bearing segment, a pane with no input box
+(tall draft, plan/permission/resume dialog) that still shows pending-looking
+text, or a gate crash on a reap path reads as *uncertain*, which every consumer
+treats as pending. Two cases stay distinct: an unparsable fragment holds, but a
+clean `N <noun>` footer segment whose noun is not a task kind (`2 MCP servers
+failed`, `3 files changed`) is simply not a task. A bare shell with no signal at
+all behaves as before. The worker-pane summary/`kill --pane` and the
 scheduled-task `/exit` fail to KEEP; the parent notice is held, then released
 by the bound. Only "nothing readable at all" (no agent pane, no transcript)
 behaves as before the gate.
@@ -441,10 +446,11 @@ worker pane: by the stage, to its owning pane 0). A worker pane and a scheduled
 task stay held for as long as the task may be running; a live task is not ended
 by a timer. `qualified` is recorded only after the enqueue succeeded (a failed
 one retries next tick); a session with nobody to tell is marked `unroutable`,
-never "sent". A marker untouched for 10 minutes, or carrying another
-conversation id, belongs to a different session incarnation and restarts its
-clock (the stage refreshes live markers each minute, so the bound needs the
-watchdog loaded). State: `~/.agentwire/idle-deferred/`, events:
+never "sent". A session incarnation is the conversation id the hook supplies (a different id
+restarts the clock); only an id-less marker falls back to a gap, and that gap is
+the bound itself, so a task waking the session every 12 minutes still reaches it.
+Without the watchdog loaded a stuck task that never wakes its session is never
+told about: `agentwire doctor` flags that as `[!!]`. State: `~/.agentwire/idle-deferred/`, events:
 `~/.agentwire/idle-deferred-events.jsonl`; `agentwire doctor` lists held
 notices.
 

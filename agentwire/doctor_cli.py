@@ -1029,6 +1029,13 @@ def _render_idle_deferred_section() -> int:
         print("  [ok] No idle notices held for background tasks")
         return 0
     print("  [..] Idle notices held while background tasks run: " + ", ".join(held))
+    from . import limits_cli
+
+    if limits_cli.watchdog_loaded() is False:
+        print("  [!!] The watchdog is not loaded: the 30-minute bound is only checked on an "
+              "idle event, so a stuck task that never wakes its session holds its notice "
+              "forever. Load it: agentwire limits install")
+        return 1
     return 0
 
 

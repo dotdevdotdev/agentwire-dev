@@ -206,10 +206,17 @@ def cmd_idle_gate(args) -> int:
         try:
             decision = background_tasks.gate(
                 session, pane, args.conversation_id or "", args.cwd or "")
-        except Exception as e:  # noqa: BLE001 — fail open, loudly in the log
+        except Exception as e:  # noqa: BLE001 — never silent
             background_tasks.log_event("gate_failed", session=session, error=str(e))
-            decision = {"action": "proceed", "pending": None, "source": "unknown",
-                        "notes": [f"gate_error:{e}"], "text": ""}
+            # A crash on a path whose idle KILLS (worker-pane reap, scheduled
+            # exit) holds this cycle and retries next idle; only the plain
+            # parent notice may fail open to "send".
+            try:
+                kills = background_tasks.reap_path(session, pane)
+            except Exception:  # noqa: BLE001
+                kills = pane != 0
+            decision = {"action": "defer" if kills else "proceed", "pending": None,
+                        "source": "unknown", "notes": [f"gate_error:{e}"], "text": ""}
     if args.json:
         _output_json(decision)
     else:

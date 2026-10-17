@@ -49,7 +49,7 @@ def wrap_rows(line: str, width: int) -> list[str]:
             rows.append(cur)
             cur = "  " + w
         else:
-            cur = f"{cur} {w}".strip() if cur else w
+            cur = f"{cur} {w}" if cur else w
     rows.append(cur)
     return rows
 
@@ -387,3 +387,86 @@ def test_parser_reads_a_real_tmux_pane_at_every_width(tmp_path):
         finally:
             subprocess.run(["tmux", "kill-session", "-t", name], check=False)
     assert not bad, bad
+
+
+def test_no_box_and_no_signal_stays_unreadable_but_any_pending_text_holds():
+    bare = "$ ls\nfoo\n$ "
+    dialog = "Do you want to proceed?\n ❯ 1. Yes\n   2. No\n⏵⏵ bypass permissions on · 1 shell"
+    assert bt.parse_pane(bare).status == "unreadable"
+    assert bt.parse_pane(dialog).status == "uncertain"
+
+
+def test_unknown_noun_is_not_a_task_but_an_unparsable_segment_holds():
+    box = "─" * 30 + "\n❯ \n" + "─" * 30 + "\n"
+    got = {}
+    for seg in ("2 MCP servers failed", "3 files changed", "1 shell", "1", "1 shell, 1", "← for agents"):
+        r = bt.parse_pane("⏺ hi\n" + box + "  ⏵⏵ bypass permissions on · " + seg)
+        got[seg] = (r.status, r.count)
+    assert got == {"2 MCP servers failed": ("ok", 0), "3 files changed": ("ok", 0),
+                   "1 shell": ("ok", 1), "1": ("uncertain", None),
+                   "1 shell, 1": ("uncertain", None), "← for agents": ("ok", 0)}
+
+
+def test_no_parent_is_remembered_not_retried_every_tick(isolated_config, monkeypatch):
+    from agentwire import prompt_router
+
+    t0 = 1_000_000.0
+    calls = []
+    _tick_env(monkeypatch, lambda **kw: None, parent=None)
+    monkeypatch.setattr(prompt_router, "resolve_parent",
+                        lambda s, p: calls.append((s, p)))
+    bt.gate("root", 0, pending=_pend(1), now=t0)
+    for i in range(3):
+        bt.tick(now=t0 + bt.DEFER_BOUND + 1 + i * 60)
+    assert len(calls) == 1
+
+
+def test_gate_crash_holds_a_reap_path_and_only_the_parent_notice_fails_open(monkeypatch, capsys):
+    import argparse
+
+    from agentwire import notify_cli, pane_manager
+
+    monkeypatch.setattr(bt, "gate", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    out = {}
+    for pane in (0, 1):
+        monkeypatch.setattr(pane_manager, "get_current_session", lambda: "s")
+        monkeypatch.setattr(pane_manager, "get_current_pane_index", lambda p=pane: p)
+        notify_cli.cmd_idle_gate(argparse.Namespace(conversation_id="", cwd="", json=True))
+        out[pane] = json.loads(capsys.readouterr().out)["action"]
+    assert out == {0: "proceed", 1: "defer"}
+
+
+def test_slow_wakes_still_reach_the_bound_with_a_conversation_id(isolated_config):
+    t0 = 1_000_000.0
+    acts = [bt.gate("s", 0, "conv", pending=_pend(1), now=t0 + 1500 * i)["action"] for i in range(4)]
+    assert acts == ["defer", "defer", "qualify", "defer"]
+
+
+def test_concurrent_marker_writers_never_collide(isolated_config):
+    import threading
+
+    errors = []
+
+    def writer(i):
+        try:
+            for _ in range(30):
+                bt.gate("s", 1, pending=_pend(1), now=1_000_000.0 + i)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(6)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert not errors, errors[:2]
+    assert not list(bt.state_dir().glob("*.tmp"))
+
+
+def test_doctor_flags_held_notices_without_a_watchdog(isolated_config, monkeypatch, capsys):
+    from agentwire import doctor_cli, limits_cli
+
+    bt.gate("s", 0, pending=_pend(1), now=1_000_000.0)
+    monkeypatch.setattr(limits_cli, "watchdog_loaded", lambda: False)
+    assert doctor_cli._render_idle_deferred_section() == 1
+    assert "[!!]" in capsys.readouterr().out
+    monkeypatch.setattr(limits_cli, "watchdog_loaded", lambda: True)
+    assert doctor_cli._render_idle_deferred_section() == 0

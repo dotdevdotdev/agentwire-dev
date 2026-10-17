@@ -43,8 +43,10 @@ readable at all" (no agent pane, no transcript) behaves as before the gate.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -192,9 +194,30 @@ def _sum_pieces(frag: str) -> "int | None":
     return total
 
 
+#: Nouns that make a footer ``N <noun>`` segment a background task. The footer
+#: has no "still running" anchor, so a bare count next to an unknown noun
+#: ("2 MCP servers failed", "3 files changed") is NOT a task. That is a
+#: different case from a segment we cannot parse at all (cut after the digit),
+#: which is uncertain: the two are tested separately.
+TASK_NOUNS = frozenset({
+    "shell", "monitor", "agent", "subagent", "task", "workflow", "bash", "hook",
+    "session", "local", "remote", "background",
+})
+
+
+def _is_task_piece(piece: str) -> bool:
+    words = re.findall(r"[a-z]+", piece.lower())
+    return any(w.rstrip("s") in TASK_NOUNS for w in words)
+
+
 def _footer_reading(rows: list[str]) -> PaneReading:
     """The live mode line (rows BELOW the input box only — a footer quoted in
-    scrollback is above it and can never be mistaken for this one)."""
+    scrollback is above it and can never be mistaken for this one).
+
+    ``count`` 0 and ``None`` are different values: a digit-bearing segment we
+    cannot parse (``· 1``, ``· 1 shell, 1``) or a line cut off by the width is
+    UNCERTAIN, never zero.
+    """
     mode = next((r for r in rows if "⏵⏵" in r), None)
     if mode is None:
         return PaneReading(None, "uncertain")
@@ -202,10 +225,22 @@ def _footer_reading(rows: list[str]) -> PaneReading:
         return PaneReading(None, "uncertain")  # truncated: a count may be cut off
     total = 0
     for segment in mode.split("·")[1:]:
-        n = _sum_pieces(segment)
-        if n:
-            total += n
+        if not re.search(r"\d", segment):
+            continue  # "← for agents" and friends carry no count
+        pieces = [p.strip() for p in re.split(r",|\band\b", segment) if p.strip()]
+        for piece in pieces:
+            m = _PIECE.match(piece)
+            if m is None:
+                return PaneReading(None, "uncertain")
+            if _is_task_piece(piece):
+                total += int(m.group("n"))
     return PaneReading(total, "ok")
+
+
+#: Text that looks like pending background work when no input box was found
+#: (tall draft, plan/permission/resume dialog over the box): hold, don't proceed.
+_PENDING_LOOKING = re.compile(
+    r"still\s+running|✻[^\n]*\bdone\s+\d{1,2}:\d{2}|⏵⏵[^\n]*·\s*\d", re.IGNORECASE)
 
 
 def parse_pane(text: str) -> PaneReading:
@@ -224,17 +259,21 @@ def parse_pane(text: str) -> PaneReading:
                 if _RULE.match(rows[i].strip()) and rows[i + 1].lstrip().startswith("❯")
                 and _RULE.match(rows[i + 2].strip())), None)
     if box is None:
-        return PaneReading(None, "unreadable")
+        # No box: a bare shell or an exited agent has no signal and stays
+        # "unreadable"; any pending-looking text (a dialog or a tall draft over
+        # a live task) must HOLD, never proceed to the reap.
+        looks = _PENDING_LOOKING.search("\n".join(rows))
+        return PaneReading(None, "uncertain" if looks else "unreadable")
     footer = _footer_reading(rows[box + 3:])
 
     block = None
     for j in range(box - 1, max(box - 1 - _MAX_TURN_ROWS, -1), -1):
-        row = rows[j].lstrip()
-        if row.startswith("✻"):
+        raw = rows[j]
+        if raw.startswith("✻"):  # column 0: tool output quoting one is indented
             block = " ".join(r.strip() for r in rows[j:box])
             break
-        if row.startswith(_ROW_GLYPHS):
-            break
+        if not raw[:1].isspace() or raw.lstrip().startswith(_ROW_GLYPHS):
+            break  # a continuation row is indented and opens with no glyph
     m = _TURN_END.search(block) if block else None
     if m is None:
         return footer
@@ -243,11 +282,12 @@ def parse_pane(text: str) -> PaneReading:
     if not still:
         # A complete turn-end line without "still running": nothing pending
         # on the turn line; the footer can only add to that.
-        return PaneReading(footer.count or 0, "ok")
+        # (A footer we could not parse does not undo a complete turn line.)
+        return PaneReading(footer.count if footer.status == "ok" else 0, "ok")
     turn = _sum_pieces(still.group("frag"))
     if turn is None:
         return PaneReading(None, "uncertain")
-    return PaneReading(max(turn, footer.count or 0), "ok")
+    return PaneReading(max(turn, footer.count if footer.status == "ok" else 0), "ok")
 
 
 def pane_background_count(text: str) -> "int | None":
@@ -325,9 +365,14 @@ def read_marker(session: str, pane: int) -> "dict | None":
 def _write_marker(session: str, pane: int, data: dict) -> None:
     path = _marker(session, pane)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data))
-    tmp.replace(path)
+    # One tmp name per WRITER: hook-vs-hook and hook-vs-tick race on the same
+    # marker, and a shared name made the loser's replace() raise.
+    tmp = path.with_name(f"{path.stem}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(json.dumps(data))
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def clear_marker(session: str, pane: int) -> None:
@@ -343,10 +388,13 @@ def qualifier(count: "int | None", waited: float) -> str:
     return f"is idle, but {what} (waited {int(waited // 60)}m; not necessarily finished)"
 
 
-#: A marker not refreshed for this long belongs to a session that is gone (a
-#: same-name session reborn must not inherit its clock). The watchdog tick
-#: refreshes live markers every minute.
-MARKER_GRACE = 10 * 60
+#: A marker untouched for longer than the bound belongs to a session that is
+#: gone (a same-name session reborn must not inherit its clock). Deliberately
+#: the bound itself, not shorter: a task that wakes the session every 12
+#: minutes must still reach it with no watchdog loaded. Identity is the
+#: conversation id when the hook supplies one, so the gap only matters for an
+#: id-less marker.
+MARKER_GRACE = DEFER_BOUND
 
 
 def reap_path(session: str, pane: int) -> bool:
