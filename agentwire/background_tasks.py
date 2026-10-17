@@ -395,7 +395,7 @@ def recent_gate_failures(now: "float | None" = None) -> list[dict]:
     """
     now = time.time() if now is None else now
     try:
-        lines = events_path().read_text().splitlines()
+        lines = events_path().read_text(errors="replace").splitlines()
     except OSError:
         return []
     found = []
@@ -404,8 +404,15 @@ def recent_gate_failures(now: "float | None" = None) -> list[dict]:
             row = json.loads(line)
         except ValueError:
             continue
-        if row.get("event") in ("gate_failed", "gate_unusable") \
-                and now - float(row.get("ts", 0)) <= GATE_FAILURE_WINDOW:
+        if not isinstance(row, dict) or row.get("event") not in ("gate_failed", "gate_unusable"):
+            continue
+        try:
+            age = now - float(row.get("ts", 0))
+        except (TypeError, ValueError):
+            continue
+        # inf / NaN / 1e308 / far-future stamps are not "recent"; an hour of
+        # clock skew either way is tolerated
+        if -GATE_FAILURE_WINDOW <= age <= GATE_FAILURE_WINDOW:
             found.append(row)
     return found if len(found) >= GATE_FAILURE_THRESHOLD else []
 

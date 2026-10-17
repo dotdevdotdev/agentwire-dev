@@ -380,8 +380,9 @@ def box_shows_message(box: str, message: str, allow_chip: bool = True) -> bool:
     return nb in nm
 
 
-def strip_input_box(capture: str) -> "str | None":
-    """*capture* with the input-box region removed, or None if no box parses.
+def _split_at_box(capture: str) -> "tuple[str, str] | None":
+    """``(outside, glyph)``: *capture* with the input-box region removed, and the
+    prompt glyph the box itself uses; None if no box parses.
 
     The #689 building block: "on scrollback" must mean *outside the input box*.
     A pasted-but-unsubmitted message renders inside the box, which is part of
@@ -411,7 +412,53 @@ def strip_input_box(capture: str) -> "str | None":
     text = "\n".join(box).lstrip()
     if text[:1] not in prompt_router._PROMPT_GLYPHS:
         return None
-    return "\n".join(lines[:rules[-2] + 1])
+    return "\n".join(lines[:rules[-2] + 1]), text[0]
+
+
+def strip_input_box(capture: str) -> "str | None":
+    """*capture* with the input-box region removed, or None if no box parses
+    (see :func:`_split_at_box`)."""
+    split = _split_at_box(capture)
+    return None if split is None else split[0]
+
+
+#: Glyphs that open the AGENT's side of the transcript (reply, tool result,
+#: spinner/status row).
+_AGENT_ROW_MARKERS = "⏺⎿✻✳✶✢✽●"
+
+
+def input_echo_text(outside: str, glyph: str) -> str:
+    """The part of *outside* (the capture above the input box) that is the agent
+    echoing a SUBMITTED input: each row opening with *glyph* (the prompt glyph
+    the input box itself uses, at column 0) and everything after it up to where
+    the AGENT's output begins, or the end of *outside*.
+
+    Agent output starts a paragraph: a row whose FIRST character (column 0) is an
+    agent-output marker and which FOLLOWS A BLANK ROW. Nothing else ends an
+    echo. Blank rows, indentation and rows that merely start with a marker glyph
+    are part of the echo — a multi-paragraph message echoes with blank rows, a
+    done report may have ``●`` bullets or a quoted ``⏺`` line in its body
+    (indented continuation, or soft-wrapped at column 0 with no blank row before
+    it), and cutting there would hide the trailing id token. Known limit: a body
+    line that starts a paragraph at column 0 with a marker glyph right after a
+    blank row reads as agent output (the safe direction: the entry is retried,
+    never silently consumed). Everything outside an echo is the agent's own
+    prose, tool output or a quote of one — text a never-delivered message can
+    appear in verbatim (a relay that quotes a full header + token), so it never
+    proves delivery (#1113).
+    """
+    echo: list[str] = []
+    in_echo = False
+    prev_blank = False
+    for ln in outside.split("\n"):
+        if ln[:1] == glyph:
+            in_echo = True
+        elif prev_blank and ln[:1] in _AGENT_ROW_MARKERS and ln[:1]:
+            in_echo = False
+        if in_echo:
+            echo.append(ln)
+        prev_blank = not ln.strip()
+    return "\n".join(echo)
 
 
 def message_on_scrollback(capture: str, rendered: str) -> bool:
@@ -440,10 +487,10 @@ def message_on_scrollback(capture: str, rendered: str) -> bool:
     needle = "".join(rendered.split())
     if not needle:
         return False
-    outside = strip_input_box(capture)
-    if outside is None:
+    split = _split_at_box(capture)
+    if split is None:
         return False
-    flat = "".join(outside.split())
+    flat = "".join(input_echo_text(*split).split())
     if needle in flat:
         return True
     # Claude Code ELIDES the middle of a long submitted prompt when it echoes

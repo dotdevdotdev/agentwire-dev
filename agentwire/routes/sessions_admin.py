@@ -159,7 +159,7 @@ class SessionsAdminRoutesMixin:
                     args.extend(["--roles", ",".join(valid_roles)])
 
             # Call CLI
-            logger.info(f"Creating session with args: {args}")
+            logger.info(f"Creating session: agentwire {' '.join(args[:2])}")  # verb + flag only
             success, result = await self.run_agentwire_cmd(args)
             logger.info(f"CLI result: success={success}, result={result}")
 

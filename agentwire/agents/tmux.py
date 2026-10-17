@@ -89,7 +89,7 @@ class TmuxAgent(AgentBackend):
         Returns:
             CompletedProcess result
         """
-        logger.debug(f"Running local: {' '.join(cmd)}")
+        logger.debug(f"Running local: {' '.join(cmd[:2])}")  # verb only: later words can carry typed text
         return subprocess.run(
             cmd,
             capture_output=capture,
@@ -122,7 +122,7 @@ class TmuxAgent(AgentBackend):
             ssh_cmd.extend(["-p", str(port)])
         ssh_cmd.extend([ssh_target, cmd])
 
-        logger.debug(f"Running remote on {ssh_target}: {cmd}")
+        logger.debug(f"Running remote on {ssh_target}: {' '.join(cmd.split()[:2])}")  # verb only
         return subprocess.run(
             ssh_cmd,
             capture_output=capture,

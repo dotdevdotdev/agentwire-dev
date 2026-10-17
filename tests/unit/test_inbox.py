@@ -1018,6 +1018,9 @@ class TestIdempotentDelivery:
         # #689: "on scrollback" now means outside a parseable input box — a bare
         # rendered line with no box no longer counts (it could be sitting unsent
         # in the box). Model a real delivered state: text above an EMPTY box.
+        # #1113: and only the agent's own input echo (a prompt-glyph row) counts.
+        scrollback = "\n".join(
+            f"❯ {ln}" if ln.startswith("[MSG") else ln for ln in scrollback.split("\n"))
         scrollback = f"{scrollback}\n{RULE}\n❯\n{RULE}"
         monkeypatch.setattr(usage_limit, "_capture", lambda s: "dummy screen")
         monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: "")
@@ -1550,7 +1553,7 @@ class TestHealClobberAndBounds:
         inbox.flush_session("s")
         assert inbox.list_messages("s") == []
         (dead,) = inbox.list_dead("s")
-        assert dead.reason == "delivery could not be confirmed"
+        assert dead.reason == inbox._UNCONFIRMED_REASON
         assert dead.heals == inbox.MAX_HEALS
 
     def test_exhaustion_email_says_unconfirmed_not_lost(self, isolate, monkeypatch):
@@ -1561,7 +1564,7 @@ class TestHealClobberAndBounds:
             inbox, "_escalate_dead_letters", lambda batch, r: reasons.append(r))
         for _ in range(inbox.MAX_HEALS):
             inbox.flush_session("s")
-        assert reasons[-1] == "delivery could not be confirmed"
+        assert reasons[-1] == inbox._UNCONFIRMED_REASON
 
     def _verdict(self, monkeypatch, scrollback, box_sgr):
         from agentwire import session_ready
@@ -1626,6 +1629,128 @@ class TestHealClobberAndBounds:
         events = inbox.EVENTS_FILE.read_text()
         for blob in (m.detail, json.dumps(m.to_dict()), events):
             assert "private" not in blob
+
+
+class TestUnconfirmedDeadLetterWording:
+    """#1113 review: an unconfirmed paste may still sit in the agent's queue, so
+    the owner mail must not say it was "never delivered" (a re-send duplicates)."""
+
+    def test_mail_and_fleet_alert_say_it_may_still_be_queued(self, isolate, monkeypatch):
+        sent, alerts = [], []
+        monkeypatch.setattr(
+            "agentwire.channels.email.send_email",
+            lambda **kw: sent.append(kw) or SimpleNamespace(success=True))
+        monkeypatch.setattr(inbox, "_alert_dead_letters", lambda batch, reason: alerts.append(reason))
+        wrong = []
+        for reason, queued_ok in ((inbox._UNCONFIRMED_REASON, True), ("target_gone", False)):
+            sent.clear()
+            msgs = inbox.enqueue("s", "report", kind="done", sender="w")
+            inbox._escalate_dead_letters(msgs, reason)
+            body = " ".join(str(v) for v in sent[0].values()) if sent else ""
+            if ("may still be in the agent's queue" in body) != queued_ok:
+                wrong.append((reason, body[:200]))
+            if queued_ok and "never delivered" in body:
+                wrong.append((reason, "says never delivered"))
+        assert not wrong, wrong
+
+
+class TestBusyWaitIsBoundedByAge:
+    """#1113 — the busy defers (``queued_placeholder`` / ``box_static``) cost no
+    attempts, so a placeholder that never clears used to hold an entry forever.
+    Driven through ``flush_session`` with a stub clock (the drain's real call
+    path): wait = age from the paste, or from enqueue if never pasted."""
+
+    PLACEHOLDER = "Press up to edit queued messages"
+    MINUTE = 60 * 1000
+
+    def _run(self, monkeypatch, *, pasted, box, minutes, scrollback="", kind="request"):
+        from agentwire import session_ready
+
+        t0 = inbox._now_ms()
+        now = [t0]
+        monkeypatch.setattr(inbox, "_now_ms", lambda: now[0])
+        escalated = []
+        monkeypatch.setattr(
+            inbox, "_escalate_dead_letters",
+            lambda batch, r: batch and escalated.append(([m.kind for m in batch], r)))
+        _enq("s", "report body", kind=kind, sender="w", pasted=pasted)
+        _patch_delivery(monkeypatch, empty=False, box=box)
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, p=0: scrollback)
+        state = {}
+        for minute in minutes:
+            now[0] = t0 + minute * self.MINUTE
+            inbox.flush_session("s")
+            state[minute] = (len(inbox.list_messages("s")), len(inbox.list_dead("s")))
+        return state, escalated
+
+    def test_a_placeholder_that_never_clears_dead_letters_at_the_bound(self, isolate, monkeypatch):
+        """Never pasted, and pasted-then-placeholder, and an unknown static box."""
+        bad = []
+        for label, pasted, box in (
+            ("never pasted", False, self.PLACEHOLDER),
+            ("pasted, placeholder forever", True, self.PLACEHOLDER),
+            ("pasted, static unknown box", True, "some static status widget"),
+        ):
+            inbox.purge_pending("s")
+            minutes = [0, 1, 5, 11, 20, 39, 41, 42]
+            state, escalated = self._run(monkeypatch, pasted=pasted, box=box, minutes=minutes)
+            # alive and silent before the bound, dead (and escalated) after it
+            if any(state[t] != (1, 0) for t in (0, 1, 5, 11, 20, 39)):
+                bad.append((label, "dead-lettered before the bound", state))
+            if state[41] != (0, 1):
+                bad.append((label, "not dead-lettered past the bound", state))
+            if escalated != [(["request"], inbox._UNCONFIRMED_REASON)]:
+                bad.append((label, "no/odd owner escalation", escalated))
+            inbox.purge_dead("s")
+        assert not bad, bad
+
+    def test_a_busy_agent_that_consumes_the_queue_at_minute_30_is_delivered(self, isolate, monkeypatch):
+        from agentwire import session_ready
+
+        t0 = inbox._now_ms()
+        now = [t0]
+        monkeypatch.setattr(inbox, "_now_ms", lambda: now[0])
+        escalated = []
+        monkeypatch.setattr(inbox, "_escalate_dead_letters", lambda b, r: b and escalated.append(r))
+        m = _enq("s", "report body", kind="request", sender="w")[0]
+        state = {"minute": 0}
+        echoed = f"old\n❯ {m.render()}\n⏺ ok"
+        monkeypatch.setattr(
+            session_ready, "scrollback",
+            lambda s, p=0: (echoed if state["minute"] >= 30 else "old") + f"\n{RULE}\n❯\n{RULE}")
+        # minutes 0..25 the placeholder is up and nothing is echoed; at 30 the
+        # agent consumed its queue (echo visible, box empty again)
+        _patch_delivery(monkeypatch, empty=False, box=self.PLACEHOLDER)
+        seen = []
+        for minute in (0, 10, 25):
+            state["minute"] = minute
+            now[0] = t0 + minute * self.MINUTE
+            inbox.flush_session("s")
+            seen.append((minute, len(inbox.list_messages("s")), len(inbox.list_dead("s"))))
+        assert seen == [(0, 1, 0), (10, 1, 0), (25, 1, 0)], seen
+        state["minute"] = 30
+        now[0] = t0 + 30 * self.MINUTE
+        res = inbox.flush_session("s")
+        assert res["delivered"] == 1 and not res["deferred"], res
+        assert inbox.list_messages("s") == [] and inbox.list_dead("s") == [] and not escalated
+
+    def test_an_expired_entry_with_delivery_evidence_is_consumed_not_dead_lettered(
+        self, isolate, monkeypatch
+    ):
+        from agentwire import session_ready
+
+        now = [inbox._now_ms()]
+        monkeypatch.setattr(inbox, "_now_ms", lambda: now[0])
+        m = _enq("s", "report body", kind="request", sender="w")[0]
+        monkeypatch.setattr(prompt_router, "capture", lambda s, p=0, **kw: "x")
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda vis: self.PLACEHOLDER)
+        # past the bound the evidence check runs first: the echo is on scrollback
+        now[0] += inbox.QUEUED_WAIT_MS + self.MINUTE
+        monkeypatch.setattr(
+            session_ready, "scrollback",
+            lambda s, p=0: f"❯ {m.render()}\n⏺ ok\n{RULE}\n❯\n{RULE}")
+        dead = inbox._bump_attempts(inbox.list_messages("s"), "queued_placeholder")
+        assert dead == 0 and inbox.list_messages("s") == [] and inbox.list_dead("s") == []
 
 
 class TestHealEqualityAndStamp:

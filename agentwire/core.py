@@ -127,7 +127,7 @@ def run_agentwire_cmd(
     if json_output:
         cmd.append("--json")
 
-    logger.debug(f"Running: {' '.join(cmd)}")
+    logger.debug(f"Running: {' '.join(cmd[:2])}")
 
     started = time.monotonic()
     try:
@@ -170,8 +170,8 @@ def run_agentwire_cmd(
     finally:
         elapsed = time.monotonic() - started
         if elapsed > SLOW_CMD_WARN_SECONDS and tuple(args[:2]) not in _LONG_RUNNING_CMDS:
-            # argv[:3] only: later words can carry message/email/prompt bodies.
-            logger.warning(f"Slow command ({elapsed:.1f}s, timeout={timeout}s): {' '.join(cmd[:3])}")
+            # argv[:2] only (binary + verb): later words carry message/email/prompt bodies.
+            logger.warning(f"Slow command ({elapsed:.1f}s, timeout={timeout}s): {' '.join(cmd[:2])}")
 
 
 def role_prompts_dir() -> Path:

@@ -178,11 +178,21 @@ lands in a durable inbox and is injected only at a safe boundary.
    bound the drain first looks for a positive signal
    (`_exhaustion_verdict`): the message echoed on scrollback (head + id token) →
    it was delivered, unlinked, never dead-lettered; the agent's
-   queued-messages placeholder → busy, keep waiting; otherwise it dead-letters
-   with reason `delivery could not be confirmed` (so the owner mail says
-   unconfirmed, not lost; load-bearing kinds email).
-   The genuinely-busy reasons (`target_busy`, `queued_placeholder`,
-   `box_static`, `target_parked`) remain unbounded.
+   queued-messages placeholder → busy, keep waiting (bounded by age, below);
+   otherwise it dead-letters with reason `delivery could not be confirmed; the message may
+   still be in the agent's queue` (so the owner mail says unconfirmed, not lost,
+   and not to blindly re-send; load-bearing kinds email).
+   The heal path only runs while the paste is inside the 10-minute
+   `PASTE_HEAL_WINDOW_MS`; after that an entry falls to the ordinary busy defers.
+   `target_busy` and `target_parked` remain unbounded (a park is bounded by its
+   own reset). `queued_placeholder` and `box_static` are **bounded by age**
+   (#1113): once `QUEUED_WAIT_MS` (40 min = `MAX_ATTEMPTS` minutes, measured from
+   the paste, or from enqueue if the entry was never pasted) has passed, the
+   drain looks for delivery evidence first (the agent's input echo → consumed as
+   delivered) and otherwise dead-letters as unconfirmed (reason above)
+   with the owner mail for load-bearing kinds. The bound is on *age*, never on
+   attempts, so a genuinely busy session still burns nothing before it; a
+   session that consumes its queue before it (the echo appears) is delivered.
 
    **Dedup survives Claude's echo elision (#1105).** Claude Code echoes a long
    submitted prompt into the transcript with its middle elided (head rows, a
@@ -190,12 +200,28 @@ lands in a durable inbox and is injected only at a safe boundary.
    never on scrollback even though it was delivered — and an unmatched
    delivered message gets re-pasted. `message_on_scrollback` therefore also
    accepts the message's **head** (first 24 non-space chars: for an inbox
-   message `[MSG from <sender> · <kind>]` plus the first word, so sender and
-   kind discriminate) followed, within one message's length, by its trailing
-   `⟨#id⟩` token, **outside the box**. A bare token — in a quoted line,
-   `msg inbox`/`msg dead` output, another message's text, or the box — does not
-   count. A false accept needs a pane line reproducing this message's head and
-   its token.
+   message `[MSG from <sender> · <kind>]` plus the first word) followed, within
+   one message's length, by its trailing `⟨#id⟩` token, **outside the box**.
+   The head only discriminates the sender *prefix* — for a long sender name
+   (a worktree session name alone can fill 24 chars) it holds no kind and no
+   text, so the unique id token does the discriminating. A bare token — in a
+   quoted line, `msg inbox`/`msg dead` output, another message's text, or the
+   box — does not count. A false accept needs a pane line reproducing this
+   message's head and its token.
+
+   **Only the agent's input echo counts (#1113).** Both the full-line and the
+   elided match run against the *input echo* alone: a row opening, at column 0,
+   with the prompt glyph the input box itself uses (`❯`; `>` on a box that uses
+   it) and everything after it up to where the AGENT's output begins: a row whose
+   first character (column 0) is an agent marker (`⏺` reply, `⎿` tool result,
+   spinner/status glyph) **and which follows a blank row** — or the end of the
+   capture. Blank rows, indentation and rows that merely *start* with such a
+   glyph (a `●` bullet or quoted `⏺` line in a done report's body) stay inside
+   the echo, so the trailing id token is still seen. Known limit, the safe
+   direction: a body line starting a paragraph at column 0 with a marker glyph
+   right after a blank row reads as agent output (retried, never silently
+   consumed). The same text in the agent's prose, a tool result, or a relayed
+   quote therefore never marks a never-delivered message as delivered (`session_ready.input_echo_text`).
 
    **Failed deliveries say where the text is (#1105).** `safe_deliver` no
    longer returns `delivery_unverified` for everything. After a failed
@@ -246,7 +272,8 @@ lands in a durable inbox and is injected only at a safe boundary.
      delivers once the box frees up. The placeholder is matched loosely, and only
      the *penalty* changes — a non-empty box is still never pasted into (see the
      collision detector below). `box_static` and `stuck_in_box` join them for the
-     same reason.
+     same reason. `queued_placeholder` and `box_static` are additionally bounded by
+     the entry's age (`QUEUED_WAIT_MS`, 40 min — see the heal bounds below).
 
      **`target_parked` too (#872).** A usage-limit parked recipient exists and
      will come back — recovery parses the reset time and nudges the session
