@@ -124,6 +124,14 @@ def _isolate_agentwire_home(request, tmp_path_factory, monkeypatch):
             elif REAL_AGENTWIRE_HOME in value.parents:
                 relocated = fake_config / value.relative_to(REAL_AGENTWIRE_HOME)
                 monkeypatch.setattr(module, attr, relocated, raising=False)
+            # Same walk for ~/.claude (#1118): history.CLAUDE_DIR/PROJECTS_DIR
+            # and the handoff CLAUDE_DIR are import-frozen, and history_migrate
+            # WRITES under them.
+            elif value == home_guard.REAL_CLAUDE_HOME:
+                monkeypatch.setattr(module, attr, fake_home / ".claude", raising=False)
+            elif home_guard.REAL_CLAUDE_HOME in value.parents:
+                relocated = fake_home / ".claude" / value.relative_to(home_guard.REAL_CLAUDE_HOME)
+                monkeypatch.setattr(module, attr, relocated, raising=False)
 
     # ``agentwire_dir()`` both resolves AND mkdirs, and callers bound it with
     # ``from .utils.paths import agentwire_dir`` — a per-module copy that
@@ -137,6 +145,23 @@ def _isolate_agentwire_home(request, tmp_path_factory, monkeypatch):
             monkeypatch.setattr(module, "agentwire_dir", _fake_agentwire_dir, raising=False)
 
     return fake_config
+
+
+@pytest.fixture(autouse=True)
+def _no_real_home_write_in_this_test():
+    """Fail THE test that wrote under the real ~/.agentwire or ~/.claude (#1118).
+
+    The session backstop below names the offender only at the end of the run;
+    this attributes the failure to the test, where it can be fixed. Popped from
+    the record so the backstop does not report the same write twice.
+    """
+    mark = len(home_guard.WRITES)
+    yield
+    escaped = home_guard.WRITES[mark:]
+    if escaped:
+        del home_guard.WRITES[mark:]
+        lines = "\n".join(f"  {event}  {path}" for _t, event, path in escaped[:10])
+        pytest.fail(f"this test wrote under the REAL ~/.agentwire or ~/.claude:\n{lines}", pytrace=False)
 
 
 @pytest.fixture(scope="session", autouse=True)

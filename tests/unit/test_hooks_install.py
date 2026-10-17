@@ -139,22 +139,21 @@ class TestInstallHooks:
         home.mkdir()
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         # Machine-global installs are refused from a non-canonical package
-        # (#936). Pin the running package AS canonical so these measure the
-        # install and not the guard, and behave identically in a worktree
-        # (package root's .git is a FILE) and in CI's plain clone.
+        # (#936) and a symlink may only target the canonical install (#1118).
+        # Make a fake package AND pin it as both the running and the canonical
+        # one, so these measure the install and not the guard, and behave
+        # identically in a worktree and in CI's plain clone.
         monkeypatch.delenv("UV_TOOL_DIR", raising=False)
         from agentwire.safety import provenance as _prov
-        monkeypatch.setattr(
-            _prov, "canonical_package_dir",
-            lambda: Path(__import__("agentwire").__file__).parent.resolve(),
-        )
+        pkg = tmp_path / "pkg"
+        monkeypatch.setattr(_prov, "canonical_package_dir", lambda: pkg.resolve())
+        monkeypatch.setattr(_prov, "running_package_dir", lambda: pkg.resolve())
 
-        hooks_src = tmp_path / "pkg-hooks"
-        hooks_src.mkdir()
+        hooks_src = pkg / "hooks"
+        hooks_src.mkdir(parents=True)
         for name, *_ in _managed_hook_files():
             (hooks_src / name).write_text(f"#!/bin/bash\n# {name}\n")
         monkeypatch.setattr(main_mod, "get_hooks_source", lambda: hooks_src)
-        monkeypatch.setattr(main_mod, "CLAUDE_HOOKS_DIR", home / ".claude" / "hooks")
         return home, hooks_src
 
     def test_fresh_install_deploys_all_and_registers(self, env):

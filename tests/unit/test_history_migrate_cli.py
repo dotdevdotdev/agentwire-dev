@@ -24,7 +24,7 @@ class Args:
 def projects(tmp_path, monkeypatch):
     root = tmp_path / "projects"
     root.mkdir()
-    monkeypatch.setattr(hm, "PROJECTS_DIR", root)
+    monkeypatch.setattr(hm, "claude_projects_dir", lambda: root)
     return root
 
 

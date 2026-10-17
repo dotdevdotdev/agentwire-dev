@@ -17,10 +17,8 @@ import re
 from pathlib import Path
 
 from ..history import encode_project_path
+from ..utils.paths import claude_dir
 from .schema import Instruction
-
-HOME = Path.home()
-CLAUDE_DIR = HOME / ".claude"
 
 
 def _read(path: Path) -> str | None:
@@ -31,7 +29,7 @@ def _read(path: Path) -> str | None:
 
 
 def _user_global() -> Instruction | None:
-    p = CLAUDE_DIR / "CLAUDE.md"
+    p = claude_dir() / "CLAUDE.md"
     content = _read(p)
     if content is None:
         return None
@@ -39,7 +37,7 @@ def _user_global() -> Instruction | None:
 
 
 def _user_rules() -> list[Instruction]:
-    rules_dir = CLAUDE_DIR / "rules"
+    rules_dir = claude_dir() / "rules"
     if not rules_dir.is_dir():
         return []
     out: list[Instruction] = []
@@ -73,7 +71,7 @@ def _project_chain(cwd: Path) -> list[Instruction]:
                     )
                 )
                 seen.add(candidate.resolve())
-        if cursor == cursor.parent or cursor == HOME:
+        if cursor == cursor.parent or cursor == Path.home():
             break
         cursor = cursor.parent
     # Reverse so root-most CLAUDE.md comes first (loaded earliest by Claude Code).
@@ -89,7 +87,7 @@ def _memory(cwd: Path) -> list[Instruction]:
     Includes any sibling .md files that MEMORY.md links to.
     """
     encoded = encode_project_path(str(cwd.resolve()))
-    memory_dir = CLAUDE_DIR / "projects" / encoded / "memory"
+    memory_dir = claude_dir() / "projects" / encoded / "memory"
     if not memory_dir.is_dir():
         return []
 

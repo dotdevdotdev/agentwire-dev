@@ -32,7 +32,7 @@ from agentwire.scheduler.models import _EXIT_TO_STATUS, SchedulerTask, TaskState
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path / "agentwire")
-    monkeypatch.setattr("agentwire.history.PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr("agentwire.history.claude_projects_dir", lambda: tmp_path / "projects")
     ok = type("R", (), {"success": True, "error": None})()
     with patch("agentwire.channels.email.send_email", return_value=ok):
         yield tmp_path

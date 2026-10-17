@@ -263,6 +263,26 @@ class TestTheAuditHookCanActuallyFail:
             target.unlink(missing_ok=True)
         assert any(str(target) in p for _t, _e, p in self._recorded_since(mark))
 
+    def test_catches_a_symlink_created_under_the_real_claude_dir(self):
+        """#1118: the hook symlinks live in ~/.claude, and ``os.symlink`` reports
+        (src, dst) — the guard must read the DESTINATION, not the link content."""
+        from tests import home_guard
+
+        # A clean CI runner has no ~/.claude: the probe makes it (and removes
+        # it again) rather than assuming the machine has one.
+        claude = home_guard.REAL_CLAUDE_HOME
+        created = not claude.exists()
+        link, mark = claude / "zz-probe-link", self._mark()
+        try:
+            claude.mkdir(exist_ok=True)
+            link.symlink_to(home_guard.REAL_AGENTWIRE_HOME)
+        finally:
+            link.unlink(missing_ok=True)
+            if created:
+                claude.rmdir()
+        events = {e for _t, e, p in self._recorded_since(mark) if p == str(link)}
+        assert {"os.symlink", "os.remove"} <= events, events
+
     def test_ignores_reads(self):
         """A guard that flags reads would flood and get switched off."""
         from tests import home_guard
@@ -362,3 +382,25 @@ class TestComposesWithTheRolePromptSweepStub:
         from agentwire import core
 
         assert core.role_prompts_dir() == _isolate_agentwire_home / "role-prompts"
+
+
+def test_guard_sees_a_dotdot_spelling_of_the_real_claude_dir():
+    """A path that only reaches ~/.claude via ``..`` is still a write there (#1118)."""
+    import os
+
+    from tests import home_guard
+
+    claude = home_guard.REAL_CLAUDE_HOME
+    created = not claude.exists()
+    spelled = f"{claude.parent}/./.claude/zz-probe-dotdot"  # a str: pathlib would collapse the "."
+    mark = len(home_guard.SANCTIONED_WRITES)
+    with home_guard.sanctioned_real_home_write():
+        try:
+            claude.mkdir(exist_ok=True)
+            os.mkdir(spelled)
+        finally:
+            (claude / "zz-probe-dotdot").rmdir()
+            if created:
+                claude.rmdir()
+    hits = [p for _t, e, p in home_guard.SANCTIONED_WRITES[mark:] if e == "os.mkdir"]
+    assert str(claude / "zz-probe-dotdot") in hits, hits

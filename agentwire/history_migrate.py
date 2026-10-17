@@ -43,7 +43,7 @@ from pathlib import Path
 
 from .core import load_session_metadata, recorded_sessions, session_metadata_path
 from .history import (
-    PROJECTS_DIR,
+    claude_projects_dir,
     history_key_candidates,
     history_key_sources,
     locate_conversation,
@@ -75,15 +75,15 @@ def resumable(conversation_id: str, cwd: str | Path) -> bool:
 
     Delegates to :func:`history.locate_conversation`, which answers the same
     question with more detail (resumable / orphaned / gone) for ``restart``
-    and ``doctor``. Passing ``PROJECTS_DIR`` explicitly keeps this module's
+    and ``doctor``. Passing ``claude_projects_dir()`` explicitly keeps this module's
     own patchable store as the seam callers already isolate against.
     """
-    return locate_conversation(conversation_id, cwd, projects_dir=PROJECTS_DIR).resumable
+    return locate_conversation(conversation_id, cwd, projects_dir=claude_projects_dir()).resumable
 
 
 def _existing_source(cwd: str | Path) -> Path | None:
     for key in history_key_candidates(cwd):
-        candidate = PROJECTS_DIR / key
+        candidate = claude_projects_dir() / key
         if candidate.is_dir():
             return candidate
     return None
@@ -202,10 +202,10 @@ def sweep_staging() -> list[str]:
     after publication — so clearing it cannot lose history. Without this they
     accumulate silently, the same shape as #884.
     """
-    if not PROJECTS_DIR.is_dir():
+    if not claude_projects_dir().is_dir():
         return []
     swept = []
-    for p in PROJECTS_DIR.iterdir():
+    for p in claude_projects_dir().iterdir():
         if p.is_dir() and p.name.startswith(STAGING_PREFIX):
             try:
                 shutil.rmtree(p)
@@ -224,12 +224,12 @@ def plan(old_cwd: str | Path, new_cwd: str | Path) -> dict:
     """
     source = _existing_source(old_cwd)
     target_key = history_key_candidates(new_cwd)[-1]
-    target = PROJECTS_DIR / target_key
+    target = claude_projects_dir() / target_key
 
     result = {
         "old_cwd": str(old_cwd),
         "new_cwd": str(new_cwd),
-        "source": str(source) if source else str(PROJECTS_DIR / history_key_candidates(old_cwd)[0]),
+        "source": str(source) if source else str(claude_projects_dir() / history_key_candidates(old_cwd)[0]),
         "target": str(target),
     }
 
@@ -298,7 +298,7 @@ def apply(old_cwd: str | Path, new_cwd: str | Path, *, prune_source: bool = Fals
 
     source = Path(decided["source"])
     target = Path(decided["target"])
-    staging = PROJECTS_DIR / f"{STAGING_PREFIX}{uuid.uuid4().hex[:12]}"
+    staging = claude_projects_dir() / f"{STAGING_PREFIX}{uuid.uuid4().hex[:12]}"
 
     try:
         expected = _fingerprint(source)

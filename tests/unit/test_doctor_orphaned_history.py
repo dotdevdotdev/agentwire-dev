@@ -27,7 +27,7 @@ STUB = '{"type":"ai-title"}\n{"type":"mode","mode":"normal"}\n'
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path / "agentwire")
-    monkeypatch.setattr("agentwire.history.PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr("agentwire.history.claude_projects_dir", lambda: tmp_path / "projects")
     (tmp_path / "projects").mkdir()
     # Default: nothing is live and nothing has moved. Each test opts in.
     monkeypatch.setattr(doctor_cli, "tmux_session_exists", lambda n: False)

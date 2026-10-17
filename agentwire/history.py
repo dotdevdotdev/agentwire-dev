@@ -15,13 +15,19 @@ from pathlib import Path
 
 from .ssh import ssh_base_opts
 from .utils.file_io import load_json
-from .utils.paths import agentwire_dir
+from .utils.paths import agentwire_dir, claude_dir
 from .utils.subprocess import run_command
 
-# Claude Code data directories
-CLAUDE_DIR = Path.home() / ".claude"
-HISTORY_FILE = CLAUDE_DIR / "history.jsonl"
-PROJECTS_DIR = CLAUDE_DIR / "projects"
+# Claude Code data directories — resolved per call (#1118)
+
+
+def history_file() -> Path:
+    return claude_dir() / "history.jsonl"
+
+
+def claude_projects_dir() -> Path:
+    """Claude's transcript root; per call, never frozen at import (#1118)."""
+    return claude_dir() / "projects"
 
 
 def resolve_session_id(prefix: str, machine: str = "local") -> str | None:
@@ -40,7 +46,7 @@ def resolve_session_id(prefix: str, machine: str = "local") -> str | None:
 
     # Search history for matching session IDs
     if machine == "local":
-        history_path = str(HISTORY_FILE)
+        history_path = str(history_file())
     else:
         history_path = "~/.claude/history.jsonl"
 
@@ -263,7 +269,7 @@ def locate_conversation(
     The scan for a stray copy runs ONLY when none of them has the file, so the
     common case costs one ``stat`` instead of one per project directory.
     """
-    base = projects_dir or PROJECTS_DIR
+    base = projects_dir or claude_projects_dir()
     keys = history_key_candidates(cwd)
     expected_dirs = [base / key for key in keys]
     for expected_dir in expected_dirs:
@@ -440,8 +446,8 @@ def get_history(project_path: str, machine: str = "local", limit: int = 20) -> l
     """
     # Determine paths based on machine
     if machine == "local":
-        history_path = str(HISTORY_FILE)
-        projects_base = str(PROJECTS_DIR)
+        history_path = str(history_file())
+        projects_base = str(claude_projects_dir())
     else:
         history_path = "~/.claude/history.jsonl"
         projects_base = "~/.claude/projects"
@@ -526,8 +532,8 @@ def get_session_detail(session_id: str, machine: str = "local") -> dict | None:
 
     # First find the session in history to get project path
     if machine == "local":
-        history_path = str(HISTORY_FILE)
-        projects_base = str(PROJECTS_DIR)
+        history_path = str(history_file())
+        projects_base = str(claude_projects_dir())
     else:
         history_path = "~/.claude/history.jsonl"
         projects_base = "~/.claude/projects"
