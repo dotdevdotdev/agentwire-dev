@@ -4134,7 +4134,7 @@ def _eval_run_shell(base: str, rest: List[str], aliases: frozenset, rescan, resc
     return False
 
 
-_EVAL_SED_E_COMMAND_RE = _rx(r"(?:^|[;{}\n]|[0-9$/])\s*!?\s*e(?:\s|$)", 0)
+_EVAL_SED_E_COMMAND_RE = _rx(r"(?:^|[;{}\n]|[0-9$/IM]|\\([^\w\s\\])(?:(?!\1).)*\1)\s*!?\s*e(?:\s|$)", 0)
 _EVAL_SED_S_FLAG_E_RE = _rx(r"s([^\w\s\\])(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[a-zA-Z0-9]*e", 0)
 
 

@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "29ce78b00eb476d97fca226e37f263f700000adcb0038118c6092ea57ff4d9f6", "generated_at": "2026-10-17T18:19:18Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "14c56e73dddf048fc8f9f0302284758097d8f1a66c10e9db6dc72d36ba9ee91a", "generated_at": "2026-10-17T19:05:10Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -4188,7 +4188,7 @@ def _eval_run_shell(base: str, rest: List[str], aliases: frozenset, rescan, resc
     return False
 
 
-_EVAL_SED_E_COMMAND_RE = _rx(r"(?:^|[;{}\n]|[0-9$/])\s*!?\s*e(?:\s|$)", 0)
+_EVAL_SED_E_COMMAND_RE = _rx(r"(?:^|[;{}\n]|[0-9$/IM]|\\([^\w\s\\])(?:(?!\1).)*\1)\s*!?\s*e(?:\s|$)", 0)
 _EVAL_SED_S_FLAG_E_RE = _rx(r"s([^\w\s\\])(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[a-zA-Z0-9]*e", 0)
 
 

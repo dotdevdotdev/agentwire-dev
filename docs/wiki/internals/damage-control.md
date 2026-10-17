@@ -1191,11 +1191,12 @@ eval ::: f`, `flock /tmp/l grep eval f`, `poetry run`, `docker run … grep eval
 a quoted `'>f'` used as a command name, and a shell invoked with a payload
 that merely mentions the variable (`p=eval; sh -c 'echo $p'`). **Not detected:**
 a data consumer that can itself run a command line, except `sed` and `git` above
-(also: `npm exec -c='…'`/`-c…`, `git rebase -x…`, `git difftool -x|--extcmd`, `git fetch
+(also: producers `read c <<'EOF'` (quoted heredoc) and `read c < <(echo …)` — only `read c <<< word`
+is handled; `npm exec -c='…'`/`-c…`, `git rebase -x…`, `git difftool -x|--extcmd`, `git fetch
 --upload-pack`, `git config core.editor`, `GIT_SEQUENCE_EDITOR`; any tool not in the
 tables asks; Makefile/justfile recipe text from a plain file is undecidable)
 (`awk system()`, `python -c os.system`, `perl system`, `vim -c '!…'`, `tar
---to-command`, `rsync -e`, `git filter-branch --*-filter` — pinned as still
+--to-command`, `rsync -e` — pinned as still
 allowed so the claim cannot drift); a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}
 x`), `alias a=eval; a x`, `$1 x` outside a `-c` payload, `e${x}val`, a name
 assigned in another command, program text from a producer other than

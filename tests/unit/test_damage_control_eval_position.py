@@ -965,7 +965,7 @@ def test_package_service_and_test_filter_verbs_take_the_word_as_a_name():
 UNMODELLED_EXEC_SHAPES = [
     f"awk 'BEGIN{{system(\"{W} x\")}}'", f"python3 -c 'import os; os.system(\"{W} x\")'",
     f"perl -e 'system(\"{W} x\")'", f"vim -c '!{W} x' f", f"tar --to-command='{W} x' -xf a.tar",
-    f"rsync -e '{W} x' a b", f"git filter-branch --tree-filter '{W} x'",
+    f"rsync -e '{W} x' a b",
 ]
 
 
@@ -1068,3 +1068,31 @@ DECLARED_UNMODELLED_R5 = [
 def test_declared_unmodelled_shapes_stay_declared():
     modelled = [c for c in DECLARED_UNMODELLED_R5 if ambiguity_conceals_verb(c) is not None]
     assert not modelled, ("a declared residual became modelled; update the docs and this list", modelled)
+
+
+EXPECTED_DATA_SUBCOMMANDS = {'uv': ['add', 'build', 'init', 'lock', 'pip', 'publish', 'remove', 'sync', 'tree'], 'docker': ['build', 'images', 'inspect', 'logs', 'ps', 'pull', 'push', 'rm', 'rmi', 'stop', 'tag'], 'kubectl': ['apply', 'config', 'delete', 'describe', 'get', 'logs', 'rollout', 'top'], 'helm': ['install', 'lint', 'list', 'repo', 'show', 'template', 'uninstall', 'upgrade'], 'brew': ['info', 'install', 'list', 'reinstall', 'search', 'uninstall', 'update', 'upgrade'], 'pip': ['download', 'freeze', 'install', 'list', 'show', 'uninstall'], 'pip3': ['download', 'freeze', 'install', 'list', 'show', 'uninstall'], 'systemctl': ['disable', 'enable', 'is-active', 'reload', 'restart', 'show', 'start', 'status', 'stop'], 'journalctl': []}
+
+
+def test_data_subcommand_rows_are_all_present_and_all_data():
+    missing = [(h, sub) for h, subs in EXPECTED_DATA_SUBCOMMANDS.items() for sub in subs
+               if sub not in _core._EVAL_DATA_SUBCOMMANDS.get(h, ())]
+    bad = [f"{h} {sub} {W}" for h, subs in EXPECTED_DATA_SUBCOMMANDS.items() for sub in subs
+           if ambiguity_conceals_verb(f"{h} {sub} {W}") is not None]
+    bad += [f"sudo {h} {sub} -x {W}" for h, subs in EXPECTED_DATA_SUBCOMMANDS.items() for sub in subs
+            if ambiguity_conceals_verb(f"sudo {h} {sub} -x {W}") is not None]
+    assert not missing and not bad, (missing, bad)
+
+
+def test_wrapper_subcommands_launch_their_program():
+    bad = [f"{h} run grep {W} f" for h in ("uv", "poetry") if ambiguity_conceals_verb(f"{h} run grep {W} f") is not None]
+    bad += [f"{h} run {W} x" for h in ("uv", "poetry") if ambiguity_conceals_verb(f"{h} run {W} x") is None]
+    assert not bad, bad
+
+
+def test_sed_address_flags_and_custom_delimiters():
+    bad = [c for c in (f"sed '/a/I!e {W} x' f", f"sed '/a/M!e {W} x' f", f"sed '/a/I e {W} x' f", f"sed '\\%a%!e {W} x' f",
+                       f"sed '\\,a,e {W} x' f", f"sed '\\|a|!e {W} x' f", f"sed '/a/,/b/I!e {W} x' f")
+           if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in ("sed '/a/I!d' f", "sed '\\%a%!d' f", f"sed '/a/I!p;/{W}/p' f")
+            if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
