@@ -5,11 +5,13 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # GIT DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
-  - pattern: '\bgit\s+reset\s+{ARGS}--hard\b'
+  - pattern: '\bgit\s+reset\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--hard\b'
+    pattern_src: '\bgit\s+reset\s+{ARGS}--hard\b'
     reason: git reset --hard (use --soft or stash)
     anchored: true
 
-  - pattern: '\bgit\s+clean\s+{ARGS}-(?!-)(?![a-z]*n)[a-z]*[fd][a-z]*(?=[\s;&|)`]|$)'
+  - pattern: '\bgit\s+clean\s+(?!(?:[^;&|]*\s)?(?:-(?!-)[a-z]*n[a-z]*(?=[\s;&|)`]|$)|--dry-run\b))(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?!-)[a-z]*[fd][a-z]*|--force)(?=[\s;&|)`]|$)'
+    pattern_src: '\bgit\s+clean\s+(?!(?:[^;&|]*\s)?(?:-(?!-)[a-z]*n[a-z]*(?=[\s;&|)`]|$)|--dry-run\b)){ARGS}(?:-(?!-)[a-z]*[fd][a-z]*|--force)(?=[\s;&|)`]|$)'
     reason: git clean with force/directory flags
     anchored: true
 
@@ -18,7 +20,8 @@ bashToolPatterns:
     reason: git push --force (use --force-with-lease)
     anchored: true
 
-  - pattern: '\bgit\s+push\s+{ARGS}-(?!-)[a-z]*f[a-z]*(?=[\s;&|)`]|$)'
+  - pattern: '\bgit\s+push\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-(?!-)[a-z]*f[a-z]*(?=[\s;&|)`]|$)'
+    pattern_src: '\bgit\s+push\s+{ARGS}-(?!-)[a-z]*f[a-z]*(?=[\s;&|)`]|$)'
     reason: git push -f (use --force-with-lease)
     anchored: true
 
@@ -65,12 +68,14 @@ bashToolPatterns:
     ask: true
     anchored: true
 
-  - pattern: '\bgit\s+branch\s+{ARGS}-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\s;&|)`]|$)'
+  - pattern: '\bgit\s+branch\s+(?:(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\s;&|)`]|$)|(?=(?:[^;&|]*\s)?(?:-(?!-)[a-z]*d[a-z]*|--delete)(?=[\s;&|)`]|$))(?=(?:[^;&|]*\s)?(?:-(?!-)[a-z]*f[a-z]*|--force)(?=[\s;&|)`]|$)))'
+    pattern_src: '\bgit\s+branch\s+(?:{ARGS}-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\s;&|)`]|$)|(?=(?:[^;&|]*\s)?(?:-(?!-)[a-z]*d[a-z]*|--delete)(?=[\s;&|)`]|$))(?=(?:[^;&|]*\s)?(?:-(?!-)[a-z]*f[a-z]*|--force)(?=[\s;&|)`]|$)))'
     reason: Force deletes branch (even if unmerged)
     ask: true
     anchored: true
 
-  - pattern: '\bgit\s+push\s+{ARGS}--delete\b'
+  - pattern: '\bgit\s+push\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--delete\b'
+    pattern_src: '\bgit\s+push\s+{ARGS}--delete\b'
     reason: Deletes remote branch
     ask: true
     anchored: true

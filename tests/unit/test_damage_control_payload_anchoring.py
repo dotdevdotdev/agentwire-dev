@@ -186,6 +186,21 @@ class TestAnchoringIsFileWide:
 # the full bundled set.
 
 DANGEROUS_SAMPLE = {
+    '\\b(mail|mailx)\\s+{ARGS}-s\\b': 'mail a@b -s x',
+    '\\bkubectl\\s+delete\\s+(?=(?:[^;&|]*\\s)?--all(?=[\\s;&|)`]|$))(?=(?:[^;&|]*\\s)?all(?=[\\s;&|)`]|$))': 'kubectl delete --all all',
+    '\\brm\\s+{ARGS}-(?!-)[a-z]*[rf][a-z]*(?=[\\s;&|)`]|$)': 'rm /tmp/build -rf',
+    '\\brm\\s+{ARGS}--recursive': 'rm x --recursive',
+    '\\brm\\s+{ARGS}--force': 'rm x --force',
+    '\\bchmod\\s+{ARGS}0?777\\b': 'chmod 0777 x',
+    '\\bchmod\\s+{ARGS}(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\\s;&|)`]|$).*777': 'chmod x -R 777',
+    '\\bchown\\s+(?=[^;&|]*\\broot\\b){ARGS}(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\\s;&|)`]|$)': 'chown root -R /srv/app',
+    '\\bkillall\\s+{ARGS}-9\\b': 'killall foo -9',
+    '\\bpkill\\s+{ARGS}-9\\b': 'pkill foo -9',
+    '\\bgit\\s+reset\\s+{ARGS}--hard\\b': 'git reset HEAD~1 --hard',
+    '\\bgit\\s+clean\\s+(?!(?:[^;&|]*\\s)?(?:-(?!-)[a-z]*n[a-z]*(?=[\\s;&|)`]|$)|--dry-run\\b)){ARGS}(?:-(?!-)[a-z]*[fd][a-z]*|--force)(?=[\\s;&|)`]|$)': 'git clean . -fd',
+    '\\bgit\\s+push\\s+{ARGS}-(?!-)[a-z]*f[a-z]*(?=[\\s;&|)`]|$)': 'git push origin -f main',
+    '\\bgit\\s+branch\\s+(?:{ARGS}-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\\s;&|)`]|$)|(?=(?:[^;&|]*\\s)?(?:-(?!-)[a-z]*d[a-z]*|--delete)(?=[\\s;&|)`]|$))(?=(?:[^;&|]*\\s)?(?:-(?!-)[a-z]*f[a-z]*|--force)(?=[\\s;&|)`]|$)))': 'git branch feature -D',
+    '\\bgit\\s+push\\s+{ARGS}--delete\\b': 'git push origin --delete feature',
     '\\btmux\\s+kill-server\\b': 'tmux kill-server',
     '\\btmux\\s+kill-session\\s+.*\\bagentwire': 'tmux kill-session -t agentwire-main',
     '\\btmux\\s+kill-session\\s+.*-a\\b': 'tmux kill-session -t main -a',
@@ -239,28 +254,19 @@ DANGEROUS_SAMPLE = {
     '\\bdocker\\s+volume\\s+rm\\b': 'docker volume rm',
     '\\bdocker\\s+volume\\s+prune\\b': 'docker volume prune',
     '\\bkubectl\\s+delete\\s+namespace\\b': 'kubectl delete namespace',
-    '\\bkubectl\\s+delete\\s+all\\s+--all': 'kubectl delete all --all',
     '\\bkubectl\\s+delete\\s+.*--all\\s+--all-namespaces': 'kubectl delete pods --all --all-namespaces',
     '\\bhelm\\s+uninstall\\b': 'helm uninstall',
     '\\bdocker\\s+(compose\\s+)?push\\b': 'docker push myimage:latest',
     '\\bkubectl\\s+delete\\b': 'kubectl delete',
-    '\\brm\\s+{ARGS}-(?!-)[a-z]*[rf][a-z]*(?=[\\s;&|)`]|$)': 'rm /tmp/build -rf',
-    '\\brm\\s+{ARGS}--recursive': 'rm x --recursive',
-    '\\brm\\s+{ARGS}--force': 'rm x --force',
     '\\bsudo\\s+rm\\b': 'sudo rm',
     '\\brmdir\\b': 'rmdir',
     '\\brm\\s+[^-]': 'rm notes.txt',
     '(?:^|[;&|])\\s*trash\\s+': 'trash notes.txt',
     '\\bfind\\b.*\\s-delete\\b': "find /tmp -name '*.log' -delete",
     '\\bfind\\b.*-exec\\s+rm\\b': "find /tmp -name '*.log' -exec rm {} +",
-    '\\bchmod\\s+(-[^\\s]+\\s+)*777\\b': 'chmod 777 /srv/app',
-    '\\bchmod\\s+-[Rr].*777': 'chmod -R 777 /srv/app',
-    '\\bchown\\s+(?=[^;&|]*\\broot\\b){ARGS}-(?!-)[a-z]*r[a-z]*(?=[\\s;&|)`]|$)': 'chown root -R /srv/app',
     '\\bmkfs\\.': 'mkfs.ext4 /dev/disk2',
     '\\bdd\\s+.*of=/dev/': 'dd if=/dev/zero of=/dev/disk2',
     '\\bkill\\s+-9\\s+-1\\b': 'kill -9 -1',
-    '\\bkillall\\s+-9\\b': 'killall -9',
-    '\\bpkill\\s+-9\\b': 'pkill -9',
     '\\bhistory\\s+-c\\b': 'history -c',
     '\\bredis-cli\\s+FLUSHALL': 'redis-cli FLUSHALL',
     '\\bredis-cli\\s+FLUSHDB': 'redis-cli FLUSHDB',
@@ -293,10 +299,7 @@ DANGEROUS_SAMPLE = {
     '\\bgcloud\\s+iam\\s+service-accounts\\s+delete\\b': 'gcloud iam service-accounts delete',
     '\\bgcloud\\s+run\\s+deploy\\b': 'gcloud run deploy',
     '\\bgcloud\\s+app\\s+deploy\\b': 'gcloud app deploy',
-    '\\bgit\\s+reset\\s+{ARGS}--hard\\b': 'git reset HEAD~1 --hard',
-    '\\bgit\\s+clean\\s+{ARGS}-(?!-)(?![a-z]*n)[a-z]*[fd][a-z]*(?=[\\s;&|)`]|$)': 'git clean . -fd',
     '\\bgit\\s+push\\s+.*--force(?!-with-lease)': 'git push origin --force',
-    '\\bgit\\s+push\\s+{ARGS}-(?!-)[a-z]*f[a-z]*(?=[\\s;&|)`]|$)': 'git push origin -f main',
     '\\bgit\\s+stash\\s+clear\\b': 'git stash clear',
     '\\bgit\\s+reflog\\s+expire\\b': 'git reflog expire',
     '\\bgit\\s+gc\\s+.*--prune=now': 'git gc --prune=now',
@@ -305,8 +308,6 @@ DANGEROUS_SAMPLE = {
     '\\bgit\\s+restore\\s+\\.': 'git restore .',
     '\\bgit\\s+stash\\s+drop\\b': 'git stash drop',
     '\\bgit\\s+rm\\b(?!.*--cached)': 'git rm tracked.txt',
-    '\\bgit\\s+branch\\s+{ARGS}-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\\s;&|)`]|$)': 'git branch feature -D',
-    '\\bgit\\s+push\\s+{ARGS}--delete\\b': 'git push origin --delete feature',
     '\\bgit\\s+push\\s+\\S+\\s+:\\S+': 'git push origin :feature',
     '\\bgws\\s+gmail\\s+users\\.messages\\.delete\\b': 'gws gmail users.messages.delete',
     '\\bgws\\s+gmail\\s+users\\.messages\\.batchDelete\\b': 'gws gmail users.messages.batchDelete',
@@ -331,7 +332,6 @@ DANGEROUS_SAMPLE = {
     '\\baws\\s+ses(v2)?\\s+send-email\\b': 'aws ses send-email --to a@b.c',
     '\\baws\\s+sns\\s+publish\\b': 'aws sns publish',
     '\\bsendmail\\b': 'sendmail',
-    '\\b(mail|mailx)\\s+(-[^\\s]*\\s+)*-s\\b': 'mail -s subject user@example.com',
     '\\bcargo\\s+publish\\b': 'cargo publish',
     '\\bpoetry\\s+publish\\b': 'poetry publish',
     '\\btwine\\s+upload\\b': 'twine upload',
@@ -344,7 +344,7 @@ DANGEROUS_SAMPLE = {
 class TestEveryAnchoredRuleStillRefusesItsDangerousForm:
     def test_every_anchored_rule_has_a_companion_sample(self):
         missing = [
-            e["pattern"] for _, e in ANCHORED if e["pattern"] not in DANGEROUS_SAMPLE
+            e.get("pattern_src", e["pattern"]) for _, e in ANCHORED if e.get("pattern_src", e["pattern"]) not in DANGEROUS_SAMPLE
         ]
         assert not missing, (
             "anchored rules with no companion dangerous-form test — every "
@@ -355,7 +355,7 @@ class TestEveryAnchoredRuleStillRefusesItsDangerousForm:
         """Solo config: no other rule can take the credit for the refusal."""
         leaks = []
         for filename, entry in ANCHORED:
-            sample = DANGEROUS_SAMPLE[entry["pattern"]]
+            sample = DANGEROUS_SAMPLE[entry.get("pattern_src", entry["pattern"])]
             result = bash_hook.check_command(sample, _solo_config(entry))
             if result["decision"] not in REFUSED:
                 leaks.append(f"{filename}: anchoring {entry['pattern']!r} lets {sample!r} through")

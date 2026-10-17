@@ -11,11 +11,12 @@ The differential asserts decision(flag after operand) == decision(plain order)
 across wrappers and safety settings; the controls price the other half.
 """
 
+import importlib.util
+import re
 from pathlib import Path
 
 import pytest
-
-from agentwire.safety import _core
+import yaml
 
 REPO = Path(__file__).resolve().parent.parent.parent
 RULES_DIR = REPO / "agentwire" / "hooks" / "damage-control" / "rules"
@@ -33,6 +34,13 @@ def bundled_config(bash_hook):
 
 # (verb prefix, flag spellings, operands) — the plain order is `verb FLAGS ops`.
 FAMILIES = [
+    ("chown", ["--recursive"], ["root", "/srv/x"]),
+    ("git clean", ["--force"], ["src", "docs"]),
+    ("git branch", ["-d -f", "-df", "--delete --force"], ["main", "other"]),
+    ("chmod", ["-R"], ["0777", "/srv/x"]),
+    ("kubectl delete", ["--all"], ["all", "pods"]),
+    ("killall", ["-9"], ["foo", "bar"]),
+    ("pkill", ["-9"], ["foo", "bar"]),
     ("rm", ["-rf", "-fr", "-Rf", "-r -f", "-f", "-r", "--recursive --force", "--force"], ["foo", "bar"]),
     ("chown", ["-R"], ["root", "/srv/x"]),
     ("git clean", ["-fdx", "-f", "-fd"], ["src", "docs"]),
@@ -109,6 +117,29 @@ ISSUE_REPROS = [
     "git branch main -D",
     "git push origin -f main",
     "git push origin --delete topic",
+    # review round 1: long options, force-delete spelled -d + force, other rules
+    "git clean --force",
+    "git clean src --force",
+    "git branch -d -f x",
+    "git branch -df x",
+    "git branch --delete --force x",
+    "chown --recursive root /",
+    "chmod 0777 -R /x",
+    "kubectl delete --all all",
+    "mail a@b -s x",
+    "mailx a@b -s x",
+    "killall foo -9",
+    "pkill foo -9",
+]
+
+# Spellings main already refused (plain order): the rewrite must never weaken one.
+STILL_REFUSED = [
+    "rm -rf x", "rm -fr x", "rm -r x", "rm -f x", "rm -vrf x", "rm --recursive x",
+    "rm --force x", "git clean -fdx", "git clean -f", "git clean -d", "git clean -df",
+    "git push -f", "git push --force", "git push -fu origin x", "git branch -D x",
+    "git reset --hard", "git push origin --delete x", "chown -R root /",
+    "chown -Rv root /", "chmod -R 777 /x", "chmod 777 x", "kubectl delete all --all",
+    "mail -s x a@b", "killall -9 foo", "pkill -9 foo",
 ]
 
 
@@ -146,6 +177,10 @@ MUST_NOT_HIT_A_FLAG_RULE = [
     "git push --force-with-lease origin main",
     "echo rm foo -rf",
     'git commit -m "rm foo -rf"',
+    "git clean -f -n",
+    "git clean src -f -n",
+    "git clean -n -f",
+    "git clean -fd --dry-run",
     "ls -f && git status",
     "rm foo && ls -rf",
     "git status; git clean -n",
@@ -162,8 +197,45 @@ def test_lookalikes_do_not_hit_a_flag_rule(bash_hook, bundled_config):
     assert not bad, bad
 
 
+def test_main_refusals_survive_the_rewrite(bash_hook, bundled_config):
+    bad = [c for c in STILL_REFUSED if bash_hook.check_command(c, dict(bundled_config))["decision"] == "allow"]
+    assert not bad, bad
+
+
+def _generator():
+    spec = importlib.util.spec_from_file_location("gen_rule_patterns", REPO / "scripts" / "gen_rule_patterns.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_shipped_patterns_are_plain_regex_the_hook_needs_no_expansion_for():
+    """Deploy skew (#1125 review): a hook that does not know the placeholder must
+    still read a valid pattern, or every rule using it silently stops matching."""
+    bad = []
+    for path in sorted(RULES_DIR.glob("*.yaml")):
+        for rule in yaml.safe_load(path.read_text()).get("bashToolPatterns", []):
+            if "{ARGS}" in rule["pattern"]:
+                bad.append((path.name, rule["pattern"]))
+    assert not bad, bad
+
+
+def test_generator_output_is_current_and_expands_what_it_claims():
+    gen = _generator()
+    stale = [p.name for p in sorted(RULES_DIR.glob("*.yaml")) if gen.regenerate(p.read_text()) != p.read_text()]
+    assert not stale, stale
+    n = 0
+    for path in sorted(RULES_DIR.glob("*.yaml")):
+        for rule in yaml.safe_load(path.read_text()).get("bashToolPatterns", []):
+            if "pattern_src" in rule:
+                n += 1
+                assert gen.expand(rule["pattern_src"]) == rule["pattern"], rule["pattern_src"]
+    assert n >= 12, n
+
+
 def test_args_fragment_stops_at_double_dash_and_separators():
-    rx = _core._rx(_core.expand_rule_pattern(r"\bverb\s+{ARGS}-f\b"))
+    gen = _generator()
+    rx = re.compile(gen.expand(r"\bverb\s+{ARGS}-f\b"), re.I)
     hits = {c: bool(rx.search(c)) for c in [
         "verb a -f", "verb a b -f", "verb -f", "verb -- -f", "verb a -- -f",
         "verb a ; -f", "verb a && x -f", "verb a | x -f",
@@ -173,3 +245,34 @@ def test_args_fragment_stops_at_double_dash_and_separators():
         "verb -- -f": False, "verb a -- -f": False,
         "verb a ; -f": False, "verb a && x -f": False, "verb a | x -f": False,
     }, hits
+
+
+# One behavior pin per rule, flag after the LAST operand, through the real
+# check_command — so a rule that stops scanning operands goes red here, not only
+# in the pattern-text companion test.
+FLAG_AFTER_LAST_OPERAND = [
+    ("rm a --recursive", "rm with --recursive"),
+    ("rm a --force", "rm with --force"),
+    ("rm a -vrf", "rm with recursive or force"),
+    ("git push origin topic --delete", "Deletes remote branch"),
+    ("chown root /x -hR", "recursive chown"),
+    ("git reset HEAD~3 --hard", "git reset --hard"),
+    ("git clean src -fd", "git clean with"),
+    ("git push origin main -f", "git push -f"),
+    ("git branch main -D", "Force deletes branch"),
+    ("chmod 0777 -R /x", "chmod 777"),
+    ("chmod -v 0777 /x", "chmod 777"),
+    ("killall foo -9", "killall -9"),
+    ("pkill foo -9", "pkill -9"),
+    ("mail a@b -s x", "mail -s"),
+    ("kubectl delete --all all", "kubectl delete all --all"),
+]
+
+
+def test_flag_after_last_operand_hits_its_own_rule(bash_hook, bundled_config):
+    bad = []
+    for command, reason in FLAG_AFTER_LAST_OPERAND:
+        result = bash_hook.check_command(command, dict(bundled_config))
+        if not (result.get("reason") or "").startswith(reason):
+            bad.append((command, result["decision"], result.get("reason")))
+    assert not bad, bad

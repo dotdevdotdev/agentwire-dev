@@ -28,7 +28,8 @@ bashToolPatterns:
     reason: kubectl delete namespace
     anchored: true
 
-  - pattern: '\bkubectl\s+delete\s+all\s+--all'
+  - pattern: '\bkubectl\s+delete\s+(?=(?:[^;&|]*\s)?--all(?=[\s;&|)`]|$))(?=(?:[^;&|]*\s)?all(?=[\s;&|)`]|$))'
+    pattern_src: '\bkubectl\s+delete\s+(?=(?:[^;&|]*\s)?--all(?=[\s;&|)`]|$))(?=(?:[^;&|]*\s)?all(?=[\s;&|)`]|$))'
     reason: kubectl delete all --all
     anchored: true
 

@@ -6,15 +6,18 @@ bashToolPatterns:
   # DESTRUCTIVE FILE OPERATIONS
   # ---------------------------------------------------------------------------
   # {ARGS} (#1125): the flag may follow any operand (`rm foo -rf x`), up to `--`.
-  - pattern: '\brm\s+{ARGS}-(?!-)[a-z]*[rf][a-z]*(?=[\s;&|)`]|$)'
+  - pattern: '\brm\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-(?!-)[a-z]*[rf][a-z]*(?=[\s;&|)`]|$)'
+    pattern_src: '\brm\s+{ARGS}-(?!-)[a-z]*[rf][a-z]*(?=[\s;&|)`]|$)'
     reason: rm with recursive or force flags
     anchored: true
 
-  - pattern: '\brm\s+{ARGS}--recursive'
+  - pattern: '\brm\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--recursive'
+    pattern_src: '\brm\s+{ARGS}--recursive'
     reason: rm with --recursive flag
     anchored: true
 
-  - pattern: '\brm\s+{ARGS}--force'
+  - pattern: '\brm\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--force'
+    pattern_src: '\brm\s+{ARGS}--force'
     reason: rm with --force flag
     anchored: true
 
@@ -51,15 +54,18 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # PERMISSION CHANGES
   # ---------------------------------------------------------------------------
-  - pattern: '\bchmod\s+(-[^\s]+\s+)*777\b'
+  - pattern: '\bchmod\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?0?777\b'
+    pattern_src: '\bchmod\s+{ARGS}0?777\b'
     reason: chmod 777 (world writable)
     anchored: true
 
-  - pattern: '\bchmod\s+-[Rr].*777'
+  - pattern: '\bchmod\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$).*777'
+    pattern_src: '\bchmod\s+{ARGS}(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$).*777'
     reason: recursive chmod 777
     anchored: true
 
-  - pattern: '\bchown\s+(?=[^;&|]*\broot\b){ARGS}-(?!-)[a-z]*r[a-z]*(?=[\s;&|)`]|$)'
+  - pattern: '\bchown\s+(?=[^;&|]*\broot\b)(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$)'
+    pattern_src: '\bchown\s+(?=[^;&|]*\broot\b){ARGS}(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$)'
     reason: recursive chown to root
     anchored: true
 
@@ -81,11 +87,13 @@ bashToolPatterns:
     reason: kill all processes
     anchored: true
 
-  - pattern: '\bkillall\s+-9\b'
+  - pattern: '\bkillall\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-9\b'
+    pattern_src: '\bkillall\s+{ARGS}-9\b'
     reason: killall -9
     anchored: true
 
-  - pattern: '\bpkill\s+-9\b'
+  - pattern: '\bpkill\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-9\b'
+    pattern_src: '\bpkill\s+{ARGS}-9\b'
     reason: pkill -9
     anchored: true
 

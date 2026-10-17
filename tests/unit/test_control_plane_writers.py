@@ -14,7 +14,6 @@ live ``~/.agentwire/damage-control`` copies, which do not refresh and would
 make this measure the machine instead of the code.
 """
 
-import os
 from pathlib import Path
 
 import pytest
@@ -27,13 +26,21 @@ pytestmark = pytest.mark.real_agentwire_home
 REPO = Path(__file__).resolve().parent.parent.parent
 RULES_DIR = REPO / "agentwire" / "hooks" / "damage-control" / "rules"
 
-HOME = os.path.expanduser("~")
+# Fixed, not the process's HOME: the decisions below must not depend on where
+# the machine running them keeps its home (#1121). The autouse fixture points
+# HOME here; the differential test at the bottom sweeps other locations.
+HOME = "/home/cptest"
 # One path, three spellings the hook must treat identically.
 SPELLINGS = [
     "~/.agentwire/damagecontrol.yml",
     "$HOME/.agentwire/damagecontrol.yml",
     f"{HOME}/.agentwire/damagecontrol.yml",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _fixed_home(monkeypatch):
+    monkeypatch.setenv("HOME", HOME)
 
 
 @pytest.fixture(scope="module")
@@ -933,3 +940,92 @@ def test_round2_review_shapes(cfg):
     ]
     assert not leaked, leaked
     assert not wrongly_blocked, wrongly_blocked
+
+
+# #1121: the verdict on a control-plane write is a function of the TARGET, not
+# of where $HOME lives. The shipped ``/tmp/*`` allowlist entry used to
+# re-permit the protected file when $HOME was under /tmp, so the same command
+# was blocked at /Users/x and allowed at /tmp/x.
+DIFF_WRITERS = [
+    "touch @P",
+    "tee @P < /dev/null",
+    "echo x > @P",
+    "echo x >> @P",
+    "cp /dev/null @P",
+    "mv /dev/null @P",
+    "sed -i s/a/b/ @P",
+    "dd if=/dev/null of=@P",
+    "truncate -s 0 @P",
+    "install /dev/null @P",
+    "ln -sf /dev/null @P",
+    "python3 -c \"open('@P','w')\"",
+]
+# Names relative to a directory the command first enters.
+DIFF_RELATIVE_NAMES = [
+    "damagecontrol.yml",
+    "./damagecontrol.yml",
+    "'damage''control.yml'",
+    '"damage""control.yml"',
+    "damage\\control.yml",
+    '"damage"control.yml',
+]
+DIFF_DIR_SPELLINGS = ["~/.agentwire", "$HOME/.agentwire", "@H/.agentwire", "~/x/../.agentwire"]
+DIFF_ABSOLUTE_SPELLINGS = [
+    "~/.agentwire/damagecontrol.yml",
+    "$HOME/.agentwire/damagecontrol.yml",
+    "@H/.agentwire/damagecontrol.yml",
+    "~/.agentwire/./damagecontrol.yml",
+    "~/.agentwire/damage''control.yml",
+]
+
+
+def _diff_commands(home):
+    out = []
+    for w in DIFF_WRITERS:
+        for d in DIFF_DIR_SPELLINGS:
+            for name in DIFF_RELATIVE_NAMES:
+                if w.startswith("python3") and any(q in name for q in "'\"\\"):
+                    continue  # a quote inside the -c program's own quotes is not a spelling of anything
+                out.append(f"cd {d.replace('@H', home)} && " + w.replace("@P", name))
+        for sp in DIFF_ABSOLUTE_SPELLINGS:
+            out.append(w.replace("@P", sp.replace("@H", home)))
+    return out
+
+
+def test_control_plane_verdict_is_independent_of_home_location(cfg, tmp_path, monkeypatch):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    homes = ["/Users/x", "/home/x", "/tmp/x", "/private/tmp/x", "/var/folders/x/T/h", "/var/tmp/x", str(link)]
+    off = dict(cfg)
+    off["safety"] = {"enabled": False, "disabled_rules": []}
+    bad = []
+    for home in homes:
+        monkeypatch.setenv("HOME", home)
+        for command in _diff_commands(home):
+            for label, c in (("on", cfg), ("off", off)):
+                if not _blocked_by_control_plane(command, c):
+                    bad.append((home, label, command))
+    assert not bad, bad[:20]
+
+
+def test_location_allowance_does_not_reopen_project_control_plane(cfg, monkeypatch):
+    """A project that lives under /tmp keeps its ``.damagecontrol.yml`` protected."""
+    monkeypatch.setenv("HOME", "/Users/x")
+    cmds = [
+        "touch /tmp/proj/.damagecontrol.yml",
+        "cd /tmp/proj && touch .damagecontrol.yml",
+        "cd /tmp/proj && touch .damage''control.yml",
+        "cd /var/tmp/proj && tee .agentwire.tasks.yml < /dev/null",
+    ]
+    assert not [c for c in cmds if not _blocked_by_control_plane(c, cfg)]
+
+
+def test_explicit_control_plane_allowance_still_works(cfg, monkeypatch):
+    """A human's ``~/.agentwire/...`` entry is the one override and must survive the filter."""
+    monkeypatch.setenv("HOME", "/tmp/x")
+    c = dict(cfg)
+    c["allowedPaths"] = [{"path": "~/.agentwire/damagecontrol.yml", "allow": {"write", "edit"}}]
+    r = check_command("touch ~/.agentwire/damagecontrol.yml", c)
+    assert r["decision"] == "allow", r

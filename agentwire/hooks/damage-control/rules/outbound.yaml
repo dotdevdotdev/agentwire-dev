@@ -65,7 +65,8 @@ bashToolPatterns:
     id: outbound.sendmail
     anchored: true
 
-  - pattern: '\b(mail|mailx)\s+(-[^\s]*\s+)*-s\b'
+  - pattern: '\b(mail|mailx)\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-s\b'
+    pattern_src: '\b(mail|mailx)\s+{ARGS}-s\b'
     reason: mail -s (sends external email)
     ask: true
     id: outbound.mail

@@ -442,7 +442,7 @@ Patterns live in **categorized YAML files** under `agentwire/hooks/damage-contro
 
 ### Flag position: `{ARGS}` (#1125)
 
-GNU tools and git accept options after operands, so `rm foo -rf x` is the same operation as `rm -rf foo x`. A rule spelled `verb\s+(-[^\s]*)*-f` only sees flags before the first operand. A bash pattern may therefore contain `{ARGS}` ("any leading arguments of this command segment"), expanded at match time from `_core.RULE_ARGS_FRAGMENT`: it skips argument tokens but stops at a segment separator (`; & |`) and at the bare `--` (everything after is an operand, so `rm -- -rf` stays allowed). Quoted operands are already masked in the anchored haystack. Short flags match as cluster members (`-vrf`, `-fdx`); `git branch` uses a case-sensitive `D` so `-d` stays allowed, and `git clean` skips clusters containing `-n` (dry run). Rules using it: `rm` (short/`--recursive`/`--force`), `chown -R … root`, `git reset --hard`, `git clean`, `git push -f`, `git push --delete`, `git branch -D`. New flag-position rules should use `{ARGS}`, not a hand-widened regex. Pinned by `tests/unit/test_damage_control_flag_order.py` (rule family × flag position × wrapper × {default, kill switch, unattended}).
+GNU tools and git accept options after operands, so `rm foo -rf x` is the same operation as `rm -rf foo x`. A rule spelled `verb\s+(-[^\s]*)*-f` only sees flags before the first operand. Such rules are authored with `pattern_src:` (containing `{ARGS}`, "any leading arguments of this command segment") on the line after `pattern:`; `scripts/gen_rule_patterns.py` expands it into the plain `pattern:` the hook reads (`--check` fails when stale, pinned by `test_damage_control_flag_order.py`). **The hook never expands anything**: an old hook reading new rules sees an ordinary valid regex. The first cut expanded at match time and an old hook + new rules ALLOWED every rm/push/reset/clean/chown (a literal `{ARGS}` matches nothing). A token is an argument unless it is a separator (`; & |`) or the bare `--` (everything after is an operand, so `rm -- -rf` stays allowed). Short flags match as cluster members (`-vrf`, `-hR`) plus the long option; `git branch` uses a case-sensitive `D` or delete+force (`-d -f`, `-df`, `--delete --force`); `git clean` is allowed when a dry run (`-n`, `--dry-run`) appears anywhere in the segment. Rules: rm, chown -R root, chmod 777/-R, git reset --hard, clean, push -f/--delete, branch -D, killall/pkill -9, mail -s, kubectl delete all --all. After editing a `pattern_src`, run the generator.
 
 ### Pattern Types
 
@@ -679,6 +679,8 @@ The allowlist is the one knob that overrides the protected-control-plane check, 
 
 **The override cuts both ways (#938).** Because `allowedPaths` outranks control-plane protection, a *broad* entry silently turns that protection off for whatever it covers — `{path: "*/.agentwire/*", allow: all}` makes the kill switch (`~/.agentwire/damagecontrol.yml`), the rule files, and the hook scripts agent-writable, and `{path: "~/.claude/*"}` takes hook registration (`settings.json`) with it. The control plane is protected *unless your allowlist covers it*. `agentwire doctor` flags any entry whose glob overlaps a protected control-plane path, using the enforcement matcher itself, and names both sides.
 
+**A location allowance never re-permits the control plane (#1121).** "Covers it" is judged by the entry's SHAPE at a canonical home (`_core.control_plane_allowlist`, the same anchoring doctor's overlap check uses), not against the live path. Judged live, the shipped `/tmp/*` scratch entry matched `$HOME/.agentwire/damagecontrol.yml` whenever `$HOME` lived under `/tmp` (a CI image, container, sandbox), so `cd ~/.agentwire && touch damagecontrol.yml` was ALLOWED at `HOME=/tmp/x` and blocked at `/Users/x` — the verdict followed where the home sat, not what the target was. An entry now counts only if it names a protected file literally (`/repo/.damagecontrol.yml`) or its glob covers the control plane at the canonical home (`~/.agentwire/*`, `*/.agentwire/*`). Applied at both entry points (`check_protected_command`, `check_protected_path`). Pinned by a differential test (writers × spellings × HOME in `/Users`, `/home`, `/tmp`, `/private/tmp`, `/var/folders`, a symlinked home × kill switch on/off) that must give the same verdict everywhere. The same filter (`guarded_allowlist`) guards `zeroAccessPaths`, `readOnlyPaths` and `noDeletePaths` at every override site (Bash ladders, `check_path`, `check_read_path`, and the MCP path screen that calls them) (#1122). `_anchor_home` never rewrites a bare ancestor of HOME (`/tmp/*` at `HOME=/tmp`, `HOME=/`, a trailing slash): a rewrite must not change what an entry covers, so a live-HOME prefix is rewritten only when it names a literal component below HOME. Stated cost: `/tmp/*` no longer re-permits a zero-access file that sits in /tmp (`cat /tmp/foo.pem` blocks); a literal entry for it still does.
+
 Per-project paths are relative to the project root and resolved to absolute paths before matching.
 
 **Bypassable bash patterns**: Some bash patterns (plain `rm`, `rmdir`, `trash`) are marked `bypassable: true` in their rules YAML. When a command matches a bypassable pattern, the system checks if ALL target paths have the required operation permission (e.g., `delete` for `rm`). If all paths match, the command is allowed. Hard-blocked patterns (like `rm -rf`) are never bypassed regardless of permissions.
@@ -689,7 +691,7 @@ Per-project paths are relative to the project root and resolved to absolute path
 1. Hard-blocked `bashToolPatterns` (no `bypassable` flag) — always blocked, NEVER bypassed
 2. Ask patterns (`ask: true`) — prompt for confirmation when a human is present; **fail closed when unattended** (see below)
 3. Bypassable `bashToolPatterns` (`bypassable: true`) — check allowlist for required operation
-4. `allowedPaths` (global + per-project merged) — if target matches with correct operation, skip path checks
+4. `allowedPaths` (global + per-project merged) — if target matches with correct operation, skip path checks, EXCEPT that an entry re-permits a guarded path (control plane, zero-access, read-only, no-delete) only if it names it or its shape covers it at a canonical home (#1121/#1122)
 5. `zeroAccessPaths` — block (unless allowlisted with `read`)
 6. `readOnlyPaths` — block modifications (unless allowlisted with specific operation)
 7. `noDeletePaths` — block deletions (unless allowlisted with `delete`)
@@ -1111,6 +1113,110 @@ marker-liveness bullet above), and a heredoc that **feeds a shell** (`bash <<'EO
 substitution ask, which bypass/auto demote — it is just no longer misread as
 verb concealment. `tests/unit/test_damage_control_inert_view.py` pins both
 halves; each guard has a mutation that turns it red.
+
+**The dynamic-evaluation builtin is judged by position (#1115).** The old
+check was a whitespace-keyed word search, so it guarded the phrasing: any
+commit message, issue/PR body, grep pattern, `agentwire msg`/`send` payload or
+quoted heredoc that merely NAMED the builtin was an un-demotable
+`unverifiable` ask (a silent block loop when unattended), while spellings the
+regex could not see (`\\eval`, `e''val`, `"eval" x`, `bash -c 'eval "$x"'`)
+passed. `has_command_position_eval()` reads the resolved token view (quote and
+escape variants normalize; `$'…'` is decoded, `$"…"` loses the `$`), after
+joining backslash-newline, with compound-command syntax removed by the shared
+`strip_command_openers` (#1112 — there is no second chain walker). A command's
+verb is the first word after redirects (any bash redirect form, with or
+without a glued target, `N`/`{var}` prefix, `&>`, `>|`, fd dups), assignments
+and known launchers.
+
+**The failure direction is ask.** A command word falls in one of four classes:
+
+- **known launcher** (`_EVAL_WRAPPER_VALUE_OPTS`: `sudo`, `doas`, `env`,
+  `xargs`, `timeout`, `nice`, `ionice`, `stdbuf`, `time`, `watch`, `exec`,
+  `nohup`, `command`, `builtin`, `setsid`, `uv run`, `uvx`, `npx`, `bunx`,
+  `pnpx`): its value-taking options are skipped with getopt cluster semantics
+  (`sudo -Eu root`, `xargs -0I{}`), boolean flags are not, and the next word is
+  the verb. The table only **reduces** false blocks; an option missing from it
+  leaves its value in the verb slot, which is UNKNOWN and asks. `command
+  -v|-V|-pv` and `type`/`which`/`help` are lookups;
+- **shell** (`sh bash zsh dash ksh`, and the `su`-style `su runuser script sg`):
+  the payload is found with the shell's own option grammar (`-o|+o|-O|+O NAME`,
+  `--rcfile|--init-file F`, clusters like `-ec`/`-eo pipefail`, `--`), and if
+  the walk stops on an option shape it does not model (`-O3`, `-`), any later
+  `-…c` cluster or `--command` names the payload anyway. The payload is
+  re-checked as a command; one that expands a variable assigned the word in the
+  same command (`p='eval x'; sh -c "$p"`, `y=$x`) asks, and so does one whose
+  command position is a positional parameter (`sh -c '$1' _ eval`) when an
+  argument is the word;
+- **known pure data consumer** (`_EVAL_DATA_CONSUMERS`: `echo`, `grep`, `git`,
+  `gh`, `agentwire`, `say`, test runners such as `jest`/`vitest`, interpreters,
+  …) and **project runner** (`_EVAL_PROJECT_RUNNERS`: `make just cargo npm pnpm
+  yarn fd go bundle`): the rest is data (`make eval`, `cargo test eval`, `npm run
+  eval`, `npx jest -t eval`). A runner falls back to UNKNOWN as soon as its
+  arguments can hand a program to a shell (a shell name, `SHELL=`); `exec`/`dlx`/
+  `x` re-check the launched command (`pnpm exec vitest -t eval` is data, `pnpm exec
+  sh -c '…'` is a shell payload), and `--call=` is a shell payload. A few
+  data consumers have executing forms that ARE modelled: `sed` (`e` command after any
+  address form incl. `!`, in `-e`/`--expression`/`-f -` scripts, and the `s///e`
+  flag, when the script holds the word) and `git` (`rebase --exec|-x`,
+  `bisect run`, `submodule foreach`). Package, service and resource verbs take the
+  word as a NAME (`_EVAL_DATA_SUBCOMMANDS`: `uv add`, `brew install`, `pip install`,
+  `systemctl restart`, `kubectl get`, `helm template`, `docker build`, …); `docker
+  run|exec`, `kubectl exec`, `docker compose run` are not in it and keep asking;
+- **anything else is UNKNOWN** (`flock`, `chroot`, `strace`, `parallel`, a tool
+  this file has never heard of): the bare word asks, and so does any quoted
+  multi-word argument whose own verb is the word.
+
+- **Concealing:** the builtin as the verb, after any separator, compound
+  keyword, case arm, function body or launcher chain; inside a `<(…)`/`>(…)`
+  body; a head `$var`/`${…}` holding the word (`${x:-eval} y`) or a variable
+  assigned it earlier in the same command (`x=eval; $x y`) or a `for`/`select` variable iterating a list that holds it (brace lists
+  are expanded, bounded; `for c in {eval,ls}; do $c x; done`), or a variable set by
+  `read`/`mapfile`/`readarray` in a command that holds the word (`read c <<< eval;
+  $c x`, `while read c`, `read -a a`, `${a[0]}`), when the body uses it at command
+  position, as a payload or as shell-fed text; and as the verb of
+  program text a shell is FED: a `-c` payload, `ssh host …`, `env -S`, `npx
+  -c`, `watch`, `trap`, `tmux new-session|run-shell|…`, `find -exec|-execdir|
+  -ok|-okdir`, a heredoc or here-string feeding a shell, the `echo`/`printf`
+  text or here-string of ANY earlier stage of a pipeline ending in a shell —
+  through `tee`, `cat`, `sed`, … and inside `for`/`while`/`if`/`case`/function
+  bodies, as written and escape-expanded — `xargs sh -c`, and the body of a
+  `<(…)` handed to a shell or `source`/`.`, and a make/just file read from stdin, `/dev/stdin`, `/dev/fd/N` or `<(…)`
+  (`-f F`, `-fF`, `-sf F` clusters, `--file|--makefile|--justfile[=]F`). Text that expands an
+  alias variable (`echo "$p" | sh`, `sh <<< "$p"`) asks too.
+- **Data:** the word as an argument of a data consumer or a known launcher's
+  real verb, a `for`/`select` word list, `tmux send-keys`, a quoted heredoc
+  body not fed to a shell, a comment, bodies piped to an *interpreter*
+  (`python3`, `node`, …), arguments of a script run by a shell (`bash script.sh
+  -c x`), and lookups. A data mention never shields a real call elsewhere, and
+  a producer only feeds a shell it is PIPED to (`echo eval x; echo hi | sh`
+  allows).
+
+Residuals, stated plainly. Wrongful asks we accept as the price of the
+direction: an unknown launcher followed by the bare word (`parallel -j4 grep
+eval ::: f`, `flock /tmp/l grep eval f`, `poetry run`, `docker run … grep eval`),
+a quoted `'>f'` used as a command name, and a shell invoked with a payload
+that merely mentions the variable (`p=eval; sh -c 'echo $p'`). **Not detected:**
+a data consumer that can itself run a command line, except `sed` and `git` above
+(also: producers `read c <<'EOF'` (quoted heredoc) and `read c < <(echo …)` — only `read c <<< word`
+is handled; `npm exec -c='…'`/`-c…`, `git rebase -x…`, `git difftool -x|--extcmd`, `git fetch
+--upload-pack`, `git config core.editor`, `GIT_SEQUENCE_EDITOR`; any tool not in the
+tables asks; Makefile/justfile recipe text from a plain file is undecidable)
+(`awk system()`, `python -c os.system`, `perl system`, `vim -c '!…'`, `tar
+--to-command`, `rsync -e` — pinned as still
+allowed so the claim cannot drift); a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}
+x`), `alias a=eval; a x`, `$1 x` outside a `-c` payload, `e${x}val`, a name
+assigned in another command, program text from a producer other than
+`echo`/`printf`/heredoc/here-string (`cat file | sh`, `curl … | sh`), a
+`crontab -` entry (deferred execution), `parallel '{eval} {}'`, and a call
+inside `$(…)`, which the substitution path judges. Command-position use is
+*always* unverifiable; a literal operand is not re-scanned as a command. With
+the kill switch off (`enabled: false`) nothing here applies — the switch
+allows everything by design.
+`tests/unit/test_damage_control_eval_position.py` is the differential: generated
+spelling × position × wrapper × consumer cases, one generated test per table
+(driven by independent copies of the table specs, so a deleted row or element goes red),
+committed corpora of executing spellings (never `allow`, also unattended and
+under size padding) and of data mentions (must `allow`).
 
 ### Tool-channel parity (#923)
 
