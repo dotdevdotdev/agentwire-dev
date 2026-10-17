@@ -579,20 +579,27 @@ def is_command_path_allowed(
     command: str,
     allowed_paths: List[Dict[str, Any]],
     operation: str = "write",
+    guarded_patterns: Optional[List[str]] = None,
 ) -> bool:
     """ALL paths in ``command`` must have ``operation`` permitted by allowlist.
 
     Security: ALL paths must match (not any) — this stops e.g.
     ``rm /tmp/safe.txt /etc/passwd`` from being allowed just because /tmp is
     allowlisted.
+
+    With ``guarded_patterns``, a path that falls in a guarded class is judged
+    against :func:`guarded_allowlist` (a location entry cannot re-permit it,
+    #1126) while every other path keeps the full allowlist.
     """
     if not allowed_paths:
         return False
     paths = _extract_command_paths(command)
     if not paths:
         return False
+    guarded_entries = guarded_allowlist(allowed_paths, guarded_patterns) if guarded_patterns else allowed_paths
     for p in paths:
-        if not is_path_allowed_for_op(p, allowed_paths, operation):
+        entries = guarded_entries if guarded_patterns and any(match_path(p, g) for g in guarded_patterns) else allowed_paths
+        if not is_path_allowed_for_op(p, entries, operation):
             return False
     return True
 
@@ -2105,23 +2112,93 @@ def control_plane_allowlist_overlaps(
     shipped ``/tmp/*`` build-artifact entry into a false overlap, the exact
     environment-shaped failure #938 itself documents from #920.
     """
-    canonical_home = "/home/agentwire-canonical"
-
-    def _anchor(p: str) -> str:
-        return canonical_home + p[1:] if p.startswith("~") else p
-
     write_ops = ALL_OPERATIONS - {"read"}
     out: List[Tuple[str, str]] = []
     for entry in allowed_paths:
         if not entry.get("allow", set()) & write_ops:
             continue
         for prot in PROTECTED_CONTROL_PLANE_PATHS:
-            sample = _anchor(prot).replace("*", "x")
-            if not os.path.isabs(sample):
-                sample = "/x/" + sample
-            if match_path(sample, _anchor(entry["path"])):
+            if _entry_covers_control_plane(entry["path"], prot):
                 out.append((entry["path"], prot))
     return out
+
+
+_CANONICAL_HOME = "/home/agentwire-canonical"
+
+
+@functools.lru_cache(maxsize=16)
+def _live_homes(home: str) -> Tuple[str, ...]:
+    """``home`` lexically and resolved, longest first, minus the root (a rewrite there covers everything)."""
+    homes = {os.path.normpath(home), os.path.realpath(home)}
+    return tuple(sorted(homes - {"/", "."}, key=len, reverse=True))
+
+
+def _anchor_home(p: str) -> str:
+    """``p`` with a leading ``~``, or a live-``$HOME`` prefix, moved to the canonical home.
+
+    A rewrite must never change what an entry COVERS. Rewriting a bare
+    ancestor (``/tmp/*`` at ``HOME=/tmp``, ``HOME=/``, a ``HOME`` with a
+    trailing slash) would turn a location allowance into
+    ``<canonical>/*`` — a pattern that covers the control plane — which is the
+    #1121 bypass again, one level up. So the live-home form is rewritten only
+    when at least one literal path component below ``$HOME`` is named
+    (``$HOME/.agentwire/*``), and tested against both the lexical and the
+    resolved home.
+    """
+    if p.startswith("~"):
+        return _CANONICAL_HOME + p[1:]
+    for home in _live_homes(os.path.expanduser("~")):
+        rest = p[len(home) + 1:] if p.startswith(home + "/") else None
+        first = rest.split("/", 1)[0] if rest else ""
+        if first and not is_glob_pattern(first):
+            return _CANONICAL_HOME + p[len(home):]
+    return p
+
+
+def _entry_covers_control_plane(entry_path: str, protected: str) -> bool:
+    """Whether an allowlist entry's SHAPE covers the protected pattern, wherever ``$HOME`` is."""
+    sample = _anchor_home(protected).replace("*", "x")
+    if not os.path.isabs(sample):
+        sample = "/x/" + sample
+    entry = _anchor_home(entry_path)
+    # a directory pattern (``dist/``) guards everything inside it
+    return match_path(sample, entry) or (sample.endswith("/") and match_path(sample + "x", entry))
+
+
+def control_plane_allowlist(allowed_paths: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The allowlist entries that may re-permit a protected control-plane path.
+
+    An entry counts only if its shape covers the control plane at a CANONICAL
+    home. Judged against the live path instead, ``/tmp/*`` (shipped, for
+    scratch work) re-permitted ``$HOME/.agentwire/damagecontrol.yml`` whenever
+    ``$HOME`` lived under ``/tmp`` — the decision followed where the home
+    happened to be, not what the target is (#1121). A human's explicit entry
+    still counts — one that NAMES a protected file (``/repo/.damagecontrol.yml``)
+    or whose shape covers the control plane (``~/.agentwire/*``); a location
+    allowance never does.
+    """
+    return guarded_allowlist(allowed_paths, PROTECTED_CONTROL_PLANE_PATHS)
+
+
+def guarded_allowlist(
+    allowed_paths: List[Dict[str, Any]], guarded_patterns: List[str]
+) -> List[Dict[str, Any]]:
+    """The entries that may re-permit a path matching one of ``guarded_patterns``.
+
+    Same rule for every guarded class (control plane, ``zeroAccessPaths``,
+    ``readOnlyPaths``, ``noDeletePaths``): an entry counts if it NAMES a guarded
+    path literally, or its shape covers a guarded pattern at the canonical
+    home — never because the live ``$HOME`` happens to sit under the entry's
+    directory (#1122: ``/tmp/*`` re-permitted ``~/.ssh/id_rsa`` at ``HOME=/tmp/x``).
+    """
+    return [
+        e for e in allowed_paths
+        if (
+            not is_glob_pattern(e["path"])
+            and any(match_path(os.path.expanduser(e["path"]), pat) for pat in guarded_patterns)
+        )
+        or any(_entry_covers_control_plane(e["path"], pat) for pat in guarded_patterns)
+    ]
 
 
 def _protected_path_patterns() -> List[str]:
@@ -2180,7 +2257,7 @@ def check_protected_path(
     """
     matched = _matched_protected_pattern(file_path)
     if matched:
-        if is_path_allowed_for_op(file_path, allowed_paths, "edit"):
+        if is_path_allowed_for_op(file_path, control_plane_allowlist(allowed_paths), "edit"):
             return False, ""
         return True, _protected_reason(matched)
     return False, ""
@@ -3536,7 +3613,9 @@ def check_protected_command(
     """
     # ``$HOME`` / ``${HOME}`` / ``~`` name the same file as its absolute form;
     # the ladder patterns carry the ``~`` and expanded spellings of each path.
-    return _check_protected_command(command, allowed_paths, 0, [_RESCAN_BUDGET])
+    return _check_protected_command(
+        command, control_plane_allowlist(allowed_paths), 0, [_RESCAN_BUDGET]
+    )
 
 
 def _check_protected_command(
@@ -6958,7 +7037,10 @@ def _decide_command(
         if reason.startswith("find -delete") and find_delete_only_in_scratch(command, cwd):
             continue
         operation = _infer_operation_from_reason(reason)
-        if not is_command_path_allowed(command, allowed, operation):
+        if not is_command_path_allowed(
+            command, allowed, operation,
+            [*_protected_path_patterns(), *zero_access, *read_only, *no_delete],
+        ):
             return {
                 "decision": "block",
                 "reason": reason,
@@ -6983,7 +7065,7 @@ def _decide_command(
 
     for path in zero_access:
         if any(matches_path_in_command(path, hay) for hay in haystacks):
-            if is_command_path_allowed(command, allowed, "read"):
+            if is_command_path_allowed(command, guarded_allowlist(allowed, zero_access), "read"):
                 continue
             return {
                 "decision": "block",
@@ -7005,7 +7087,7 @@ def _decide_command(
                 op = _infer_operation_from_reason(reason)
                 break
         if op is not None:
-            if is_command_path_allowed(command, allowed, op):
+            if is_command_path_allowed(command, guarded_allowlist(allowed, read_only), op):
                 continue
             return {
                 "decision": "block",
@@ -7019,7 +7101,7 @@ def _decide_command(
             check_path_patterns(hay, path, NO_DELETE_BLOCKED, "no-delete path")[0]
             for hay in path_ladder_haystacks(command, path)
         ):
-            if is_command_path_allowed(command, allowed, "delete"):
+            if is_command_path_allowed(command, guarded_allowlist(allowed, no_delete), "delete"):
                 continue
             return {
                 "decision": "block",
@@ -7096,7 +7178,8 @@ def check_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
     if safety_cfg.get("enabled", True) is False:
         return False, ""
 
-    if is_path_allowed_for_op(file_path, allowed, "edit"):
+    guarded = list(config.get("zeroAccessPaths", [])) + list(config.get("readOnlyPaths", []))
+    if is_path_allowed_for_op(file_path, guarded_allowlist(allowed, guarded), "edit"):
         return False, ""
 
     for zero_path in config.get("zeroAccessPaths", []):
@@ -7124,7 +7207,7 @@ def check_read_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
     (only its *writes* are blocked). The kill switch disables this like any other
     rule; the allowlist (a human opt-in) re-permits a specific read.
     """
-    allowed = load_allowed_paths(config)
+    allowed = guarded_allowlist(load_allowed_paths(config), config.get("zeroAccessPaths", []))
     if is_path_allowed_for_op(file_path, allowed, "read"):
         return False, ""
 
