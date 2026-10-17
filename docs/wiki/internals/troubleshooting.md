@@ -415,23 +415,38 @@ with a pending task no longer reads as "went idle without reporting" either.
 
 **Signals** (`agentwire/background_tasks.py`, measured on a real session): the
 pane's turn-end line `✻ Worked for 3s · done 7:37 PM · 1 shell still running`
-(wrap-tolerant: at 30 columns it breaks across rows, while the footer
-`⏵⏵ … · 1 shell` truncates) is authoritative; the transcript is the fallback
-when the pane is unreadable — a start is a `user` row with
+is authoritative, read at its LIVE position only — the block directly above the
+last input box (it wraps over several rows on a narrow pane; the footer
+`⏵⏵ … · 1 shell` truncates and only corroborates). Older turn lines and a
+footer quoted in scrollback are history and ignored. The transcript is the
+fallback when the pane is unreadable: a start is a `user` row with
 `toolUseResult.backgroundTaskId` (Bash) / `taskId` (Monitor), an end is a
-`queue-operation` `<task-notification>` that carries a `<status>`. A Monitor's
-per-event notifications have no `<status>` and are not terminal. A transcript
-that lists a task the pane no longer shows is stale (a task from before an
-`/exit` + `--resume`) and counts as zero.
+`queue-operation` `<task-notification>` that carries a `<status>` (a Monitor's
+per-event notices have none). A transcript task the pane no longer shows is
+stale (from before an `/exit` + `--resume`) and counts as zero.
 
-**Bounded, so a stuck task cannot suppress forever.** After 30 minutes of
-deferral one *qualified* notice is sent — `is idle, but N background task(s)
-still running (waited 30m; not necessarily finished)` — by the hook on the next
-idle, or by the watchdog `idle_deferred` stage if none comes; deferral then
-resumes until the count reaches zero. State: `~/.agentwire/idle-deferred/`,
-events: `~/.agentwire/idle-deferred-events.jsonl`; `agentwire doctor` lists held
-notices. **Fails open:** nothing readable, or any gate error → the hook behaves
-exactly as before.
+**The rule: unknown means HOLD, never reap.** A task-kind word the parser has
+not seen ("local agent", "bash", "hook"), a truncated footer with no turn-end
+line, or any unparsable "still running" reads as *uncertain*, which every
+consumer treats as pending. The worker-pane summary/`kill --pane` and the
+scheduled-task `/exit` fail to KEEP; the parent notice is held, then released
+by the bound. Only "nothing readable at all" (no agent pane, no transcript)
+behaves as before the gate.
+
+**The bound releases a notice, never a kill.** After 30 minutes of deferral one
+*qualified* notice is sent — `is idle, but N background task(s) still running
+(waited 30m; not necessarily finished)` — to the parent (pane-0 session: by the
+hook on the next idle, or by the watchdog `idle_deferred` stage if none comes;
+worker pane: by the stage, to its owning pane 0). A worker pane and a scheduled
+task stay held for as long as the task may be running; a live task is not ended
+by a timer. `qualified` is recorded only after the enqueue succeeded (a failed
+one retries next tick); a session with nobody to tell is marked `unroutable`,
+never "sent". A marker untouched for 10 minutes, or carrying another
+conversation id, belongs to a different session incarnation and restarts its
+clock (the stage refreshes live markers each minute, so the bound needs the
+watchdog loaded). State: `~/.agentwire/idle-deferred/`, events:
+`~/.agentwire/idle-deferred-events.jsonl`; `agentwire doctor` lists held
+notices.
 
 ### Wrong Target Session
 

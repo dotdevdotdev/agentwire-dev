@@ -17,20 +17,27 @@ Signals, measured on a real Claude Code 2.1.302 session with a pending
 * **Pane.** The turn-end line renders ``✻ Worked for 3s · done 7:37 PM · 1 shell
   still running`` and the footer ``⏵⏵ bypass permissions on · 1 shell``. At 30
   columns the footer is truncated (``on ·``) but the turn-end line WRAPS rather
-  than truncates, so it is read across lines.
+  than truncates, so it is read across lines. Both are read only at their LIVE
+position (directly above / below the last input box), never from scrollback.
 
 The pane is authoritative when it is readable, the transcript when it is not.
 The transcript is history: a task started before an ``/exit`` + ``--resume``
 looks pending forever, while the pane shows what the harness believes right
-now. Disagreement is logged. When neither can be read the answer is *unknown*
-and every caller behaves as it did before this module existed (fail open).
+now. Disagreement is logged.
 
-Policy: **defer, bounded**. While tasks are pending the idle is swallowed; the
-harness re-wakes the session when the last task reports, that turn ends in a
-fresh idle with zero pending, and the ordinary notice goes out. A stuck task
-must not suppress forever, so after :data:`DEFER_BOUND` one *qualified* notice
-is sent ("N background task(s) still running; not necessarily finished") and
-deferral resumes until the count reaches zero.
+Policy: **defer, bounded, and the bound releases a notice, never a kill.**
+While tasks are pending the idle is swallowed; the harness re-wakes the session
+when the last task reports, that turn ends in a fresh idle with zero pending,
+and the ordinary notice goes out. A stuck task must not suppress forever, so
+after :data:`DEFER_BOUND` one *qualified* parent notice is sent. The worker-pane
+reap and the scheduled-task ``/exit`` are NEVER released by a timer: they stay
+held for as long as a task may be running.
+
+Uncertainty rule: *pending* wins every doubt. Unfamiliar task wording next to
+"still running", a truncated footer with no turn-end line, an unparsable line
+all read as **uncertain = hold** — a wrongly held session costs a late notice
+(bounded, reported); a wrongly released one kills live work. Only "nothing
+readable at all" (no agent pane, no transcript) behaves as before the gate.
 """
 
 from __future__ import annotations
@@ -44,19 +51,16 @@ from pathlib import Path
 #: How long an idle may be swallowed before one qualified notice goes out.
 DEFER_BOUND = 30 * 60
 
-#: Pane lines inspected: the turn-end line and footer sit just above the prompt
-#: box, but a 30-column pane wraps them over several rows.
-PANE_TAIL_LINES = 24
-
-_KIND = r"(?:shell|monitor|agent|task|workflow|remote\s+session)s?"
-_STILL_RUNNING = re.compile(
-    rf"((?:\d+\s+{_KIND}(?:\s*,\s*(?:and\s+)?)?\s*)+)\s+still\s+running", re.IGNORECASE)
-_FOOTER = re.compile(
-    rf"⏵⏵[^\n]*?·\s*((?:\d+\s+{_KIND}(?:\s*,\s*)?\s*)+)", re.IGNORECASE)
-_TURN_END = re.compile(r"✻\s+\S+\s+for\s+[^·\n]+·\s+done\s+\d{1,2}:\d{2}")
-_COUNT = re.compile(rf"(\d+)\s+{_KIND}", re.IGNORECASE)
-#: Glyphs of the input box / mode line; absent = this is not a readable agent pane.
-_PANE_MARKERS = ("❯", "⏵⏵")
+_RULE = re.compile(r"^[─━\-]{3,}$")
+#: Glyphs that open a transcript row (assistant text, user echo, tool result);
+#: a continuation row of the turn-end line never starts with one.
+_ROW_GLYPHS = ("⏺", "❯", "⎿", "─")
+_TURN_END = re.compile(
+    r"✻\s.*?\bdone\s+\d{1,2}:\d{2}\s*(?:[AP]M)?\s*(?:·\s*)?(?P<rest>.*)$", re.IGNORECASE)
+_STILL = re.compile(r"^(?P<frag>.*?)\s*\bstill\s+running\b", re.IGNORECASE)
+_PIECE = re.compile(r"^(?P<n>\d+)\s+[A-Za-z][A-Za-z -]*$")
+#: How many wrapped rows the turn-end line may occupy (20 columns wrap to 4).
+_MAX_TURN_ROWS = 6
 
 _TASK_STATUS = re.compile(r"<status>[^<]+</status>")
 _TASK_ID = re.compile(r"<task-id>([^<]+)</task-id>")
@@ -66,8 +70,9 @@ _TASK_ID = re.compile(r"<task-id>([^<]+)</task-id>")
 class Pending:
     """What is known about a session's background work.
 
-    ``count`` is ``None`` when unknown (nothing readable) — callers must treat
-    that as "behave as before", never as zero-and-proceed with confidence.
+    ``count`` is ``None`` when unknown. With ``uncertain`` False that means
+    nothing was readable and callers behave as before; with ``uncertain`` True
+    the pane was readable but the parse was not certain, which holds.
     """
 
     count: "int | None"
@@ -75,6 +80,10 @@ class Pending:
     transcript_ids: "list[str] | None" = None
     pane_count: "int | None" = None
     notes: list[str] = field(default_factory=list)
+    #: The pane shows the shape of background work but the parse is not
+    #: certain (new task-kind wording, truncated footer, wrap). Treated as
+    #: PENDING by every caller: a hold, never a reap (#1110 review).
+    uncertain: bool = False
 
 
 def _config_dir() -> Path:
@@ -157,36 +166,94 @@ def find_transcript(session: str, conversation_id: str = "", cwd: str = "") -> "
 # ---------------------------------------------------------------------------
 
 
-def _sum_counts(fragment: str) -> int:
-    return sum(int(n) for n in _COUNT.findall(fragment))
+@dataclass
+class PaneReading:
+    """``status``: ok (``count`` is certain) | uncertain | unreadable."""
+
+    count: "int | None"
+    status: str
+
+
+def _sum_pieces(frag: str) -> "int | None":
+    """Total of ``N <kind>`` pieces, or ``None`` if any piece is not that shape.
+
+    The kind word is deliberately free text: new wording ("local agent",
+    "bash", "hook") must count, not read as zero.
+    """
+    total = 0
+    pieces = [p.strip() for p in re.split(r",|\band\b", frag) if p.strip()]
+    if not pieces:
+        return None
+    for piece in pieces:
+        m = _PIECE.match(piece)
+        if not m:
+            return None
+        total += int(m.group("n"))
+    return total
+
+
+def _footer_reading(rows: list[str]) -> PaneReading:
+    """The live mode line (rows BELOW the input box only — a footer quoted in
+    scrollback is above it and can never be mistaken for this one)."""
+    mode = next((r for r in rows if "⏵⏵" in r), None)
+    if mode is None:
+        return PaneReading(None, "uncertain")
+    if mode.rstrip().endswith(("·", "…")):
+        return PaneReading(None, "uncertain")  # truncated: a count may be cut off
+    total = 0
+    for segment in mode.split("·")[1:]:
+        n = _sum_pieces(segment)
+        if n:
+            total += n
+    return PaneReading(total, "ok")
+
+
+def parse_pane(text: str) -> PaneReading:
+    """Background tasks the pane says are running.
+
+    Anchored on the LIVE structure: the last input box (rule / ``❯`` / rule).
+    The turn-end line is the ``✻ … done 7:37 PM · 1 shell still running`` block
+    directly above it (it wraps over several rows on a narrow pane); anything
+    else on screen — an older turn line, a quoted footer — is history and is
+    ignored. A turn with no turn-end line (interrupted, non-turn wake) falls
+    back to the live footer, which at narrow widths truncates; a truncated
+    footer is *uncertain*, never zero.
+    """
+    rows = [r.rstrip() for r in text.splitlines() if r.strip()][-60:]
+    box = next((i for i in range(len(rows) - 3, -1, -1)
+                if _RULE.match(rows[i].strip()) and rows[i + 1].lstrip().startswith("❯")
+                and _RULE.match(rows[i + 2].strip())), None)
+    if box is None:
+        return PaneReading(None, "unreadable")
+    footer = _footer_reading(rows[box + 3:])
+
+    block = None
+    for j in range(box - 1, max(box - 1 - _MAX_TURN_ROWS, -1), -1):
+        row = rows[j].lstrip()
+        if row.startswith("✻"):
+            block = " ".join(r.strip() for r in rows[j:box])
+            break
+        if row.startswith(_ROW_GLYPHS):
+            break
+    m = _TURN_END.search(block) if block else None
+    if m is None:
+        return footer
+
+    still = _STILL.match(m.group("rest"))
+    if not still:
+        # A complete turn-end line without "still running": nothing pending
+        # on the turn line; the footer can only add to that.
+        return PaneReading(footer.count or 0, "ok")
+    turn = _sum_pieces(still.group("frag"))
+    if turn is None:
+        return PaneReading(None, "uncertain")
+    return PaneReading(max(turn, footer.count or 0), "ok")
 
 
 def pane_background_count(text: str) -> "int | None":
-    """Background tasks the pane says are running; ``None`` if not an agent pane.
-
-    The turn-end line (``✻ Worked for 3s · done 7:37 PM · 1 shell still running``)
-    is located first and only ITS text, up to the input box rule, is searched:
-    older turn lines stay on screen, and a stale ``still running`` above a
-    current line without one must not outvote it. ``\\s`` spans newlines, so a
-    30-column pane that wraps the line still matches; the footer there is
-    truncated (``on ·``) and is only a corroborating signal.
-    """
-    lines = [ln for ln in text.splitlines() if ln.strip()][-PANE_TAIL_LINES:]
-    tail = "\n".join(lines)
-    if not any(marker in tail for marker in _PANE_MARKERS):
-        return None
-    found = 0
-    turn_ends = list(_TURN_END.finditer(tail))
-    if turn_ends:
-        # `─` opens the input-box rule, the end of the turn-end line's wrap.
-        segment = tail[turn_ends[-1].start():].split("─", 1)[0]
-        matches = _STILL_RUNNING.findall(segment)
-        if matches:
-            found = _sum_counts(matches[-1])
-    footer = _FOOTER.findall(tail)
-    if footer:
-        found = max(found, _sum_counts(footer[-1]))
-    return found
+    """Certain count, or ``None`` (unreadable or uncertain)."""
+    reading = parse_pane(text)
+    return reading.count if reading.status == "ok" else None
 
 
 def _capture(session: str, pane: int) -> "str | None":
@@ -217,16 +284,22 @@ def evaluate(session: str, pane: int = 0, conversation_id: str = "", cwd: str = 
         notes.append(f"transcript_error:{exc}")
 
     captured = _capture(session, pane)
-    pane_count = pane_background_count(captured) if captured is not None else None
-    if pane_count is None:
-        notes.append("pane_unreadable")
+    reading = parse_pane(captured) if captured is not None else PaneReading(None, "unreadable")
 
-    if pane_count is not None:
-        if ids and pane_count == 0:
+    if reading.status == "ok":
+        if ids and reading.count == 0:
             notes.append("stale_transcript")
-        elif ids is not None and not ids and pane_count > 0:
+        elif ids is not None and not ids and reading.count:
             notes.append("pane_only")
-        return Pending(pane_count, "pane", ids, pane_count, notes)
+        return Pending(reading.count, "pane", ids, reading.count, notes)
+    if reading.status == "uncertain":
+        # The pane shows the shape of background work we could not count.
+        # A transcript with live ids is still evidence; otherwise HOLD.
+        notes.append("pane_uncertain")
+        if ids:
+            return Pending(len(ids), "transcript", ids, None, notes)
+        return Pending(None, "pane", ids, None, notes, uncertain=True)
+    notes.append("pane_unreadable")
     if ids is not None:
         return Pending(len(ids), "transcript", ids, None, notes)
     return Pending(None, "unknown", None, None, notes)
@@ -264,10 +337,25 @@ def clear_marker(session: str, pane: int) -> None:
         pass
 
 
-def qualifier(count: int, waited: float) -> str:
-    plural = "" if count == 1 else "s"
-    return (f"is idle, but {count} background task{plural} still running "
-            f"(waited {int(waited // 60)}m; not necessarily finished)")
+def qualifier(count: "int | None", waited: float) -> str:
+    what = ("background work may still be running" if not count else
+            f"{count} background task{'' if count == 1 else 's'} still running")
+    return f"is idle, but {what} (waited {int(waited // 60)}m; not necessarily finished)"
+
+
+#: A marker not refreshed for this long belongs to a session that is gone (a
+#: same-name session reborn must not inherit its clock). The watchdog tick
+#: refreshes live markers every minute.
+MARKER_GRACE = 10 * 60
+
+
+def reap_path(session: str, pane: int) -> bool:
+    """Does an idle here lead to a KILL (worker-pane reap, scheduled-task exit)?
+
+    The bound may release a *notice*; it must never release a kill — a live
+    task is not ended by a timer.
+    """
+    return pane != 0 or (_config_dir() / "tasks" / f"{session}.json").exists()
 
 
 def gate(
@@ -277,18 +365,20 @@ def gate(
     """Decide what an idle event should do. Pure of side effects but the marker.
 
     ``action``: ``defer`` (swallow — the harness re-wakes the session),
-    ``proceed`` (behave as before, including when nothing could be read), or
-    ``qualify`` (proceed, but the notice must say tasks are still running).
+    ``proceed`` (behave as before; ONLY when nothing is pending, or nothing at
+    all could be read), or ``qualify`` (parent notice only, past the bound).
+    A pane whose idle would reap or ``/exit`` is never released by the bound.
     """
     now = time.time() if now is None else now
     pending = pending or evaluate(session, pane, conversation_id, cwd)
     out = {"action": "proceed", "pending": pending.count, "source": pending.source,
-           "notes": pending.notes, "text": ""}
+           "uncertain": pending.uncertain, "notes": pending.notes, "text": ""}
 
-    if pending.count is None:
+    held = pending.uncertain or bool(pending.count)
+    if pending.count is None and not pending.uncertain:
         log_event("unknown", session=session, pane=pane, notes=pending.notes)
         return out
-    if not pending.count:
+    if not held:
         if read_marker(session, pane):
             clear_marker(session, pane)
             log_event("cleared", session=session, pane=pane)
@@ -297,11 +387,18 @@ def gate(
                       ids=pending.transcript_ids)
         return out
 
-    marker = read_marker(session, pane) or {"first_deferred_at": now, "qualified": False}
-    marker.update(count=pending.count, conversation_id=conversation_id, cwd=cwd,
-                  last_seen_at=now)
+    marker = read_marker(session, pane)
+    if marker is not None and (
+        now - float(marker.get("last_seen_at", now)) > MARKER_GRACE
+        or (conversation_id and marker.get("conversation_id")
+            and marker["conversation_id"] != conversation_id)
+    ):
+        marker = None  # a different incarnation of this name: fresh clock
+    marker = marker or {"first_deferred_at": now, "qualified": False}
+    marker.update(count=pending.count, uncertain=pending.uncertain,
+                  conversation_id=conversation_id, cwd=cwd, last_seen_at=now)
     waited = now - float(marker.get("first_deferred_at", now))
-    if waited >= DEFER_BOUND and not marker.get("qualified"):
+    if waited >= DEFER_BOUND and not marker.get("qualified") and not reap_path(session, pane):
         marker["qualified"] = True
         out.update(action="qualify", text=qualifier(pending.count, waited))
         log_event("qualified", session=session, pane=pane, count=pending.count,
@@ -309,7 +406,7 @@ def gate(
     else:
         out["action"] = "defer"
         log_event("deferred", session=session, pane=pane, count=pending.count,
-                  source=pending.source)
+                  source=pending.source, uncertain=pending.uncertain)
     _write_marker(session, pane, marker)
     return out
 
@@ -318,9 +415,11 @@ def tick(now: "float | None" = None) -> dict:
     """Watchdog stage: the bound must fire even if no further idle event does.
 
     A stuck background shell never wakes its session, so the hook alone would
-    suppress forever. This sweep re-evaluates each deferred session; past the
-    bound it sends the one qualified notice (pane-0 sessions with a parent),
-    and drops markers whose session is gone or whose tasks finished.
+    suppress forever. This sweep re-evaluates each deferred session, keeps the
+    marker fresh, and past the bound sends the one qualified notice — for a
+    worker pane to its owning pane 0, for a pane-0 session to its parent. The
+    ``qualified`` flag is set only after the enqueue succeeded; a failed one
+    retries next tick. The session itself stays held either way.
     """
     from . import inbox, prompt_router, services
     from .cohort import session_exists
@@ -345,25 +444,32 @@ def tick(now: "float | None" = None) -> dict:
             continue
         pending = evaluate(session, pane, marker.get("conversation_id", ""),
                            marker.get("cwd", ""))
-        if not pending.count:
-            if pending.count == 0:
-                clear_marker(session, pane)
-                result["cleared"].append(session)
+        if pending.count is None and not pending.uncertain:
+            continue  # nothing readable this tick: keep the marker, decide next tick
+        if not (pending.uncertain or pending.count):
+            clear_marker(session, pane)
+            result["cleared"].append(session)
             continue
+        marker.update(count=pending.count, uncertain=pending.uncertain, last_seen_at=now)
         waited = now - float(marker.get("first_deferred_at", now))
-        if waited < DEFER_BOUND or marker.get("qualified"):
+        if waited < DEFER_BOUND or marker.get("qualified") or marker.get("unroutable"):
+            _write_marker(session, pane, marker)
+            continue
+        resolved = prompt_router.resolve_parent(session, pane)
+        if not resolved or services.is_service_session(session):
+            marker["unroutable"] = True  # nobody to tell; stated, not "sent"
+            _write_marker(session, pane, marker)
+            log_event("unroutable", session=session, pane=pane)
+            continue
+        try:
+            inbox.enqueue(to=resolved[0], text=qualifier(pending.count, waited),
+                          kind="idle", sender=session)
+        except (ValueError, OSError) as exc:
+            log_event("qualify_failed", session=session, error=str(exc))
+            _write_marker(session, pane, marker)
             continue
         marker["qualified"] = True
         _write_marker(session, pane, marker)
-        resolved = prompt_router.resolve_parent(session, pane)
-        if pane != 0 or not resolved or services.is_service_session(session):
-            continue
-        text = qualifier(pending.count, waited)
-        try:
-            inbox.enqueue(to=resolved[0], text=text, kind="idle", sender=session)
-        except (ValueError, OSError) as exc:
-            log_event("qualify_failed", session=session, error=str(exc))
-            continue
         log_event("qualified", session=session, pane=pane, count=pending.count,
                   waited=int(waited), via="tick")
         result["qualified"].append(session)

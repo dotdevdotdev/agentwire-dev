@@ -66,9 +66,10 @@ if [[ "$notification_type" == "idle_prompt" ]]; then
   # monitor still running is paused, not done — the harness re-wakes the
   # session when the task reports, and THAT idle (zero pending) is the real
   # one. Defer covers every path below (parent notice, worker-pane reap,
-  # scheduled-task summary/exit). Bounded: past the bound the gate answers
-  # `qualify` once, and the notice says tasks are still running. Fails OPEN —
-  # an unreadable pane/transcript or a gate error behaves as before this gate.
+  # scheduled-task summary/exit). The bound only ever answers `qualify` for a
+  # plain pane-0 parent notice; a reap or /exit stays deferred (a live task is
+  # never ended by a timer) and uncertainty holds. Only "nothing readable" or a
+  # gate error behaves as before this gate.
   idle_text="is idle and done working"
   if [[ -n "$tmux_session" && -n "$pane_index" ]]; then
     gate_json=$($AGENTWIRE idle-gate --json --conversation-id "$session_id" --cwd "$cwd" 2>>"$DEBUG_LOG") || gate_json=""

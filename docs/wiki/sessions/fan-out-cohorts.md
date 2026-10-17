@@ -140,7 +140,7 @@ parent going idle *between* `wait` calls, which is where the silent version of
 this failure lives.
 
 A sibling gate in the same hook (#1103) swallows an idle while the session's
-*own* background shell/monitor is still running, so a child waiting on a
+*own* background shell/monitor is still running (or may be — unknown holds), so a child waiting on a
 background task no longer emits the premature `kind=idle` placeholder that
 `wait` would resolve as `resolved_idle`. See
 [troubleshooting](../internals/troubleshooting.md#idle-notice-missing-while-a-background-task-runs-1103).

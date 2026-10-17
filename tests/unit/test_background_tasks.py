@@ -9,6 +9,7 @@ import os
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -40,24 +41,63 @@ def test_pane_counts_across_real_shapes():
     assert got == want
 
 
+def wrap_rows(line: str, width: int) -> list[str]:
+    """Word-wrap with a 2-space continuation indent, as the real pane does."""
+    rows, cur = [], ""
+    for w in line.split(" "):
+        if cur and len(cur) + 1 + len(w) > width:
+            rows.append(cur)
+            cur = "  " + w
+        else:
+            cur = f"{cur} {w}".strip() if cur else w
+    rows.append(cur)
+    return rows
+
+
+def pane_at(line: str, width: int, footer: str = "  ⏵⏵ bypass permissions on (shift+tab to cycle)") -> str:
+    return "\n".join(wrap_rows(line, width) + ["─" * width, "❯ ", "─" * width, footer[:width]])
+
+
 def test_pane_count_survives_every_width_that_wraps_the_status_line():
-    # The 30-column capture wraps the turn-end line and truncates the footer;
-    # re-wrap the 80-column line at every width to prove it is not luck.
-    line = "✻ Worked for 3s · done 7:37 PM · 1 shell still running"
+    # Includes 20/24 columns, where the wrap lands INSIDE the duration, and a
+    # footer truncated by the width: certain from the turn-end line alone.
+    cases = {
+        "✻ Worked for 3s · done 7:37 PM · 1 shell still running": 1,
+        "✻ Cogitated for 12m 45s · done 7:37 PM · 1 shell still running": 1,
+        "✻ Worked for 3s · done 7:37 PM · 1 shell, 1 monitor still running": 2,
+        "✻ Worked for 3s · done 7:37 PM": 0,
+    }
+    bad = [(w, line) for line, want in cases.items() for w in range(16, 201)
+           if bt.pane_background_count(pane_at(line, w)) != want]
+    assert not bad, bad[:5]
+
+
+def test_unfamiliar_task_kind_is_never_zero():
+    # New wording must COUNT (or hold), never read as nothing-running: the
+    # pane is authoritative, so zero here would reap a live task.
     bad = []
-    for width in range(24, 81):
-        words, rows, cur = line.split(" "), [], ""
-        for w in words:
-            if cur and len(cur) + 1 + len(w) > width:
-                rows.append(cur)
-                cur = "  " + w
-            else:
-                cur = f"{cur} {w}".strip() if cur else w
-        rows.append(cur)
-        text = "\n".join(rows + ["─" * width, "❯ ", "─" * width, "  ⏵⏵ bypass"])
-        if bt.pane_background_count(text) != 1:
-            bad.append(width)
+    for kind in ("1 local agent", "2 background agents", "1 bash", "1 hook", "3 workflows"):
+        line = f"✻ Worked for 3s · done 7:37 PM · {kind} still running"
+        for w in (20, 30, 80):
+            if not bt.pane_background_count(pane_at(line, w)):
+                bad.append((kind, w))
     assert not bad, bad
+    garbled = pane_at("✻ Worked for 3s · done 7:37 PM · ⚙ stuff still running", 80)
+    assert bt.parse_pane(garbled).status == "uncertain"
+
+
+def test_real_shapes_for_agent_interrupt_quote_and_second_notice():
+    got = {n: bt.parse_pane(pane(n)) for n in (
+        "80_agent", "80_interrupted", "80_quoted_footer", "80_second_notice")}
+    assert {n: (r.status, r.count) for n, r in got.items()} == {
+        "80_agent": ("ok", 1), "80_interrupted": ("ok", 0),
+        "80_quoted_footer": ("ok", 0), "80_second_notice": ("ok", 1)}
+
+
+def test_no_turn_end_line_and_truncated_footer_is_uncertain_not_zero():
+    text = "⏺ waiting\n────\n❯ \n────\n  ⏵⏵ bypass permissions on ·"
+    r = bt.parse_pane(text)
+    assert (r.status, r.count) == ("uncertain", None)
 
 
 def test_a_stale_older_turn_line_never_outvotes_the_current_one():
@@ -69,8 +109,8 @@ def test_a_stale_older_turn_line_never_outvotes_the_current_one():
 
 
 def test_unreadable_pane_is_unknown_not_zero():
-    assert bt.pane_background_count("$ ls\nfoo\n") is None
-    assert bt.pane_background_count("") is None
+    assert bt.parse_pane("$ ls\nfoo\n").status == "unreadable"
+    assert bt.parse_pane("").status == "unreadable"
 
 
 # --- transcript signal -----------------------------------------------------
@@ -128,9 +168,8 @@ def _pend(n, notes=()):
 
 def test_gate_defers_then_qualifies_once_then_defers_then_clears(isolated_config):
     t0 = 1_000_000.0
-    seq = [
-        (t0, _pend(1), "defer"),
-        (t0 + 60, _pend(1), "defer"),
+    seq = [(t0 + i * 300, _pend(1), "defer") for i in range(6)] + [
+        (t0 + bt.DEFER_BOUND - 120, _pend(1), "defer"),
         (t0 + bt.DEFER_BOUND, _pend(1), "qualify"),
         # A SECOND consecutive notice after the bound must not repeat the qualifier.
         (t0 + bt.DEFER_BOUND + 120, _pend(1), "defer"),
@@ -139,6 +178,34 @@ def test_gate_defers_then_qualifies_once_then_defers_then_clears(isolated_config
     got = [bt.gate("s", 0, pending=p, now=now)["action"] for now, p, _ in seq]
     assert got == [a for _, _, a in seq]
     assert bt.read_marker("s", 0) is None  # zero pending clears the deferral
+
+
+def test_the_bound_never_releases_a_reap_or_a_task_exit(isolated_config):
+    t0 = 1_000_000.0
+    (isolated_config / "tasks").mkdir(parents=True)
+    (isolated_config / "tasks" / "sched.json").write_text("{}")
+    bad = []
+    for session, pane in (("worker", 1), ("sched", 0)):
+        for i in range(0, 14):
+            out = bt.gate(session, pane, pending=_pend(1), now=t0 + i * 300 + bt.DEFER_BOUND * (i // 7))
+            if out["action"] != "defer":
+                bad.append((session, pane, i, out["action"]))
+    assert not bad, bad
+
+
+def test_uncertain_pane_holds_like_pending(isolated_config):
+    unsure = bt.Pending(None, "pane", None, None, ["pane_uncertain"], uncertain=True)
+    assert bt.gate("s", 0, pending=unsure, now=1_000_000.0)["action"] == "defer"
+    assert "may still be running" in bt.qualifier(None, 1900)
+
+
+def test_a_reborn_session_does_not_inherit_the_old_clock(isolated_config):
+    t0 = 1_000_000.0
+    bt.gate("s", 0, pending=_pend(1), now=t0)
+    assert bt.gate("s", 0, pending=_pend(1), now=t0 + bt.DEFER_BOUND + 5)["action"] == "defer"
+    bt.gate("t", 0, "conv-a", pending=_pend(1), now=t0)
+    assert bt.gate("t", 0, "conv-b", pending=_pend(1), now=t0 + 60)["action"] == "defer"
+    assert bt.read_marker("t", 0)["first_deferred_at"] == t0 + 60
 
 
 def test_gate_restarts_the_clock_after_tasks_finish(isolated_config):
@@ -246,3 +313,77 @@ def test_hook_gate_decides_what_the_idle_does(tmp_path):
 def test_hook_defer_also_holds_back_the_worker_pane_reap(tmp_path):
     calls = _run_hook(tmp_path / "w", '{"action":"defer","pending":1}', pane_index="1")
     assert not [c for c in calls if c.startswith(("send", "kill"))]
+
+
+def _tick_env(monkeypatch, enqueue, parent=("boss", 0)):
+    from agentwire import cohort, inbox, prompt_router, services
+
+    monkeypatch.setattr(cohort, "session_exists", lambda s: True)
+    monkeypatch.setattr(bt, "evaluate", lambda *a, **k: _pend(1))
+    monkeypatch.setattr(prompt_router, "resolve_parent", lambda s, p: parent)
+    monkeypatch.setattr(services, "is_service_session", lambda s: False)
+    monkeypatch.setattr(inbox, "enqueue", enqueue)
+
+
+def test_tick_notifies_for_a_worker_pane_and_the_pane_stays_held(isolated_config, monkeypatch):
+    t0 = 1_000_000.0
+    sent = []
+    _tick_env(monkeypatch, lambda **kw: sent.append(kw), parent=("proj", 0))
+    bt.gate("proj", 1, pending=_pend(1), now=t0)
+    assert bt.tick(now=t0 + bt.DEFER_BOUND + 1)["qualified"] == ["proj"]
+    assert [m["to"] for m in sent] == ["proj"]
+    assert bt.gate("proj", 1, pending=_pend(1), now=t0 + bt.DEFER_BOUND + 90)["action"] == "defer"
+
+
+def test_a_failed_enqueue_retries_and_no_parent_is_not_called_sent(isolated_config, monkeypatch):
+    t0 = 1_000_000.0
+    calls = []
+
+    def flaky(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            raise OSError("disk")
+
+    _tick_env(monkeypatch, flaky)
+    bt.gate("s", 0, pending=_pend(1), now=t0)
+    assert bt.tick(now=t0 + bt.DEFER_BOUND + 1)["qualified"] == []
+    assert bt.read_marker("s", 0)["qualified"] is False
+    assert bt.tick(now=t0 + bt.DEFER_BOUND + 61)["qualified"] == ["s"]
+
+    _tick_env(monkeypatch, lambda **kw: calls.append(kw), parent=None)
+    bt.gate("root", 0, pending=_pend(1), now=t0)
+    bt.tick(now=t0 + bt.DEFER_BOUND + 1)
+    marker = bt.read_marker("root", 0)
+    assert (marker["qualified"], marker.get("unroutable")) == (False, True)
+
+
+@pytest.mark.requires_tmux
+def test_parser_reads_a_real_tmux_pane_at_every_width(tmp_path):
+    """Real tmux capture-pane (via pane_manager) at 20/30/40/200 columns."""
+    import subprocess
+    import uuid
+
+    from agentwire import pane_manager
+
+    line = "✻ Worked for 3s · done 7:37 PM · 1 shell still running"
+    bad = []
+    for width in (20, 30, 40, 200):
+        name = f"bgtest-{uuid.uuid4().hex[:8]}"
+        script = tmp_path / f"p{width}.txt"
+        script.write_text(pane_at(line, width) + "\n")
+        subprocess.run(["tmux", "new-session", "-d", "-s", name, "-x", str(width), "-y", "24",
+                        f"cat {script}; sleep 30"], check=True)
+        try:
+            subprocess.run(["tmux", "wait-for", "-S", "x"], check=False)
+            deadline = time.time() + 5
+            got = None
+            while time.time() < deadline:
+                got = bt.pane_background_count(pane_manager.capture_pane(name, 0, lines=60))
+                if got is not None:
+                    break
+                time.sleep(0.05)
+            if got != 1:
+                bad.append((width, got))
+        finally:
+            subprocess.run(["tmux", "kill-session", "-t", name], check=False)
+    assert not bad, bad
