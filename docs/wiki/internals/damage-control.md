@@ -1112,25 +1112,43 @@ halves; each guard has a mutation that turns it red.
 check was a whitespace-keyed word search, so it guarded the phrasing: any
 commit message, issue/PR body, grep pattern, `agentwire msg`/`send` payload or
 quoted heredoc that merely NAMED the builtin was an un-demotable
-`unverifiable` ask (a silent block loop when unattended) — while spellings the
+`unverifiable` ask (a silent block loop when unattended), while spellings the
 regex could not see (`\\eval`, `e''val`, `"eval" x`, `bash -c 'eval "$x"'`)
-passed. `has_command_position_eval()` now reads the masked token view
-(quote/escape variants normalize to the literal, message text is already
-blanked) and walks each segment's leading chain — launcher wrappers, `builtin`,
-assignments, options and their values, compound keywords (`then`/`do`/`else`/
-`{`/`(`/`!`), case-arm labels — reporting the builtin only when it is the verb.
-It is **concealing** at command position under any of those (and as a
-`find`/`watch`/`flock`-style runner's argument, in a `bash -c`/`ssh` payload,
-and in the body of a heredoc feeding a shell); it is **data** as an argument
-(`echo`, `grep`, `git commit -m`, `gh --body`, `agentwire ...`, `tmux
-send-keys`, a quoted heredoc body, a comment). A data mention never shields a
-real call elsewhere in the same command. Residuals, stated plainly:
-command-position use is *always* unverifiable — a literal operand is not
-re-scanned as a command (rare, and the cost of the extra ask is one confirm);
-an option value that happens to be the word errs closed; and a call inside a
-`$(…)` is judged by the substitution path, not this one.
-`tests/unit/test_damage_control_eval_position.py` is the differential: every
-(spelling x position x wrapper) must conceal, every data mention must not.
+passed. `has_command_position_eval()` now reads the resolved token view (quote
+and escape variants normalize; `$'…'`/`$"…"` lose the `$`), after joining
+backslash-newline, with compound-command syntax removed by the shared
+`strip_command_openers` (#1112 — there is no second chain walker). A command's
+verb is the first word after redirects (`>f`, `2>&1`, `> f`), assignments and
+launcher wrappers.
+
+- **Concealing:** the builtin as the verb, after any separator, compound
+  keyword, case arm, function body, `builtin`/`command`/`sudo`/`env`/`time`/
+  `nohup`/`xargs`/…; inside a `<(…)`/`>(…)` body; and as the verb of program
+  text the shell is FED and re-checked as a command in its own right: a
+  `bash`/`sh`/`su`/`runuser -c` payload, `ssh host …`, `env -S`, `watch`,
+  `trap '…'`, `tmux new-session|run-shell|…`, `find -exec|-execdir|-ok|-okdir
+  <vector>`, a heredoc/here-string/`echo … |` feeding a shell (quoted or not,
+  directly or via a pipe, incl. `| xargs sh -c`), and `source <(echo …)`.
+- **Data:** the word as an argument (`echo`, `grep`, `git commit -m`, `gh
+  --body`, `agentwire …`, `tmux send-keys`, a quoted heredoc body not fed to a
+  shell, a comment) and lookups (`command -v`, `type`, `which`, `help`). A data
+  mention never shields a real call elsewhere in the same command.
+- **Option values:** only the KNOWN value-taking options of `sudo`, `doas`,
+  `env`, `xargs`, `timeout`, `nice`, `ionice`, `stdbuf`, `time`, `watch`,
+  `exec` swallow the next word, so boolean flags (`sudo -E`, `env -i`, `xargs
+  -0`, `nohup --`) no longer hide the verb or fabricate one. Launchers outside
+  that table (`uv run`, `npx`, …) keep the greedy rule.
+
+Residuals, stated plainly: command-position use is *always* unverifiable (a
+literal operand is not re-scanned as a command); an UNKNOWN launcher's option
+whose value is the word errs closed; a call inside `$(…)` is judged by the
+substitution path, not this one; **not detected:** the verb produced
+indirectly (`alias a=eval; a x`, `x="eval y"; $x`, `$1 x`, `e${x}val`, `$'\\x65val'`),
+and program text from anything but `echo`/`printf`/heredoc/here-string
+(`cat file | sh`). `tests/unit/test_damage_control_eval_position.py` is the
+differential (spelling × position × wrapper × consumer, plus a committed
+corpus of executing spellings that must never be `allow` — also unattended, and
+under size padding — and a corpus of data mentions that must).
 
 ### Tool-channel parity (#923)
 

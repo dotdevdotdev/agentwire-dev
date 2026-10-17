@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "5afb9a9ccc037400352d863c5475b089e5cdc08c1e01862038095337606d1901", "generated_at": "2026-10-17T13:17:42Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "b7a654b828b83f49bfb64ea4c10518c7e90eb230ee2c055a64e5aae202bfa4ac", "generated_at": "2026-10-17T13:26:29Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3754,69 +3754,158 @@ def detect_escape_hatch(command: str) -> Optional[str]:
 
 _SUBSTITUTION_RE = re.compile(r"\$\(|`")
 
-# Words after which the shell is still at command position, beyond the launcher
-# wrappers: compound-statement keywords (``then``/``do``/``else``/``!``) and the
-# builtins that hand the next word to the shell (``builtin eval``).
-_EVAL_CHAIN_KEYWORDS = frozenset({
-    "if", "then", "elif", "else", "while", "until", "do", "time", "!", "{", "(",
-    "builtin", "exec", "coproc", "select",
-})
-# Tools that RUN one of their arguments: ``eval`` anywhere after one is an
-# executing call, not data.
-_EVAL_ARG_RUNNERS = frozenset({"find", "watch", "flock", "chroot", "script", "strace", "caffeinate"})
+# Launchers that keep the command position open, with the options that TAKE A
+# VALUE. Only these options swallow the next word: a boolean flag (``sudo -E``,
+# ``env -i``, ``xargs -0``, ``nohup --``) must not, or the real verb is read as
+# a flag's value and ``sudo -E grep eval f`` looks like an eval. Launchers not
+# in this table (``uv run``, ``npx``, ...) keep the greedy rule: any flag also
+# consumes the next word, which errs toward calling the word a verb.
+_EVAL_WRAPPER_VALUE_OPTS: Dict[str, frozenset] = {
+    "sudo": frozenset({"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "--user", "--group",
+                       "--host", "--prompt", "--close-from", "--chdir", "--chroot"}),
+    "doas": frozenset({"-u", "-C"}),
+    "env": frozenset({"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}),
+    "xargs": frozenset({"-I", "-n", "-L", "-P", "-s", "-d", "-a", "-E", "--max-args", "--max-procs",
+                        "--delimiter", "--arg-file", "--max-lines", "--max-chars", "--eof"}),
+    "timeout": frozenset({"-k", "-s", "--kill-after", "--signal"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "-n", "-p", "--class", "--classdata", "--pid"}),
+    "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+    "time": frozenset({"-f", "-o", "--format", "--output"}),
+    "watch": frozenset({"-n", "--interval"}),
+    "exec": frozenset({"-a"}),
+    "nohup": frozenset(), "command": frozenset(), "builtin": frozenset(), "setsid": frozenset(),
+}
+# Commands whose quoted operand is a program the shell parses and runs.
+_EVAL_SHELL_C_RE = _rx(r"^-[A-Za-z]*c$", 0)
+_EVAL_REDIRECT_RE = _rx(r"^\d*(?:>>?|<<?<?|>&|<&|&>>?|<>|>\|)(.*)$", 0)
+_EVAL_PROCSUB_RE = _rx(r"[<>]\(", 0)
+_EVAL_FD_DUP_RE = _rx(r"\d*[<>]&[\d-]*|&>>?", 0)
+_EVAL_ANSI_QUOTE_RE = _rx(r"\$(?=['\"])", 0)
+_EVAL_SOURCE_PROCSUB_RE = _rx(r"(?:^|[\s;&|(])(?:source|\.)\s+<\(([^()]*)\)", 0)
+_EVAL_TMUX_RUNNERS = frozenset({"new-session", "new", "new-window", "neww", "split-window", "splitw",
+                                "respawn-pane", "respawnp", "respawn-window", "respawnw", "run-shell", "run", "if-shell", "if"})
+_EVAL_FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 
-def has_command_position_eval(command: str) -> bool:
+def has_command_position_eval(command: str, _depth: int = 0) -> bool:
     """Whether the dynamic-evaluation builtin is the VERB of some command (#1115).
 
     Guards the operation, not the phrasing: ``echo eval``, ``grep -rn eval``, a
     commit/PR/issue message, a ``send`` payload and a quoted heredoc body all
-    contain the word and run nothing. Reads the masked token view, so quoting
-    and escaping variants (``e''val``, ``\\\\eval``, ``"eval"``) normalize to the
-    literal and message text is already blanked. Walks each segment's leading
-    chain (launcher wrappers, assignments, options and their values, compound
-    keywords, case-arm labels) and reports ``eval`` found anywhere in it — an
-    option value that happens to be the word errs closed. The first token that
-    is none of those is the real verb: ``eval`` after it is an argument.
+    contain the word and run nothing. Each command is read from the resolved
+    token view (quote/escape variants like ``e''val``, ``\\eval``, ``"eval"``
+    normalize to the literal), after backslash-newline joining, with leading
+    compound-command syntax removed by the shared ``strip_command_openers``
+    (#1112). The verb is the first word after redirects, assignments and
+    launcher wrappers; ``eval`` there conceals. Program text the shell is FED —
+    a ``bash -c`` / ``su -c`` / ``ssh`` / ``watch`` / ``find -exec`` / ``trap``
+    payload, a heredoc, here-string, ``echo … | sh`` pipe or
+    ``source <(…)`` — is re-checked as a command in its own right. A
+    process-substitution body is a command position. Queries (``command -v
+    eval``, ``type eval``) and arguments (``grep eval``) are data.
     """
-    # The body of a heredoc feeding a shell IS the program, so it is scanned as
-    # commands in its own right (the entries below strip every body as content).
-    for h in _heredocs(command):
-        if _heredoc_feeds_shell(command[: h.start]) and has_command_position_eval(
-            command[h.body_start : h.body_end]
+    if _depth > _RESCAN_MAX_DEPTH:
+        return True
+    command = _EVAL_ANSI_QUOTE_RE.sub("", command.replace("\\\n", ""))
+    for text in _stdin_program_commands(command):
+        if has_command_position_eval(text, _depth + 1):
+            return True
+    for m in _EVAL_SOURCE_PROCSUB_RE.finditer(command):
+        inner = _words(m.group(1))
+        if inner and os.path.basename(inner[0]) in ("echo", "printf") and has_command_position_eval(
+            " ".join(inner[1:]), _depth + 1
         ):
             return True
-    for words, is_payload in _masked_subcommand_entries(command):
-        if is_payload:
-            continue
-        if words and words[0] == "case":
-            # ``case x in pat) body`` — the body begins after the first arm label.
-            arm = next((j for j, w in enumerate(words) if j > 2 and w.endswith(")")), None)
-            if arm is None:
-                continue
-            words = words[arm + 1:]
-        for i, tok in enumerate(words):
-            tok = tok.lstrip("({")
-            if tok == "eval":
-                return True
-            base = tok.rsplit("/", 1)[-1]
-            if base in _EVAL_ARG_RUNNERS:
-                return any(w.lstrip("({") == "eval" for w in words[i + 1:])
-            if (
-                not tok
-                or base in _EVAL_CHAIN_KEYWORDS
-                or base in _POSITION_WRAPPERS
-                or _ASSIGN_TOKEN_RE.match(tok)
-                or tok.startswith("-")
-                or tok[:1].isdigit()
-                or tok.endswith(")")
+    for (_, producer), (op, consumer) in zip(_pipe_stages(command), _pipe_stages(command)[1:]):
+        # ``echo … | xargs sh -c``: xargs hands each line to the shell as its program.
+        words = _command_words(consumer)
+        if op == "|" and "xargs" in words and any(os.path.basename(w) in _SHELL_NAMES for w in words):
+            pw = _words(producer)
+            if pw and os.path.basename(pw[0]) in ("echo", "printf") and has_command_position_eval(
+                " ".join(pw[1:]), _depth + 1
             ):
-                continue
-            # An option's value (``sudo -u root eval``) keeps the chain open.
-            if i > 0 and words[i - 1].startswith("-"):
-                continue
-            break
+                return True
+    command = _EVAL_FD_DUP_RE.sub(" ", _EVAL_PROCSUB_RE.sub("; ( ", _strip_heredoc_bodies(command)))
+    for toks in _scan_masked_tokens(command):
+        if _eval_is_verb(strip_command_openers(toks), _depth):
+            return True
     return False
+
+
+def _eval_is_verb(toks: List[Tuple[str, bool, bool]], depth: int) -> bool:
+    """One command's tokens (openers already stripped): is its verb the builtin, or a payload runner of it?"""
+    def rescan(words: List[str]) -> bool:
+        return bool(words) and has_command_position_eval(" ".join(words), depth + 1)
+
+    texts = [t for t, _fq, _ex in toks]
+    i, n = 0, len(toks)
+    while i < n:
+        text, fq, _ex = toks[i]
+        if not fq:
+            m = _EVAL_REDIRECT_RE.match(text)
+            if m:
+                i += 1 if m.group(1) else 2  # a bare operator takes the NEXT word as target
+                continue
+            if _ASSIGN_TOKEN_RE.match(text):
+                i += 1
+                continue
+        if text == "eval":
+            return True
+        base = text.rsplit("/", 1)[-1]
+        rest = texts[i + 1 :]
+        if base in _EVAL_WRAPPER_VALUE_OPTS:
+            if base == "command" and rest[:1] in (["-v"], ["-V"]):
+                return False  # a lookup, not an execution
+            value_opts = _EVAL_WRAPPER_VALUE_OPTS[base]
+            i += 1
+            while i < n and not toks[i][1] and toks[i][0].startswith("-"):
+                opt = toks[i][0]
+                if opt == "--":
+                    i += 1
+                    break
+                if opt in ("-S", "--split-string") and base == "env":
+                    return rescan(texts[i + 1 : i + 2])
+                i += 2 if opt in value_opts else 1
+            if base == "timeout":
+                i += 1  # the duration
+            if base == "watch":
+                return rescan(texts[i:])
+            continue
+        if base in _POSITION_WRAPPERS:
+            i += 1
+            while i < n and not toks[i][1] and toks[i][0].startswith("-"):
+                i += 2  # unknown launcher: assume the flag takes a value
+            continue
+        if base in _SHELL_NAMES or base in ("runuser", "script", "sg", "su"):
+            for j, w in enumerate(rest):
+                if _EVAL_SHELL_C_RE.match(w) and j + 1 < len(rest):
+                    return rescan(rest[j + 1 : j + 2])
+            return False
+        if base == "trap":
+            return rescan(rest[:1])
+        if base == "tmux":
+            # send-keys types into a pane (another session, guarded by its own hook): data here
+            if not _EVAL_TMUX_RUNNERS.intersection(rest):
+                return False
+            return any(rescan([w]) for w in rest if " " in w)
+        if base in ("ssh", "slogin"):
+            return rescan(_ssh_remote_command(rest))
+        if base == "find":
+            for j, w in enumerate(rest):
+                if w in _EVAL_FIND_EXEC:
+                    vector = []
+                    for v in rest[j + 1 :]:
+                        if v in (";", "\\;", "+"):
+                            break
+                        vector.append(v)
+                    if rescan(vector):
+                        return True
+            return False
+        return False
+    return False
+
+
 _BASE64_PIPE_RE = re.compile(r"\bbase64\b[^\n|]*(?:-d|--decode)[^\n|]*\|", re.IGNORECASE)
 _ASSIGN_RE = re.compile(
     r"(?:^|[\n;&|]|&&|\|\|)\s*([A-Za-z_]\w*)=('[^']*'|\"[^\"]*\"|[^\s;|&]*)"
@@ -3859,12 +3948,18 @@ def _heredoc_feeds_shell(prefix: str) -> bool:
     )
 
 
+def _heredoc_piped_to_program(command: str, h: "_Heredoc") -> bool:
+    """Whether the pipe on a heredoc's marker line carries its body to a shell (``cat <<'EOF' | sh``)."""
+    _marker, pipe, consumer = command[h.start : h.body_start].partition("|")
+    return bool(pipe) and _stdin_is_program(_command_words(consumer))
+
+
 def _neutralize_literal_heredocs(command: str) -> str:
     """Replace each literal heredoc body with one inert line (see INERT VIEW)."""
     out: List[str] = []
     pos = 0
     for h in _heredocs(command):
-        if not h.quoted or _heredoc_feeds_shell(command[: h.start]):
+        if not h.quoted or _heredoc_feeds_shell(command[: h.start]) or _heredoc_piped_to_program(command, h):
             continue
         out.append(command[pos : h.body_start])
         out.append(_HEREDOC_BODY + "\n")
