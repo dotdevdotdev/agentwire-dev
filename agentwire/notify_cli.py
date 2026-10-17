@@ -189,6 +189,43 @@ def cmd_notify_parent(args) -> int:
     return 0
 
 
+def cmd_idle_gate(args) -> int:
+    """Idle-hook gate (#1103): should this idle be swallowed?
+
+    Always exits 0 with a decision on stdout; any failure to evaluate reads as
+    ``proceed`` so the hook behaves exactly as it did before the gate existed.
+    """
+    from agentwire import background_tasks
+
+    session = pane = None
+    try:
+        session = pane_manager.get_current_session()
+        pane = pane_manager.get_current_pane_index()
+        if session is None or pane is None:
+            decision = {"action": "proceed", "pending": None, "source": "unknown",
+                        "notes": ["not_in_tmux"], "text": ""}
+        else:
+            decision = background_tasks.gate(
+                session, pane, args.conversation_id or "", args.cwd or "")
+    except Exception as e:  # noqa: BLE001 — never silent
+        background_tasks.log_event("gate_failed", session=session, pane=pane, error=str(e))
+        # A crash on a path whose idle KILLS (worker-pane reap, scheduled
+        # exit) holds this cycle and retries next idle; only the plain parent
+        # notice may fail open to "send". When we cannot even tell which pane
+        # this is, hold.
+        try:
+            kills = True if pane is None else background_tasks.reap_path(session, pane)
+        except Exception:  # noqa: BLE001
+            kills = pane != 0
+        decision = {"action": "defer" if kills else "proceed", "pending": None,
+                    "source": "unknown", "notes": [f"gate_error:{e}"], "text": ""}
+    if args.json:
+        _output_json(decision)
+    else:
+        print(decision["action"] + (f": {decision['text']}" if decision["text"] else ""))
+    return 0
+
+
 def cmd_open(args) -> int:
     """Announce a URL or local file as a click-to-open artifact notification.
 
@@ -374,6 +411,16 @@ def register_notify_parser(subparsers) -> None:
                                         "is an infrastructure service (they cycle idle constantly)")
     notify_cmd_parser.add_argument("--json", action="store_true", help="Output as JSON")
     notify_cmd_parser.set_defaults(func=cmd_notify_parent)
+
+    # === idle-gate (idle hook: is a background task still pending?) ===
+    gate_parser = subparsers.add_parser(
+        "idle-gate",
+        help="Idle-hook gate: defer an idle event while a background task is still running (#1103)")
+    gate_parser.add_argument("--conversation-id", dest="conversation_id", default="",
+                             help="Live Claude conversation id (the hook payload's session_id)")
+    gate_parser.add_argument("--cwd", default="", help="Directory the conversation runs in")
+    gate_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    gate_parser.set_defaults(func=cmd_idle_gate)
 
     # === open command (artifact notifications) ===
     open_parser = subparsers.add_parser("open", help="Announce a URL or local file as a click-to-open artifact notification in the portal")

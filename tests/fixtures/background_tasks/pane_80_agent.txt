@@ -1,0 +1,7 @@
+⏺ waiting.
+✻ Worked for 3s · done 7:37 PM · 1 local agent still running
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  haiku  …/scratchpad/exp  main
+  ⏵⏵ bypass permissions on · 1 agent

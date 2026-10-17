@@ -1,0 +1,8 @@
+✻ Cogitated for 1s · done 7:39 PM · 1 monitor still running
+⏺ tick2 from the monitor. Two more ticks are left.
+✻ Cooked for 1s · done 7:40 PM · 1 monitor still running
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  haiku  …/scratchpad/exp  main
+  ⏵⏵ bypass permissions on · 1 monitor

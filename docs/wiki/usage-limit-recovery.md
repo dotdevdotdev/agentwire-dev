@@ -143,6 +143,7 @@ below. Stages, in tick order (ordering invariants: see `cmd_limits_tick`):
 | `session_context` | context auto-management | context auto-management |
 | `scheduler_zombie` | zombie scheduler-session reap | zombie reap |
 | `cohort` | fan-out cohort sweep (**kills sessions**) | cohort sweep |
+| `idle_deferred` | bounded idle-deferral sweep (background tasks still running) | the qualified notice for a stuck background task |
 | `safety_notify` | unattended-block digest | digest release |
 | `role_prompts` | role-prompt GC | GC |
 

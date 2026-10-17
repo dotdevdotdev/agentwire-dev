@@ -1,0 +1,12 @@
+  Ran 1 shell command
+⏺ waiting.
+✻ Worked for 3s · done 7:37 PM
+⏺ Background command "Run sleep 100 in background" completed (exit code 0)
+⏺ The background sleep 100 finished with exit code 0.
+✻ Brewed for 1s · done 7:39 PM
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  haiku  …/scratchpad/exp  main
+  [███████████████████░] 95%
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

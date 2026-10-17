@@ -52,6 +52,8 @@ WATCHDOG_STAGES: tuple[tuple[str, str, str], ...] = (
      "zombie scheduler-session reap"),
     ("cohort", "fan-out cohort sweep (KILLS sessions)",
      "fan-out cohort sweep"),
+    ("idle_deferred", "bounded idle-deferral sweep (background tasks still running)",
+     "the qualified notice for a stuck background task"),
     ("safety_notify", "unattended-block digest",
      "unattended-block digest"),
     ("role_prompts", "role-prompt GC",
@@ -327,6 +329,7 @@ def cmd_limits_tick(args) -> int:
     same way; the rest keep their relative order.
     """
     from agentwire import (
+        background_tasks,
         cohort,
         inbox,
         prompt_router,
@@ -360,6 +363,8 @@ def cmd_limits_tick(args) -> int:
         "scheduler_zombie", scheduler_zombie.tick, {"killed": []})
     cohorts = stage(
         "cohort", cohort.tick, {"reaped": [], "swept": []})
+    idle_held = stage(
+        "idle_deferred", background_tasks.tick, {"qualified": [], "cleared": []})
     blocks = stage(
         "safety_notify", safety_notify.tick, {"emailed": False, "pending": 0})
     prompt_gc = stage(
@@ -369,7 +374,8 @@ def cmd_limits_tick(args) -> int:
         print(json.dumps({
             **result, "prompts": prompts, "messages": messages,
             "context": context, "zombies": zombies, "cohorts": cohorts,
-            "safety_notify": blocks, "role_prompts": prompt_gc,
+            "idle_deferred": idle_held, "safety_notify": blocks,
+            "role_prompts": prompt_gc,
         }))
         return 0
     if result.get("skipped"):
@@ -420,6 +426,9 @@ def cmd_limits_tick(args) -> int:
     if orphans:
         print("orphaned cohort children reaped: " + ", ".join(
             f"{e['child']}(of {e['parent']})" for e in orphans))
+    stuck = idle_held.get("qualified") or []
+    if stuck:
+        print("idle deferral bound hit (qualified notice sent): " + ", ".join(stuck))
     if blocks.get("emailed"):
         print("unattended-block digest emailed")
     swept_prompts = prompt_gc.get("deleted") or []

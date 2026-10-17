@@ -401,6 +401,79 @@ parent: agentwire  # Must be set for cross-session notifications
 
 There is no cooldown/rate-limit mechanism in the current `idle-handler.sh` — every genuine idle event fires a notification. If notifications fire more often than expected, look for the agent re-entering an idle state repeatedly (e.g. a flapping tool call) rather than a rate-limiter to reset.
 
+### Idle Notice Missing While a Background Task Runs (#1103)
+
+A turn that ends with a background shell or monitor still running is *paused*,
+not done: the harness re-wakes the session when the task reports. The idle hook
+asks `agentwire idle-gate` first and **swallows** that idle (`idle-gate:
+action=defer` in `/tmp/claude-hook-debug.log`); the idle that follows the last
+task's report carries zero pending and sends the ordinary notice. This holds for
+every consumer of idle in the hook: the parent notice, the worker-pane
+summary/reap, and the scheduled-task summary/`/exit` pass. Because the cohort
+ledger's `resolved_idle` placeholder is the same `kind=idle` message, a child
+with a pending task no longer reads as "went idle without reporting" either.
+
+**Signals** (`agentwire/background_tasks.py`, measured on a real session): the
+pane's turn-end line `✻ Worked for 3s · done 7:37 PM · 1 shell still running`
+is authoritative, read at its LIVE position only — the block directly above the
+last input box (it wraps over several rows on a narrow pane; the footer
+`⏵⏵ … · 1 shell` truncates and only corroborates). Older turn lines and a
+footer quoted in scrollback are history and ignored. The transcript is the
+fallback when the pane is unreadable: a start is a `user` row with
+`toolUseResult.backgroundTaskId` (Bash) / `taskId` (Monitor), an end is a
+`queue-operation` `<task-notification>` that carries a `<status>` (a Monitor's
+per-event notices have none). A transcript task the pane no longer shows is
+stale (from before an `/exit` + `--resume`) and counts as zero.
+
+**The rule: unknown means HOLD, never reap.** A task-kind word the parser has
+not seen next to "still running", a footer cut off (including right after the
+digit: `· 1`), any unparsable digit-bearing segment, a pane with no input box
+(tall draft, plan/permission/resume dialog) that still shows pending-looking
+text, or a gate crash on a reap path reads as *uncertain*, which every consumer
+treats as pending. Two cases stay distinct: an unparsable fragment holds, but a
+clean `N <noun>` footer segment whose noun is not a task kind (`2 MCP servers
+failed`, `3 files changed`) is simply not a task. A bare shell with no signal at
+all behaves as before.
+
+**A gate that gives no answer holds too.** The hook decides *in shell, before the
+gate runs*, whether this idle reaches a kill (pane index > 0, or a scheduled-task
+context file exists). The gate call is bounded (`AGENTWIRE_GATE_TIMEOUT`, default
+8s) and counts only if it exits 0 with a parseable `defer|proceed|qualify`. Exit
+1, a traceback, `kill -9`, a timeout, garbage, or a missing/old binary on a kill
+path **holds** (logged, `gate_unusable` event, retried on the next idle); only a
+plain pane 0 falls through to the notice. A persistently failing gate therefore
+keeps worker panes alive silently, so `agentwire doctor` flags `[!!]` when the
+gate failed 3+ times in the last hour.
+
+**Declared trade-offs.** A footer-only reading (no turn-end line) with a noun off
+the allowlist (`· 1 job`) reads 0/ok: the turn-end line covers the normal case.
+A digit-bearing segment that is not `N noun` (`· 95%`) reads uncertain
+(informational; not seen on real mode lines). A stuck monitor with a long timeout
+gets ONE qualified notice to its pane-0 parent; a worker or scheduled pane stays
+held until the task ends, then is reaped normally — the owner signal is `doctor`
+("N task(s), Xm, qualified"). Verified on real Claude 2.1.302: Esc and Ctrl-C do
+not clear "still running" (the task survives), so the pane stays truthful. The worker-pane summary/`kill --pane` and the
+scheduled-task `/exit` fail to KEEP; the parent notice is held, then released
+by the bound. Only "nothing readable at all" (no agent pane, no transcript)
+behaves as before the gate.
+
+**The bound releases a notice, never a kill.** After 30 minutes of deferral one
+*qualified* notice is sent — `is idle, but N background task(s) still running
+(waited 30m; not necessarily finished)` — to the parent (pane-0 session: by the
+hook on the next idle, or by the watchdog `idle_deferred` stage if none comes;
+worker pane: by the stage, to its owning pane 0). A worker pane and a scheduled
+task stay held for as long as the task may be running; a live task is not ended
+by a timer. `qualified` is recorded only after the enqueue succeeded (a failed
+one retries next tick); a session with nobody to tell is marked `unroutable`,
+never "sent". A session incarnation is the conversation id the hook supplies: a different id
+restarts the clock, and a call that carries an id is NEVER restarted by a gap (so
+neither a slow wake nor a restart re-arms `qualified`). Only a call with no id
+falls back to a gap, and that gap is the bound itself.
+Without the watchdog loaded a stuck task that never wakes its session is never
+told about: `agentwire doctor` flags that as `[!!]`. State: `~/.agentwire/idle-deferred/`, events:
+`~/.agentwire/idle-deferred-events.jsonl`; `agentwire doctor` lists held
+notices.
+
 ### Wrong Target Session
 
 **For workers (panes 1+):** Notifications go to pane 0 automatically.

@@ -1,0 +1,12 @@
+  report when the monitor finishes.
+✻ Cogitated for 1s · done 7:39 PM · 1 monitor still running
+⏺ Monitor event: tick2 · Four timed ticks, 25s apart
+⏺ tick2 from the monitor. Two more ticks are left, and I'll report when it
+  finishes.
+✻ Cooked for 1s · done 7:40 PM · 1 monitor still running
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  haiku  …/scratchpad/exp  main
+  [██████████████████████████████████████████████████████████████████░░░░] 95%
+  ⏵⏵ bypass permissions on · 1 monitor

@@ -1,0 +1,8 @@
+✻ Worked for 3s · done 7:37 PM · 1 monitor still running
+⏺ The monitor finished; I kept going.
+  ⎿  Interrupted · What should Claude do instead?
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  haiku  …/scratchpad/exp  main
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

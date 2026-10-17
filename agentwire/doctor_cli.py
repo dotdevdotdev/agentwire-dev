@@ -1001,6 +1001,54 @@ def _render_auth_expired_section() -> int:
     return 1
 
 
+def _render_idle_deferred_section() -> int:
+    """Doctor section: sessions whose idle notice is being held back (#1103).
+
+    Stated, never scored: a deferral is the system working. Sessions past the
+    bound are named because that is the shape of a stuck background task.
+    """
+    import json
+    import time
+
+    from . import background_tasks
+
+    failing = background_tasks.recent_gate_failures()
+    issues = 0
+    if failing:
+        where = sorted({"%s.%s" % (e.get("session"), e.get("pane")) for e in failing})
+        print(f"  [!!] The idle gate failed {len(failing)} time(s) in the last hour "
+              f"({', '.join(where)}). "
+              "A worker pane or scheduled task whose gate fails is HELD, not reaped, so it "
+              "stays alive until the gate works. Check ~/.agentwire/idle-deferred-events.jsonl "
+              "and /tmp/claude-hook-debug.log; fix: git pull --ff-only && agentwire rebuild.")
+        issues = 1
+    try:
+        markers = sorted(background_tasks.state_dir().glob("*.json"))
+    except OSError:
+        markers = []
+    held = []
+    for path in markers:
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        waited = int((time.time() - float(data.get("first_deferred_at", time.time()))) // 60)
+        held.append(f"{path.stem} ({data.get('count')} task(s), {waited}m"
+                    f"{', qualified' if data.get('qualified') else ''})")
+    if not held:
+        print("  [ok] No idle notices held for background tasks")
+        return issues
+    print("  [..] Idle notices held while background tasks run: " + ", ".join(held))
+    from . import limits_cli
+
+    if limits_cli.watchdog_loaded() is False:
+        print("  [!!] The watchdog is not loaded: the 30-minute bound is only checked on an "
+              "idle event, so a stuck task that never wakes its session holds its notice "
+              "forever. Load it: agentwire limits install")
+        return 1
+    return issues
+
+
 def _scheduler_daemon_started_at() -> float | None:
     """Epoch seconds the scheduler daemon process started, or ``None`` if not running.
 
@@ -1992,6 +2040,12 @@ def cmd_doctor(args) -> int:
         issues_found += _render_auth_expired_section()
     except Exception as e:
         print(f"  [..] Could not check for an expired login: {e}")
+
+    print("\nChecking for held idle notices...")
+    try:
+        issues_found += _render_idle_deferred_section()
+    except Exception as e:
+        print(f"  [..] Could not check held idle notices: {e}")
 
     # 11. Check for dangling worktree sessions (live, open PR, no live parent
     # to review/merge it — #716's concrete failure mode: a rootless-but-
