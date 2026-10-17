@@ -120,8 +120,44 @@ GONE_MAX_ATTEMPTS = 5
 # hours). `agentwire msg inbox` shows a queue on request; `agentwire doctor`
 # reports load-bearing messages pending past STALE_PENDING_MS (see
 # stale_pending), which is the unprompted surface.
+# Reasons that mean "our paste is sitting in the box and we are trying to submit
+# it" (#1105). They defer without penalty — the target isn't refusing — but are
+# BOUNDED: after MAX_HEALS the entry dead-letters with a visible reason (and
+# the load-bearing kinds email the owner) instead of deferring in silence.
+_HEAL_REASONS = frozenset({"stuck_in_box", "pasted_unsubmitted"})
+MAX_HEALS = 10
+_UNCONFIRMED_REASON = "delivery could not be confirmed"
+
+
+def _exhaustion_verdict(msg: Message) -> str:
+    """Before dead-lettering an exhausted heal: was it actually delivered?
+
+    An unconfirmed heal on a busy agent that DID queue the text must not be
+    dead-lettered (and emailed) as lost. ``delivered`` — the message is echoed
+    on scrollback outside the box (head + id token); ``queued`` — the agent
+    shows its queued-messages placeholder, i.e. it is busy rather than wedged;
+    ``unconfirmed`` — nothing positive observable (also on any probe error).
+    """
+    try:
+        from . import prompt_router
+        from .session_ready import message_on_scrollback, scrollback
+
+        if message_on_scrollback(scrollback(msg.to, 0), msg.render()):
+            return "delivered"
+        content = prompt_router.input_box_content_sgr(
+            prompt_router.capture(msg.to, 0, escapes=True)
+        )
+        if content and prompt_router.is_queued_placeholder(content):
+            return "queued"
+    except Exception:
+        pass
+    return "unconfirmed"
+
 _NO_PENALTY_REASONS = frozenset(
-    {"target_busy", "queued_placeholder", "box_static", "stuck_in_box", "target_parked"}
+    {
+        "target_busy", "queued_placeholder", "box_static", "stuck_in_box",
+        "pasted_unsubmitted", "target_parked",
+    }
 )
 
 # Consecutive sweeps the box must show byte-identical content before the defer
@@ -188,6 +224,10 @@ class Message:
     attempts: int = 0
     gone_attempts: int = 0  # ticks the drain observed the target session gone
     reason: str = ""  # last defer reason (why delivery kept failing)
+    reason_ts: int = 0  # epoch ms of the last deferral (0 = never deferred)
+    detail: str = ""  # draft-free evidence behind the last deferral (#1105)
+    pasted_ts: int = 0  # epoch ms the drain last pasted this entry (0 = never)
+    heals: int = 0  # Enter-only heals attempted on this entry's landed paste
     dead_ts: int = 0  # epoch ms when dead-lettered (0 = still live)
     ref: str = ""  # optional machine-readable pointer (e.g. a report path) — for ingest
     path: Path | None = None
@@ -203,6 +243,10 @@ class Message:
             "attempts": self.attempts,
             "gone_attempts": self.gone_attempts,
             "reason": self.reason,
+            "reason_ts": self.reason_ts,
+            "detail": self.detail,
+            "pasted_ts": self.pasted_ts,
+            "heals": self.heals,
             "dead_ts": self.dead_ts,
             "ref": self.ref,
         }
@@ -335,6 +379,10 @@ def _read_message(path: Path) -> "Message | None":
             attempts=int(data.get("attempts", 0)),
             gone_attempts=int(data.get("gone_attempts", 0)),
             reason=str(data.get("reason", "")),
+            reason_ts=int(data.get("reason_ts", 0)),
+            detail=str(data.get("detail", "")),
+            pasted_ts=int(data.get("pasted_ts", 0)),
+            heals=int(data.get("heals", 0)),
             dead_ts=int(data.get("dead_ts", 0)),
             ref=str(data.get("ref", "")),
             path=path,
@@ -865,11 +913,13 @@ def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
         _log_event("dead_letter_escalate_failed", to=batch[0].to, count=len(batch), error=str(exc))
 
 
-def _bump_attempts(messages: list[Message], reason: str = "") -> int:
+def _bump_attempts(messages: list[Message], reason: str = "", detail: str = "") -> int:
     """Increment attempts on each pending message; dead-letter over the cap.
 
     ``reason`` is the defer reason that caused this pass; it's stamped onto the
-    message so a dead-lettered one carries *why* it never got delivered.
+    message (with a timestamp and the optional pane-evidence ``detail``, #1105)
+    so a pending message shows why it is waiting and a dead-lettered one
+    carries *why* it never got delivered.
     Returns the number dead-lettered this pass.
 
     ``target_gone`` additionally bumps the per-message ``gone_attempts``
@@ -883,17 +933,35 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
     """
     dead = 0
     newly_dead: list[Message] = []
+    unconfirmed = False
     for msg in messages:
         if msg.path is None:
             continue
-        if reason in _NO_PENALTY_REASONS:
+        eff = reason
+        if eff in _HEAL_REASONS:
+            msg.heals += 1
+            if msg.heals >= MAX_HEALS:
+                verdict = _exhaustion_verdict(msg)
+                if verdict == "delivered":
+                    msg.path.unlink(missing_ok=True)
+                    _log_event(
+                        "delivered_late", id=msg.id, to=msg.to, kind=msg.kind,
+                        heals=msg.heals,
+                    )
+                    continue
+                if verdict == "queued":
+                    msg.heals = MAX_HEALS - 1  # busy, not wedged: keep waiting
+                else:
+                    eff = _UNCONFIRMED_REASON
+                    unconfirmed = True
+        if eff in _NO_PENALTY_REASONS and msg.heals < MAX_HEALS:
             # The recipient exists but can't take it right now — busy (long
             # command / human-queued input / wedged paste) or usage-limit parked
             # — not refusing. Never penalize; delivers once the prompt frees up
             # or the park clears. Surfaced by `agentwire msg inbox` on request,
             # and by `agentwire doctor` once it's been waiting past
             # STALE_PENDING_MS (#879).
-            msg.reason = reason
+            msg.reason, msg.reason_ts, msg.detail = eff, _now_ms(), detail
             try:
                 _write_message(msg.path, msg)
             except OSError:
@@ -901,10 +969,14 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
             continue
 
         msg.attempts += 1
-        msg.reason = reason
-        if reason == "target_gone":
+        msg.reason, msg.reason_ts, msg.detail = eff, _now_ms(), detail
+        if eff == "target_gone":
             msg.gone_attempts += 1
-        if msg.attempts >= MAX_ATTEMPTS or msg.gone_attempts >= GONE_MAX_ATTEMPTS:
+        if (
+            msg.attempts >= MAX_ATTEMPTS
+            or msg.gone_attempts >= GONE_MAX_ATTEMPTS
+            or msg.heals >= MAX_HEALS
+        ):
             msg.dead_ts = _now_ms()
             target = dead_dir(msg.to or "unknown") / msg.path.name
             try:
@@ -913,7 +985,7 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
                 msg.path.unlink(missing_ok=True)
                 _log_event(
                     "dead_letter", id=msg.id, to=msg.to, kind=msg.kind,
-                    attempts=msg.attempts, reason=reason,
+                    attempts=msg.attempts, reason=eff,
                 )
                 dead += 1
                 newly_dead.append(msg)
@@ -926,7 +998,7 @@ def _bump_attempts(messages: list[Message], reason: str = "") -> int:
                 pass
     # One digest email for the whole batch (all share the same recipient —
     # `messages` is always one session's inbox), not one per message (#836).
-    _escalate_dead_letters(newly_dead, reason)
+    _escalate_dead_letters(newly_dead, _UNCONFIRMED_REASON if unconfirmed else reason)
     return dead
 
 
@@ -991,6 +1063,67 @@ def _dedup_landed(session: str, messages: list[Message]) -> list[Message]:
 # decision (#930 leaves it open).
 PASTE_MAX_LINES = 3
 PASTE_MAX_CHARS = 380
+
+
+# A landed paste is only ours to heal for this long after the drain pasted it.
+# Past it, a box that resembles our message is treated as somebody else's.
+PASTE_HEAL_WINDOW_MS = 10 * 60 * 1000
+
+
+def _set_paste_stamp(messages: list[Message], ts: int) -> None:
+    """Record (or clear, ``ts=0``) that the drain's paste of these is in the box."""
+    for m in messages:
+        if m.path is None or m.pasted_ts == ts:
+            continue
+        m.pasted_ts = ts
+        try:
+            _write_message(m.path, m)
+        except OSError:
+            pass
+
+
+def _draft_evidence(box_content: str) -> str:
+    """Draft-free description of the box for ``Message.detail`` (#1105).
+
+    The box may hold a human's half-typed draft (a PIN, a password), and
+    ``detail`` lands in the message file, ``msg inbox`` and the events log — so
+    it records the length only. A hash of a short draft is brute-forceable.
+    """
+    return f"foreign_draft len={len(box_content)}"
+
+
+def _stuck_in_box(messages: list[Message], box_content: str) -> list[Message]:
+    """The pending messages whose paste is the thing sitting in the input box.
+
+    The #689 swallowed-Enter test, made window-aware (#1105). Claude Code's box
+    has a bounded height and scrolls: a ~400-char paste on a 30-column pane
+    renders only its TAIL, so "the whole render appears in the box" is false
+    for exactly the long messages most likely to hit a swallowed Enter — the
+    drain then read its own landed paste as a human draft (``box_not_empty``,
+    penalized every tick, the text never submitted).
+
+    The box must be EXACTLY the pasted batch (:func:`session_ready.box_is_exactly`):
+    equal to it on whitespace-normalized text, or — when the paste is taller
+    than the box — a tail window of it (suffix, id token inside). The batch is
+    the oldest-first prefix the drain would have pasted; the longest prefix
+    that fits wins. SUBSTRING containment is deliberately not enough: a box
+    holding our message plus a human's reply contains it, and Enter would
+    submit the reply.
+    """
+    from .session_ready import box_is_exactly
+
+    # Provenance first: only text THIS drain pasted, recently, can be ours.
+    # A box that merely resembles a pending message — a human quoting it — has
+    # no paste record and is a draft.
+    cutoff = _now_ms() - PASTE_HEAL_WINDOW_MS
+    messages = [m for m in messages if m.pasted_ts > cutoff]
+    if not messages:
+        return []
+    for k in range(min(PASTE_MAX_LINES, len(messages)), 0, -1):
+        batch = messages[:k]
+        if box_is_exactly(box_content, "\n".join(m.render() for m in batch)):
+            return batch
+    return []
 
 
 def _paste_batch(messages: list[Message]) -> list[Message]:
@@ -1144,8 +1277,12 @@ def flush_session(session: str, force: bool = False) -> dict:
 
             if box_content is None:
                 # Target is busy (input box not located). Defer.
-                dead = _bump_attempts(messages, "target_busy")
-                _log_event("deferred", to=session, count=len(messages), reason="target_busy")
+                detail = "no parseable input box on the pane"
+                dead = _bump_attempts(messages, "target_busy", detail)
+                _log_event(
+                    "deferred", to=session, count=len(messages),
+                    reason="target_busy", detail=detail,
+                )
                 return {
                     "session": session, "delivered": pre_consumed, "deferred": True,
                     "reason": "target_busy", "dead": dead,
@@ -1153,19 +1290,19 @@ def flush_session(session: str, force: bool = False) -> dict:
 
             if box_content != "":
                 # Our own message sitting in the box = a prior paste whose Enter
-                # was swallowed (#689). Heal it: Enter-only finish_submit — NEVER
+                # was swallowed (#689). Heal it: Enter-only heal_submit — NEVER
                 # a re-paste, so the #621 idempotency dedup keeps holding. Unlink
                 # only once submission is confirmed; otherwise stay pending
                 # without penalty (the target isn't refusing, our own delivery
                 # is wedged).
-                stuck = [
-                    m for m in messages
-                    if "".join(m.render().split()) in "".join(box_content.split())
-                ]
+                stuck = _stuck_in_box(messages, box_content)
                 if stuck:
-                    from .session_ready import finish_submit
+                    from .session_ready import heal_submit
 
-                    if finish_submit(session, stuck[0].render()):
+                    outcome = heal_submit(
+                        session, "\n".join(m.render() for m in stuck)
+                    )
+                    if outcome == "submitted":
                         for m in stuck:
                             if m.path is not None:
                                 m.path.unlink(missing_ok=True)
@@ -1183,14 +1320,20 @@ def flush_session(session: str, force: bool = False) -> dict:
                             "deferred": bool(remaining),
                             "reason": "delivered" if not remaining else "target_busy",
                         }
-                    dead = _bump_attempts(messages, "stuck_in_box")
+                    # "box_changed": the box stopped being ours before we
+                    # pressed anything — penalized like any ordinary refusal.
+                    # "unconfirmed": pressed, no positive proof; stays pending
+                    # (bounded by MAX_HEALS).
+                    reason = "box_changed" if outcome == "box_changed" else "stuck_in_box"
+                    if outcome == "box_changed":
+                        _set_paste_stamp(stuck, 0)
+                    dead = _bump_attempts(stuck, reason)
                     _log_event(
-                        "deferred", to=session, count=len(messages),
-                        reason="stuck_in_box",
+                        "deferred", to=session, count=len(stuck), reason=reason,
                     )
                     return {
                         "session": session, "delivered": pre_consumed,
-                        "deferred": True, "reason": "stuck_in_box", "dead": dead,
+                        "deferred": True, "reason": reason, "dead": dead,
                     }
 
                 # Box is not empty. We never bypass this to protect human drafts. But
@@ -1207,8 +1350,12 @@ def flush_session(session: str, force: bool = False) -> dict:
                     reason = "box_static"
                 else:
                     reason = "box_not_empty"
-                dead = _bump_attempts(messages, reason)
-                _log_event("deferred", to=session, count=len(messages), reason=reason)
+                detail = _draft_evidence(box_content)
+                dead = _bump_attempts(messages, reason, detail)
+                _log_event(
+                    "deferred", to=session, count=len(messages), reason=reason,
+                    detail=detail,
+                )
                 return {
                     "session": session, "delivered": pre_consumed, "deferred": True,
                     "reason": reason, "dead": dead,
@@ -1227,7 +1374,17 @@ def flush_session(session: str, force: bool = False) -> dict:
         while messages:
             batch = _paste_batch(messages)
             rendered = "\n".join(m.render() for m in batch)
+            # Provenance for the heal: stamp BEFORE pasting, so a crash
+            # between paste and bookkeeping still leaves the landed text
+            # recognisable as ours (for PASTE_HEAL_WINDOW_MS) — and CLEAR it
+            # below on every outcome where nothing is sitting in the box.
+            _set_paste_stamp(batch, _now_ms())
             delivered, reason = prompt_router.safe_deliver(session, 0, rendered)
+            if not delivered and reason != "pasted_unsubmitted":
+                # A refusal (dialog / draft / parked / gone) or an unproven
+                # paste leaves nothing of ours in the box: no stamp, so a
+                # later look-alike is a draft, not a heal candidate.
+                _set_paste_stamp(batch, 0)
             if not delivered:
                 # delivery_unverified means the box-cleared confirm failed — but
                 # the paste may have LANDED. Consume any message now visible on

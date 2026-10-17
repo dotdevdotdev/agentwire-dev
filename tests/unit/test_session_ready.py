@@ -772,35 +772,95 @@ class TestZeroEnterFalsePositive:
         assert actions["enters"] == 0  # never pressed into a box with no paste
 
 
-class TestFinishSubmit:
-    """#689 healing primitive — Enter-only, never a paste."""
+class TestBoxIsExactly:
+    """#1105 round 2: the heal's identity test is equality, not containment."""
+
+    MSG = "[MSG from w · done] PR drafted  ⟨#abc123⟩"
+    LONG = "[MSG from w · done] " + "word " * 60 + " ⟨#abc123⟩"
+
+    def test_mixed_boxes_are_not_exactly_ours(self):
+        for box in (
+            self.MSG + " my reply", "re: " + self.MSG, self.MSG[:10] + "X" + self.MSG[10:],
+            "> " + self.MSG + "\nreply", self.MSG + " th",
+        ):
+            assert not session_ready.box_is_exactly(box, self.MSG), box
+
+    def test_whitespace_differences_are_still_ours(self):
+        wrapped = self.MSG.replace(" ", "\n  ", 3) + "  \n"
+        assert session_ready.box_is_exactly(wrapped, self.MSG)
+
+    def test_tail_window_is_ours_but_not_with_a_reply_after_it(self):
+        tail = self.LONG[-150:]
+        assert session_ready.box_is_exactly(tail, self.LONG)
+        assert not session_ready.box_is_exactly(tail + " reply", self.LONG)
+        assert not session_ready.box_is_exactly("reply " + tail, self.LONG)
+        assert not session_ready.box_is_exactly(self.LONG[-150:-12], self.LONG)
+
+    def test_heal_does_not_press_enter_on_a_mixed_box(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        actions = _env(monkeypatch, lambda a: render_box(self.MSG + " my reply"))
+        assert session_ready.heal_submit("s", self.MSG) == "box_changed"
+        assert actions["enters"] == 0
+
+
+class TestHealSubmit:
+    """#689 healing primitive — Enter-only, never a paste, and (#1105 review)
+    re-verified before every Enter with POSITIVE confirmation only."""
+
+    MSG = "[MSG from w · done] PR drafted  ⟨#abc123⟩"
+
+    def _delivered_frame(self):
+        # Box cleared AND the message echoed above it: the positive signal.
+        return f"❯ {self.MSG}\n⏺ ok\n" + render_box()
 
     def test_submits_stuck_message(self, monkeypatch):
         _fake_clock(monkeypatch)
-        msg = "[MSG from w · done] PR drafted  ⟨#abc123⟩"
 
         def frame(a):
             if a["enters"] == 0:
-                return render_box(msg)  # stuck in the box
-            return render_box()  # Enter registered
+                return render_box(self.MSG)  # stuck in the box
+            return self._delivered_frame()  # Enter registered + echoed
 
         actions = _env(monkeypatch, frame)
-        assert session_ready.finish_submit("s", msg)
+        assert session_ready.heal_submit("s", self.MSG) == "submitted"
         assert actions["pastes"] == 0  # NEVER pastes (#621 dedup holds)
         assert actions["enters"] >= 1
 
-    def test_already_clear_box_no_enter(self, monkeypatch):
+    def test_box_cleared_without_echo_is_not_confirmed(self, monkeypatch):
+        # A human clearing the box looks identical to a submit in the box
+        # alone; only the echo outside it proves delivery.
         _fake_clock(monkeypatch)
-        actions = _env(monkeypatch, lambda a: render_box())
-        assert session_ready.finish_submit("s", "gone message")
-        assert actions["enters"] == 0
+        actions = _env(
+            monkeypatch,
+            lambda a: render_box(self.MSG) if a["enters"] == 0 else render_box(),
+        )
+        assert session_ready.heal_submit("s", self.MSG) == "unconfirmed"
         assert actions["pastes"] == 0
 
-    def test_wedged_box_returns_false(self, monkeypatch):
+    def test_box_already_changed_presses_nothing(self, monkeypatch):
+        # TOCTOU: between the drain's read and our first look the human
+        # replaced the box. No Enter into a draft that is not ours.
         _fake_clock(monkeypatch)
-        msg = "immovable text"
-        actions = _env(monkeypatch, lambda a: render_box(msg))
-        assert not session_ready.finish_submit("s", msg)
+        actions = _env(monkeypatch, lambda a: render_box("my own new draft"))
+        assert session_ready.heal_submit("s", self.MSG) == "box_changed"
+        assert actions["enters"] == 0
+
+    def test_box_changed_between_presses_stops_pressing(self, monkeypatch):
+        _fake_clock(monkeypatch)
+
+        def frame(a):
+            if a["enters"] == 0:
+                return render_box(self.MSG)
+            return render_box("human took over the box")
+
+        actions = _env(monkeypatch, frame)
+        assert session_ready.heal_submit("s", self.MSG) != "submitted"
+        assert actions["enters"] == 1  # one press, then re-verify stopped it
+
+    def test_wedged_box_is_unconfirmed(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        actions = _env(monkeypatch, lambda a: render_box(self.MSG))
+        assert session_ready.heal_submit("s", self.MSG) == "unconfirmed"
         assert actions["pastes"] == 0
 
     def test_never_raises(self, monkeypatch):
@@ -810,7 +870,7 @@ class TestFinishSubmit:
             raise RuntimeError("gone")
 
         _env(monkeypatch, boom)
-        assert session_ready.finish_submit("s", "msg") is False
+        assert session_ready.heal_submit("s", self.MSG) == "unconfirmed"
 
 
 class TestClearInputBox:
@@ -1278,3 +1338,85 @@ class TestLiveMenuAbort:
         assert not session_ready.send_verified("s", "report text", retries=2)
         assert actions["pastes"] == 0
         assert actions["enters"] == 0
+
+
+class TestElidedEchoDedup:
+    """#1105 — Claude elides the middle of a long submitted prompt in the
+    transcript echo, so the full text is never on scrollback; the HEAD plus the
+    trailing ⟨#id⟩ token (unique per message) is what proves the submit. The
+    token alone never does (a quoted line, `msg inbox` output, other text)."""
+
+    RULE = "─" * 30
+    RENDERED = "[MSG from w · request] " + "lorem ipsum " * 40 + " ⟨#cc3b38⟩"
+
+    def _cap(self, echo: str, box: str = "") -> str:
+        return f"{echo}\n\n{self.RULE}\n❯ {box}\n{self.RULE}\n  status"
+
+    def test_elided_echo_with_head_and_token_counts_as_delivered(self):
+        echo = "❯ [MSG from w · request] lorem\n  ipsum lorem  ⟨#cc3b38⟩\n⏺ OK"
+        assert session_ready.message_on_scrollback(
+            self._cap(echo), self.RENDERED)
+
+    def test_other_messages_token_does_not_count(self):
+        echo = "❯ [MSG from w · request] lorem\n  ipsum lorem  ⟨#aaaaaa⟩\n⏺ OK"
+        assert not session_ready.message_on_scrollback(
+            self._cap(echo), self.RENDERED)
+
+    def test_token_only_in_the_box_does_not_count(self):
+        assert not session_ready.message_on_scrollback(
+            self._cap("⏺ idle", box="lorem ipsum  ⟨#cc3b38⟩"), self.RENDERED)
+
+    def test_bare_token_in_a_quoted_line_does_not_count(self):
+        echo = "⏺ the sender wrote: see ⟨#cc3b38⟩ for details"
+        assert not session_ready.message_on_scrollback(
+            self._cap(echo), self.RENDERED)
+
+    def test_token_in_msg_inbox_and_dead_output_does_not_count(self):
+        echo = (
+            "1 pending for s:\n"
+            "  [request] from w (attempts=2): lorem ipsum  ⟨#cc3b38⟩\n"
+            "dead: [request] from w ⟨#cc3b38⟩ after 40 attempts"
+        )
+        assert not session_ready.message_on_scrollback(
+            self._cap(echo), self.RENDERED)
+
+    def test_token_inside_another_messages_text_does_not_count(self):
+        echo = "❯ [MSG from other · done] it mentions ⟨#cc3b38⟩ in passing"
+        assert not session_ready.message_on_scrollback(
+            self._cap(echo), self.RENDERED)
+
+    def test_same_token_under_a_different_sender_or_kind_does_not_count(self):
+        for echo in (
+            "❯ [MSG from x · request] lorem ipsum  ⟨#cc3b38⟩",
+            "❯ [MSG from w · done] lorem ipsum  ⟨#cc3b38⟩",
+        ):
+            assert not session_ready.message_on_scrollback(
+                self._cap(echo), self.RENDERED), echo
+
+    def test_message_without_a_token_still_needs_full_text(self):
+        assert not session_ready.message_on_scrollback(
+            self._cap("❯ hello there"), "hello there friend")
+
+
+class TestUndeliveredReason:
+    """#1105 — a failed delivery says WHERE the text is, not just 'unverified'."""
+
+    RULE = "─" * 30
+    MSG = "[MSG from w · request] " + "lorem ipsum " * 40 + " ⟨#cc3b38⟩"
+
+    def _run(self, monkeypatch, box_text, empty):
+        from agentwire import prompt_router
+
+        cap = f"scroll\n{self.RULE}\n❯ {box_text}\n{self.RULE}\n  status"
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, p=0: cap)
+        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: empty)
+        return prompt_router._undelivered_reason("s", 0, self.MSG)
+
+    def test_our_text_in_the_box_is_pasted_unsubmitted(self, monkeypatch):
+        assert self._run(monkeypatch, self.MSG[-200:], empty=False) == "pasted_unsubmitted"
+
+    def test_foreign_draft_is_box_not_empty(self, monkeypatch):
+        assert self._run(monkeypatch, "my own half typed draft", empty=False) == "box_not_empty"
+
+    def test_empty_box_stays_unverified(self, monkeypatch):
+        assert self._run(monkeypatch, "", empty=True) == "delivery_unverified"

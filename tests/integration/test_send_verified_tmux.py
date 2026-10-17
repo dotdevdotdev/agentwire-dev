@@ -45,6 +45,11 @@ buf = ""
 # bounded height and SCROLLS, so a draft taller than it renders only its tail
 # (#851). 0 (default) keeps the old unbounded rendering.
 MAX_ROWS = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+# argv[3]: echo submitted turns above the box, ELIDING the middle of a long
+# one (head + tail, as Claude Code's transcript does) — the positive
+# "submitted" signal the drain's heal demands (#1105).
+ECHO = len(sys.argv) > 3 and sys.argv[3] == "echo"
+hist = []
 
 def wrap(text, width):
     out = []
@@ -59,6 +64,11 @@ def draw():
     # Render embedded newlines with \r\n so a multi-line buffer displays as
     # clean stacked rows between the rules (Claude's pasted-text rendering).
     sys.stdout.write("\x1b[2J\x1b[H")
+    if ECHO:
+        for turn in hist[-2:]:
+            if len(turn) > 160:
+                turn = turn[:100] + " … " + turn[-50:]
+            sys.stdout.write("❯ " + turn.replace("\n", " ") + "\r\n")
     if MAX_ROWS:
         try:
             width = os.get_terminal_size(sys.stdout.fileno()).columns
@@ -120,6 +130,7 @@ while True:
             buf += ch                # pasted bytes are literal (incl. \n / \r)
         elif ch == "\r":             # real Enter keystroke -> submit
             if buf:
+                hist.append(buf)
                 buf = ""
         elif ch == "\x7f":           # backspace keystroke -> erase one char
             buf = buf[:-1]
@@ -151,7 +162,7 @@ def emulator_factory(tmp_path):
     created = []
 
     def make(wire_delay: float = 0.0, box_rows: int = 0,
-             width: int = 120, height: int = 40):
+             width: int = 120, height: int = 40, echo: bool = False):
         session = f"awtest-{uuid.uuid4().hex[:8]}"
         # Dedicated server socket so we never touch the user's live tmux. The
         # socket path MUST be short — macOS caps Unix-domain socket paths at
@@ -166,10 +177,12 @@ def emulator_factory(tmp_path):
             )
 
         cmd = f"{sys.executable} {script}"
-        if wire_delay or box_rows:
+        if wire_delay or box_rows or echo:
             cmd += f" {wire_delay}"
-        if box_rows:
+        if box_rows or echo:
             cmd += f" {box_rows}"
+        if echo:
+            cmd += " echo"
         tmux_s("new-session", "-d", "-s", session,
                "-x", str(width), "-y", str(height), cmd)
         # Wait for the box to render.
@@ -250,15 +263,15 @@ def test_quiet_submit_is_confirmed_not_false_negatived(emulator_session, monkeyp
     assert "quiet report no spinner here" not in box
 
 
-def test_stuck_paste_finished_enter_only_no_duplicate(emulator_session, monkeypatch):
+def test_stuck_paste_finished_enter_only_no_duplicate(emulator_factory, monkeypatch):
     # #689: a prior delivery pasted the message but its Enter was swallowed —
-    # the message sits rendered in the input box. finish_submit must heal it
+    # the message sits rendered in the input box. heal_submit must heal it
     # with Enter ONLY (no re-paste, so the #621 dedup holds: the emulator's
     # buffer would show the text twice if a second paste happened).
-    session, socket, _ = emulator_session
+    session, socket, _ = emulator_factory(echo=True)
     _patch_pane_manager(monkeypatch, socket)
 
-    msg = "[MSG from worker - done] PR 42 drafted  (#deadbe)"
+    msg = "[MSG from worker · done] PR 42 drafted  ⟨#deadbe⟩"
     # Simulate the stuck state: paste lands, Enter never fires.
     session_ready.paste_no_enter(session, msg)
     deadline = time.time() + 5
@@ -272,10 +285,10 @@ def test_stuck_paste_finished_enter_only_no_duplicate(emulator_session, monkeypa
     # The stuck message must NOT read as delivered/on-scrollback (#689).
     assert not session_ready.message_on_scrollback(cap, msg)
 
-    assert session_ready.finish_submit(session, msg)
+    assert session_ready.heal_submit(session, msg) == "submitted"
     cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
     box = session_ready.input_box(cap)
-    assert box == "", f"box should be empty after finish_submit, got: {box!r}"
+    assert box == "", f"box should be empty after heal_submit, got: {box!r}"
     # No duplicate: the emulator clears on submit; a re-paste would have left a
     # second copy sitting in the box.
     assert msg not in (box or "")
@@ -466,3 +479,54 @@ def test_clear_input_box_empties_a_tall_draft(emulator_factory, monkeypatch):
     assert session_ready.clear_input_box(session)
     cap = _tmux("-S", socket, "capture-pane", "-t", f"{session}.0", "-p").stdout
     assert session_ready.input_box(cap) == ""
+
+
+@pytest.mark.parametrize("width", [20, 30, 40, 80, 200])
+def test_drain_heals_unsubmitted_paste_at_every_width(
+    emulator_factory, monkeypatch, tmp_path, width
+):
+    # #1105: a ~400-char message whose box scrolls (only the TAIL renders at
+    # narrow widths). The paste landed and Enter was swallowed. The drain used
+    # to read that as a human draft (box_not_empty, penalized each tick, never
+    # submitted); it must finish it Enter-only: one delivery, no re-paste, the
+    # entry unlinked only on the positive echo, and the elided echo must dedup
+    # (whitespace-stripped comparison makes the pane width irrelevant).
+    from agentwire import inbox, prompt_router
+
+    session, socket, _ = emulator_factory(
+        box_rows=8, width=width, height=40, echo=True)
+    _patch_pane_manager(monkeypatch, socket)
+
+    def capture(target, escapes=False):
+        return _tmux("-S", socket, "capture-pane", "-t", target, "-p").stdout
+
+    monkeypatch.setattr(prompt_router, "_capture", capture)
+    monkeypatch.setattr(prompt_router, "_session_exists", lambda s: True)
+    monkeypatch.setattr(prompt_router, "_is_parked", lambda s: False)
+    monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
+    monkeypatch.setattr(inbox, "INBOX_ROOT", tmp_path / "inbox")
+    monkeypatch.setattr(inbox, "EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(inbox, "live_sessions", lambda: {session})
+
+    (m,) = inbox.enqueue(session, "lorem ipsum dolor sit amet " * 15,
+                         kind="request", sender="orchestrator")
+    m.pasted_ts = inbox._now_ms()  # what the drain stamps before it pastes
+    inbox._write_message(m.path, m)
+    session_ready.paste_no_enter(session, m.render())  # landed, Enter swallowed
+    deadline = time.time() + 5
+    while time.time() < deadline and "⟨#" not in capture(f"{session}.0"):
+        time.sleep(0.1)
+
+    res = inbox.flush_session(session)
+
+    cap = capture(f"{session}.0")
+    problems = []
+    if not (res["delivered"] == 1 and not res["deferred"]):
+        problems.append(f"flush result {res}")
+    if inbox.list_messages(session):
+        problems.append("entry still pending")
+    if session_ready.input_box(cap) != "":
+        problems.append("box not empty")
+    if not session_ready.message_on_scrollback(cap, m.render()):
+        problems.append("elided echo not recognised as delivered")
+    assert not problems, (width, problems)

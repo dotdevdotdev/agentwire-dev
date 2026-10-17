@@ -9,6 +9,7 @@ that injects a first prompt into a new session — council,
 through here.
 """
 
+import re
 import time
 import uuid
 
@@ -442,7 +443,46 @@ def message_on_scrollback(capture: str, rendered: str) -> bool:
     outside = strip_input_box(capture)
     if outside is None:
         return False
-    return needle in "".join(outside.split())
+    flat = "".join(outside.split())
+    if needle in flat:
+        return True
+    # Claude Code ELIDES the middle of a long submitted prompt when it echoes
+    # it into the transcript (measured on a 30-column pane: head rows, a
+    # truncated fragment, then the tail with the id token), so the full text
+    # of a long message is never on scrollback even though it was delivered —
+    # and an unmatched delivered message is re-pasted. What survives the
+    # elision is the HEAD (for an inbox message: ``[MSG from <sender> · <kind>]``
+    # plus the first words) and the unique trailing ⟨#id⟩ token. Both are
+    # required, head first and the token within one message's length after it:
+    # a bare token anywhere on screen (a quoted line, ``msg inbox`` / ``msg
+    # dead`` output, another message's text) must never count as delivery, or
+    # a pending done/request is dropped undelivered. A false accept now needs
+    # a pane line that reproduces this message's head AND its id token.
+    token = _delivery_token(rendered)
+    if not token:
+        return False
+    head = needle[:_ECHO_HEAD_CHARS]
+    start = flat.find(head)
+    while start != -1:
+        if token in flat[start + len(head):start + len(needle) + len(token)]:
+            return True
+        start = flat.find(head, start + 1)
+    return False
+
+
+# Leading whitespace-free chars of a rendered message that must appear before
+# its token in an elided echo. Long enough to cover ``[MSG from <s> · <kind>]``
+# plus the first word of the body, so sender and kind both discriminate.
+_ECHO_HEAD_CHARS = 24
+
+
+_DELIVERY_TOKEN = re.compile(r"⟨#[0-9A-Za-z-]+⟩\s*$")
+
+
+def _delivery_token(rendered: str) -> str:
+    """The whitespace-free trailing ``⟨#id⟩`` of *rendered*, or '' (#1105)."""
+    m = _DELIVERY_TOKEN.search(rendered)
+    return "".join(m.group().split()) if m else ""
 
 
 def new_delivery_marker() -> str:
@@ -671,19 +711,92 @@ def _submit_phase(session: str, message: str, pane_index: int) -> bool:
         cap = _snapshot(session, pane_index)
 
 
-def finish_submit(session: str, message: str, pane_index: int = 0) -> bool:
-    """Enter-only submit retry for a message already sitting in the input box.
+def box_is_exactly(box: str, message: str) -> bool:
+    """Is the box content EXACTLY our paste — nothing before, nothing after?
 
-    The #689 healing primitive: when a prior delivery pasted the text but its
-    Enter was swallowed, the fix is to press Enter again — NEVER to re-paste
-    (the #621 idempotency dedup must keep holding; a second paste doubles the
-    draft). Runs the same strict-then-press phase-2 loop as a fresh delivery.
-    Returns True only once submission is confirmed; never raises.
+    The heal's identity test (#1105 round 2). :func:`box_shows_message` is a
+    substring test, right for "did the paste land?" but wrong for "may I press
+    Enter?": a box holding our message PLUS a human's reply contains it too,
+    and Enter submits the lot. Here the whitespace-normalized box must EQUAL
+    the whitespace-normalized message (trailing spaces/newlines are ours), or —
+    for a paste taller than the box, whose head scrolled out — be a SUFFIX of it
+    (nothing follows the visible window), at least ``MIN_BOX_FRAGMENT`` long and
+    carrying the message's unique id token.
     """
-    try:
-        return _submit_phase(session, message, pane_index)
-    except Exception:
+    nb = "".join(box.split())
+    nm = "".join(message.split())
+    if not nb or not nm:
         return False
+    if nb == nm:
+        return True
+    token = _delivery_token(message)
+    return (
+        len(nb) >= MIN_BOX_FRAGMENT
+        and len(nb) < len(nm)
+        and nm.endswith(nb)
+        and bool(token)
+        and token in nb
+    )
+
+
+def heal_submit(session: str, message: str, pane_index: int = 0) -> str:
+    """Enter-only submit of OUR paste sitting in the box — strictly verified.
+
+    The #689 healing primitive (never a re-paste: the #621 dedup must hold),
+    hardened for the #1105 review. It differs from the send-time submit loop
+    in two ways, because the heal fires on a box nobody just pasted into:
+
+    * **Re-verify before EVERY Enter.** The box is re-read immediately before
+      each press and the press happens only while it is EXACTLY our text
+      (:func:`box_is_exactly` — not merely containing it). If
+      it was cleared or replaced in between (a human took over), we stop —
+      pressing Enter into a draft that is not ours submits it.
+    * **Positive confirmation only.** "The box no longer holds our text" is
+      also what a human clearing it looks like, so it never confirms. We
+      confirm only after OUR press, when the message shows up on scrollback
+      outside the box (:func:`message_on_scrollback`: head + id token).
+
+    Returns ``"submitted"`` (confirmed), ``"box_changed"`` (the box wasn't ours
+    when we looked — nothing pressed, nothing to unlink) or ``"unconfirmed"``
+    (pressed, but no positive proof; also a live menu, an unparseable box, or
+    budget exhausted). Only ``"submitted"`` may unlink a pending entry.
+    Never raises.
+    """
+    from agentwire import prompt_router
+
+    try:
+        deadline = time.time() + SUBMIT_BUDGET
+        presses = 0
+        while True:
+            cap = _snapshot(session, pane_index)
+            box = input_box(cap)
+            if box is not None and not box_is_exactly(box, message):
+                if presses == 0:
+                    return "box_changed"
+                confirmed = _poll(
+                    lambda: message_on_scrollback(
+                        _snapshot(session, pane_index), message
+                    ),
+                    SUBMIT_TIMEOUT,
+                )
+                return "submitted" if confirmed else "unconfirmed"
+            if box is None or prompt_router.screen_shows_live_menu(cap):
+                if presses >= MIN_ENTER_ATTEMPTS or time.time() >= deadline:
+                    return "unconfirmed"
+                time.sleep(POLL_INTERVAL)
+                continue
+            if presses >= MIN_ENTER_ATTEMPTS and time.time() >= deadline:
+                return "unconfirmed"
+            press_enter(session, pane_index=pane_index)
+            presses += 1
+            _poll(
+                lambda: not box_is_exactly(
+                    input_box(_snapshot(session, pane_index)) or "", message
+                ),
+                SUBMIT_TIMEOUT,
+            )
+    except Exception:
+        return "unconfirmed"
 
 
 def send_verified(

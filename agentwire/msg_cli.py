@@ -158,6 +158,8 @@ def cmd_msg_inbox(args) -> int:
         print(f"{len(messages)} pending for {session}:")
         for m in messages:
             print(f"  [{m.kind}] from {m.sender} (attempts={m.attempts}): {m.text}")
+            if m.reason:
+                print(f"      last deferral: {_deferral_line(m)}")
     if passive:
         print(f"{len(passive)} passive (ingest) for {session} — pull to consume:")
         for m in passive:
@@ -165,6 +167,25 @@ def cmd_msg_inbox(args) -> int:
             if m.ref:
                 print(f"      ref: {m.ref}")
     return 0
+
+
+_DEFER_HINTS = {
+    "pasted_unsubmitted": (
+        "the text is in the input box but Enter did not take; the next drain "
+        "submits it Enter-only (nothing is pasted twice)"
+    ),
+    "box_not_empty": "a draft owns the input box; nothing was pasted",
+}
+
+
+def _deferral_line(m) -> str:
+    """``reason`` + when + the pane evidence behind it, for ``msg inbox`` (#1105)."""
+    line = m.reason
+    if m.reason_ts:
+        line += f" at {inbox._fmt_ts(m.reason_ts)}"
+    if m.detail:
+        line += f" — {m.detail}"
+    return line
 
 
 def cmd_msg_pull(args) -> int:
@@ -346,6 +367,9 @@ def cmd_msg_flush(args) -> int:
             print(f"Delivered {result['delivered']} to {session}")
         else:
             print(f"Deferred {session}: {result.get('reason')}")
+            hint = _DEFER_HINTS.get(result.get("reason"))
+            if hint:
+                print(f"  {hint}")
     else:
         flushed = result.get("flushed", [])
         deferred = result.get("deferred", [])
