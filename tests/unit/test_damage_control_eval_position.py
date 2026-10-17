@@ -372,6 +372,11 @@ EXPECTED_WRAPPER_OPTS = {
     "watch": {"-n", "--interval"},
     "exec": {"-a"},
     "nohup": set(), "command": set(), "builtin": set(), "setsid": set(),
+    "uv": {"--with", "--python", "-p", "--directory", "--project", "--extra", "--group", "--env-file",
+           "--with-requirements", "--index", "--package", "--from"},
+    "uvx": {"--from", "--with", "--python", "-p", "--with-requirements"},
+    "npx": {"-p", "--package", "--cache", "--userconfig", "-c", "--call"},
+    "bunx": set(), "pnpx": set(),
 }
 EXPECTED_TMUX_RUNNERS = ["new-session", "new", "new-window", "neww", "split-window", "splitw", "respawn-pane",
                          "respawnp", "respawn-window", "respawnw", "run-shell", "run", "if-shell", "if"]
@@ -404,7 +409,7 @@ def test_every_wrapper_option_row_is_load_bearing():
                     cmd = f"timeout {spelling} 5 {body}"
                 elif wrapper == "time":
                     cmd = f"/usr/bin/time {spelling} {body}"
-                elif wrapper == "env" and opt in ("-S", "--split-string"):
+                elif (wrapper, opt) in (("env", "-S"), ("env", "--split-string"), ("npx", "-c"), ("npx", "--call")):
                     continue  # its value IS a program; covered by the payload test
                 else:
                     cmd = f"{wrapper} {spelling} {body}"
@@ -523,6 +528,8 @@ def test_unknown_launchers_ask_and_never_allow():
     bad = []
     for lead in launchers:
         for tail in (f"sh -c '{W} x'", f"bash -lc '{W} x'", f"zsh -c {W}", f"{W} x", f"'{W} {{}}'"):
+            if tail.startswith("'") and lead.split()[0] in ("uv", "uvx", "npx", "bunx", "pnpm"):
+                continue  # a known launcher's quoted word is a program NAME, not shell text
             cmd = f"{lead} {tail}"
             if ambiguity_conceals_verb(cmd) is None:
                 bad.append(cmd)
@@ -615,4 +622,233 @@ def test_terminators_and_quoted_prose_after_known_and_unknown_commands():
     bad += [c for c in (f"ssh h -- '{W} x'", f"ssh -p 22 h -- {W} x", f"trap -- '{W} x' EXIT",
                         f"find . -exec ls {{}} + -exec {W} x +")
             if ambiguity_conceals_verb(c) is None]
+    assert not bad, bad
+
+
+# ---------------------------------------------------------------------------
+# Round 3: the shell's own option grammar, positional/variable payloads, producers
+# inside compound bodies, and the wrongful blocks the inverted direction introduced.
+# ---------------------------------------------------------------------------
+
+SHELL_PREFIXES = [
+    "-c", "-o pipefail -c", "+e -c", "-O extglob -c", "+O extglob -c", "+o nounset -c", "--rcfile f -c",
+    "--init-file f -c", "--norc --noprofile --posix -c", "-e -u -o pipefail -c", "-ec", "-xc", "-lc", "-ic",
+    "-eo pipefail -c", "-c -o pipefail", "-c --", "-e -c --", "-e -o pipefail -c --",
+]
+
+
+def test_shell_option_grammar_before_the_payload():
+    bad = []
+    for sh in ("bash", "sh", "zsh", "dash", "ksh", "/bin/bash"):
+        for pre in SHELL_PREFIXES:
+            if ambiguity_conceals_verb(f"{sh} {pre} '{W} x'") is None:
+                bad.append(("exec", sh, pre))
+            if ambiguity_conceals_verb(f"{sh} {pre} 'echo {W}'") is not None:
+                bad.append(("data", sh, pre))
+    # no -c: the first non-option word is a script file; what follows is its arguments
+    for c in (f"bash -o pipefail script.sh {W}", f"bash -e script.sh -c {W}", f"bash --norc script.sh {W}"):
+        if ambiguity_conceals_verb(c) is not None:
+            bad.append(c)
+    assert not bad, bad
+
+
+def test_positional_parameters_as_command_text():
+    bad = [c for c in (f"bash -c '$0 x' {W}", f"sh -c '$1' _ {W}", f"sh -c '\"$@\"' _ {W} x",
+                       f"sh -c 'exec \"$@\"' _ {W} x", f"sh -c 'command $1 y' _ {W}",
+                       f"sh -c '$1 y' _ 'x; {W} z'")
+           if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in (f"sh -c 'echo \"$1\"' _ {W}", f"sh -c 'ls $1' _ {W}", f"bash -c 'cat \"$@\"' _ {W}")
+            if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+def test_variable_payloads():
+    bad = [c for c in (f"p='{W} x'; sh -c \"$p\"", f"x={W}; bash -c \"$x y\"", f"x={W}; bash -c 'echo a; $x y'",
+                       f"p=\"{W} x\"; sh -o pipefail -c \"$p\"")
+           if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in ("x=ls; sh -c \"$x y\"", f"p='echo {W}'; echo \"$p\"")
+            if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+def test_producers_inside_compound_bodies_and_here_strings():
+    producers = [f"cat <<< '{W} x'", f"tee f <<< '{W} x'", f"echo '{W} x'", f"printf '%s' '{W} x'",
+                 f"echo '\\{W} x'", f"echo -e 'a\\n{W} x'"]
+    bodies = ["{c}", "for i in 1; do {c}; done", "while true; do {c}; done", "if true; then {c}; fi",
+              "case a in a) {c} ;; esac", "f() {{ {c}; }}; f", "( {c} )", "{{ {c}; }}",
+              "if x; then :; else {c}; fi"]
+    bad = []
+    for pr, body in itertools.product(producers, bodies):
+        cmd = body.format(c=f"{pr} | sh")
+        if ambiguity_conceals_verb(cmd) is None:
+            bad.append(cmd)
+    for body in bodies:
+        for cmd in (body.format(c="echo hello | sh"), body.format(c=f"echo '{W}' | grep x")):
+            if ambiguity_conceals_verb(cmd) is not None:
+                bad.append(("data", cmd))
+    assert not bad, bad
+
+
+def test_su_style_runners_own_c_options():
+    bad = [c for c in (f"script --command='{W} x' f", f"script -c '{W} x' f", f"script --command '{W} x'",
+                       f"runuser -u u -- sh -c '{W} x'", f"runuser -l u -c '{W} x'", f"sg grp -c '{W} x'",
+                       f"su root -c '{W} x'", f"su -l root --command='{W} x'")
+           if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in (f"script -c 'echo {W}' f", f"su root -c 'ls {W}'")
+            if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+def test_word_lists_and_quoted_values_are_data():
+    bad = [c for c in (f"for f in a {W}; do echo $f; done", f"for f in {W} b; do :; done",
+                       f"select x in {W} b; do :; done", f"case {W} in a) :;; esac",
+                       f"say '{W}'", f"uv run pytest -k '{W} or exec'", f"uv run -q grep {W} f",
+                       f"uv run --with x python -c 'print(1)' {W}", f"uvx --from pkg ruff {W}",
+                       f"npx -y grep {W}", f"npx -p pkg ruff {W}")
+           if ambiguity_conceals_verb(c) is not None]
+    bad += [c for c in (f"for i in 1; do {W} \"$i\"; done", f"uv run {W} x", f"uv run -q sh -c '{W} x'",
+                        f"uvx -p 3.12 {W} x", f"npx -c '{W} x'", f"npx --call '{W} x'", f"uv run --with x {W} y")
+            if ambiguity_conceals_verb(c) is None]
+    assert not bad, bad
+
+
+# Realistic harmless commands, each with its expected verdict. "allow" must stay allowed; every
+# "ask" is a DECLARED wrongful ask with its reason, so the cost of the inverted failure direction
+# is a reviewed list, not a surprise.
+HARMLESS_CORPUS = [
+    ("git status", "allow"), ("git diff --stat origin/main", "allow"), ("git log --oneline -5", "allow"),
+    ("git commit -m 'fix the loop'", "allow"), (f"git commit -m 'damage-control: {W} by position'", "allow"),
+    (f"gh issue create --title t --body 'the {W} builtin asks'", "allow"),
+    (f"gh pr create --draft --body 'Closes #1115. {W} no longer asks on prose'", "allow"),
+    (f"gh issue comment 1115 --body 'repro: {W} \"$x\"'", "allow"),
+    (f"agentwire msg send --to x --kind done 'fixed the {W} rule'", "allow"),
+    (f"agentwire send -s x 'the {W} ask'", "allow"),
+    (f"grep -rn '{W}' agentwire/safety", "allow"), (f"grep -rnE '(^| ){W}( |$)' agentwire", "allow"),
+    (f"rg {W} agentwire", "allow"), (f"rg -n '{W}' --glob '*.py'", "allow"), (f"grep -n {W} docs/wiki/internals/damage-control.md | head", "allow"),
+    (f"cat docs/{W}.md", "allow"), (f"ls docs/wiki | grep {W}", "allow"), (f"wc -l tests/unit/test_{W}.py", "allow"),
+    (f"echo 'remember the {W} case'", "allow"), (f"printf '%s\\n' '{W}'", "allow"), (f"echo {W} > notes.txt", "allow"),
+    (f"man {W}", "allow"), (f"type {W}", "allow"), (f"command -v {W}", "allow"), (f"help {W}", "allow"),
+    (f"cat > notes.md <<'EOF'\nwe discussed {W} \"$v\" today\nEOF", "allow"),
+    (f"python3 - <<'EOF'\nprint('{W}')\nEOF", "allow"), (f"python3 -c \"print('{W}')\"", "allow"),
+    (f"uv run pytest tests -k '{W}'", "allow"), (f"uv run pytest -k '{W} or exec' -q", "allow"),
+    ("uv run -q ruff check agentwire", "allow"), ("uvx ruff check agentwire", "allow"),
+    ("npx -y prettier --check .", "allow"), ("npm run build", "allow"),
+    (f"sed -n '/{W}/p' notes.txt", "allow"), (f"awk '/{W}/ {{print $1}}' notes.txt", "allow"),
+    (f"find . -name '*{W}*'", "allow"), (rf"find . -exec grep -l {W} {{}} \;", "allow"),
+    (f"xargs -I{{}} grep {W} {{}}", "allow"), (f"sudo -E grep {W} /var/log/x", "allow"),
+    (f"env -i grep {W} f", "allow"), (f"nohup -- grep {W} f", "allow"), (f"watch echo {W}", "allow"),
+    (f"tmux send-keys -t x '{W} foo' Enter", "allow"),
+    (f"for f in a {W}; do echo $f; done", "allow"), (f"say '{W}'", "allow"),
+    (f"bash -o pipefail -c 'echo {W}'", "allow"), (f"bash script.sh {W}", "allow"),
+    (f"sh -c 'echo \"$1\"' _ {W}", "allow"), (f"echo {W} | grep x | wc -l", "allow"),
+    (f"cat f | tee g | grep {W}", "allow"), ("echo hi | tee f | sh", "allow"),
+    (f"echo {W} | python3 -c 'import sys; print(sys.stdin.read())'", "allow"),
+    ("ls -la && pwd", "allow"), ("mkdir -p build && cd build", "allow"), ("make test", "allow"),
+    ("cargo build --release", "allow"), ("pip list | grep requests", "allow"), ("docker ps -a", "allow"),
+    ("curl -s https://example.com | jq .", "allow"), ("tar -czf a.tgz dir", "allow"), ("diff a b", "allow"),
+    # declared wrongful asks: an unknown launcher followed by the bare word cannot be told from a verb
+    (f"someunknowntool {W}", "ask"), (f"parallel -j4 grep {W} ::: f", "ask"), (f"flock /tmp/l grep {W} f", "ask"),
+    (f"foo --flag '{W}'", "ask"),
+]
+
+
+def test_realistic_harmless_corpus_matches_its_expected_verdicts(cfg):
+    bad = []
+    for cmd, want in HARMLESS_CORPUS:
+        got = "allow" if check_command(cmd, cfg)["decision"] == "allow" else "ask"
+        if got != want:
+            bad.append((cmd, want, got))
+    assert not bad, bad
+    declared = [c for c, w in HARMLESS_CORPUS if w == "ask"]
+    assert len(declared) <= 6, declared  # the price of failing toward ask stays a short, reviewed list
+
+
+# ---------------------------------------------------------------------------
+# Final round: tables pinned from independent spec copies, more variable shapes,
+# project runners, pipeline sequencing.
+# ---------------------------------------------------------------------------
+
+EXPECTED_DATA_CONSUMERS = ['[', 'ack', 'ag', 'agentwire', 'awk', 'base64', 'basename', 'bat', 'bun', 'cat', 'cd', 'chmod', 'chown', 'cmp', 'column', 'comm', 'cp', 'curl', 'cut', 'date', 'deno', 'df', 'diff', 'dirname', 'du', 'echo', 'egrep', 'export', 'false', 'fgrep', 'file', 'fmt', 'fold', 'gawk', 'gh', 'git', 'grep', 'gunzip', 'gzip', 'head', 'help', 'hexdump', 'info', 'join', 'jq', 'kill', 'less', 'ln', 'ls', 'lsof', 'man', 'md5', 'mkdir', 'more', 'mv', 'nl', 'node', 'od', 'open', 'openssl', 'paste', 'pbcopy', 'perl', 'pgrep', 'php', 'pip', 'pkill', 'printf', 'ps', 'pwd', 'pytest', 'python', 'python2', 'python3', 'read', 'readlink', 'realpath', 'rg', 'rm', 'rsync', 'ruby', 'ruff', 'say', 'scp', 'sed', 'shasum', 'sleep', 'sort', 'split', 'ssh-keygen', 'stat', 'strings', 'tail', 'tar', 'tee', 'test', 'touch', 'tr', 'tree', 'true', 'type', 'uniq', 'unset', 'unzip', 'wc', 'wget', 'whatis', 'whence', 'whereis', 'which', 'xxd', 'yq', 'zgrep', 'zip']
+EXPECTED_INTERPRETERS = ["perl", "python", "python2", "python3", "node", "ruby", "php", "deno", "bun"]
+EXPECTED_SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "su", "ash", "fish", "csh", "tcsh", "source", "."]
+EXPECTED_PROJECT_RUNNERS = ["make", "just", "cargo", "npm", "pnpm", "yarn", "fd", "go", "bundle"]
+
+
+def test_tables_contain_their_spec():
+    bad = [("data", w) for w in EXPECTED_DATA_CONSUMERS if w not in _core._EVAL_DATA_CONSUMERS]
+    bad += [("interp", w) for w in EXPECTED_INTERPRETERS if w not in _core._EVAL_INTERPRETERS]
+    bad += [("shell", w) for w in EXPECTED_SHELLS if w not in _core._EVAL_SHELLS]
+    bad += [("runner", w) for w in EXPECTED_PROJECT_RUNNERS if w not in _core._EVAL_PROJECT_RUNNERS]
+    assert not bad, bad
+
+
+def test_every_data_consumer_keeps_the_word_as_data():
+    bad = [w for w in EXPECTED_DATA_CONSUMERS if ambiguity_conceals_verb(f"{w} {W} f") is not None]
+    bad += [f"/usr/bin/{w}" for w in EXPECTED_DATA_CONSUMERS
+            if ambiguity_conceals_verb(f"/usr/bin/{w} -x {W}") is not None]
+    assert not bad, bad
+
+
+def test_every_interpreter_fed_a_body_is_not_shell_text():
+    bad = []
+    for i in EXPECTED_INTERPRETERS:
+        for cmd in (f"echo {W} x | {i}", f"echo {W} x | sudo {i}", f"cat <<'EOF' | {i}\n{W} x\nEOF",
+                    f"{i} <<< '{W} x'", f"echo {W} x | tee f | {i} -"):
+            if ambiguity_conceals_verb(cmd) is not None:
+                bad.append(cmd)
+    assert not bad, bad
+
+
+def test_every_shell_fed_a_body_conceals():
+    bad = []
+    for sh in EXPECTED_SHELLS:
+        if sh in ("source", "."):
+            cmds = [f"echo {W} x | {sh} /dev/stdin", f"{sh} <(echo {W} x)"]
+        else:
+            cmds = [f"echo {W} x | {sh}", f"echo {W} x | sudo {sh}", f"cat <<'EOF' | {sh}\n{W} x\nEOF",
+                    f"{sh} <<< '{W} x'", f"{sh} <(echo {W} x)"]
+        bad += [c for c in cmds if ambiguity_conceals_verb(c) is None]
+    assert not bad, bad
+
+
+def test_only_piped_producers_feed_the_shell():
+    bad = [c for c in (f"echo {W} x; echo hi | sh", f"echo {W} x && echo hi | sh", f"echo {W} x\necho hi | sh")
+           if ambiguity_conceals_verb(c) is not None]
+    bad += [c for c in ("echo hi | { sh; }", ) if ambiguity_conceals_verb(c) is not None]
+    bad += [c for c in (f"echo {W} x | {{ sh; }}", f"echo {W} x | (sh)", f"echo {W} x | if sh")
+            if ambiguity_conceals_verb(c) is None]
+    assert not bad, bad
+
+
+def test_more_variable_shapes():
+    exec_ = [f"p='{W} x'; echo \"$p\" | sh", f"p='{W} x'; sh <<< \"$p\"", f"p='{W} x' sh -c '$p'",
+             f"x={W}; y=$x; $y z", f"x={W}; y=\"$x\"; $y z", f"${{x:-{W}}} y", "echo 'ev\\al x' | sh",
+             f"bash -c \\\n'{W} x'", f"x={W}; echo \"$x y\" | bash"]
+    data = ["p=ls; echo \"$p\" | sh", "x=ls; y=$x; $y z", f"p='{W}'; echo \"$p\""]
+    bad = [c for c in exec_ if ambiguity_conceals_verb(c) is None]
+    bad += [c for c in data if ambiguity_conceals_verb(c) is not None]
+    assert not bad, bad
+
+
+def test_project_runners_take_the_word_as_a_target_or_selector():
+    data = [f"make {W}", f"just {W}", f"cargo test {W}", f"npm run {W}", f"pnpm test -- -t {W}",
+            f"yarn test --grep {W}", f"fd {W}", f"go test -run {W} ./...", f"uv run pytest -k {W}",
+            f"bundle exec rspec -e {W}".replace("exec ", "")]
+    ask = [f"make SHELL=/bin/sh {W}", f"make .SHELLFLAGS=-c {W}", f"npm exec {W} x", f"pnpm dlx {W}",
+           f"yarn exec {W} x", f"npm exec -- sh -c '{W} x'", f"pnpm exec sh -c '{W} x'",
+           f"yarn exec bash -c '{W} x'", f"uv run sh -c '{W} x'", f"uv run bash -c '{W} x'",
+           f"cargo run -- sh -c '{W} x'", f"make -f m.mk SHELL=./wrapper {W}"]
+    bad = [c for c in data if ambiguity_conceals_verb(c) is not None]
+    bad += [c for c in ask if ambiguity_conceals_verb(c) is None]
+    assert not bad, bad
+
+
+def test_shell_options_after_dash_dash_are_a_script_not_a_payload():
+    assert ambiguity_conceals_verb(f"bash -- -c {W}") is None
+    assert ambiguity_conceals_verb(f"bash -e -- script.sh -c {W}") is None
+
+
+def test_unparsed_option_shapes_fall_back_to_scanning_for_c():
+    bad = [c for c in (f"bash -O3 -c '{W} x'", f"bash -O3 -x -lc '{W} x'", f"bash - -c '{W} x'")
+           if ambiguity_conceals_verb(c) is None]
     assert not bad, bad

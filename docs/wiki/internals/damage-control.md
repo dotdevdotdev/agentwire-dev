@@ -1122,51 +1122,72 @@ verb is the first word after redirects (any bash redirect form, with or
 without a glued target, `N`/`{var}` prefix, `&>`, `>|`, fd dups), assignments
 and known launchers.
 
-**The failure direction is ask.** A command word falls in one of three classes:
+**The failure direction is ask.** A command word falls in one of four classes:
 
 - **known launcher** (`_EVAL_WRAPPER_VALUE_OPTS`: `sudo`, `doas`, `env`,
   `xargs`, `timeout`, `nice`, `ionice`, `stdbuf`, `time`, `watch`, `exec`,
-  `nohup`, `command`, `builtin`, `setsid`): its value-taking options are skipped
-  with getopt cluster semantics (`sudo -Eu root`, `xargs -0I{}`), boolean flags
-  are not, and the next word is the verb. The table only **reduces** false
-  blocks; `command -v|-V|-pv` and `type`/`which`/`help` are lookups;
+  `nohup`, `command`, `builtin`, `setsid`, `uv run`, `uvx`, `npx`, `bunx`,
+  `pnpx`): its value-taking options are skipped with getopt cluster semantics
+  (`sudo -Eu root`, `xargs -0I{}`), boolean flags are not, and the next word is
+  the verb. The table only **reduces** false blocks; an option missing from it
+  leaves its value in the verb slot, which is UNKNOWN and asks. `command
+  -v|-V|-pv` and `type`/`which`/`help` are lookups;
+- **shell** (`sh bash zsh dash ksh`, and the `su`-style `su runuser script sg`):
+  the payload is found with the shell's own option grammar (`-o|+o|-O|+O NAME`,
+  `--rcfile|--init-file F`, clusters like `-ec`/`-eo pipefail`, `--`), and if
+  the walk stops on an option shape it does not model (`-O3`, `-`), any later
+  `-…c` cluster or `--command` names the payload anyway. The payload is
+  re-checked as a command; one that expands a variable assigned the word in the
+  same command (`p='eval x'; sh -c "$p"`, `y=$x`) asks, and so does one whose
+  command position is a positional parameter (`sh -c '$1' _ eval`) when an
+  argument is the word;
 - **known pure data consumer** (`_EVAL_DATA_CONSUMERS`: `echo`, `grep`, `git`,
-  `gh`, `agentwire`, `cat`, `ls`, interpreters, …): the rest is data;
-- **anything else is UNKNOWN** (`uv run`, `npx`, `flock`, `chroot`, `strace`,
-  `parallel`, a tool this file has never heard of): every later word is
-  scanned — a shell `-c`/`--command` payload anywhere after it is re-checked as
-  a command in its own right, a quoted multi-word argument is re-checked for a
-  command-position builtin, and the bare word anywhere asks.
+  `gh`, `agentwire`, `say`, interpreters, …) and **project runner**
+  (`_EVAL_PROJECT_RUNNERS`: `make just cargo npm pnpm yarn fd go bundle`): the
+  rest is data (`make eval`, `cargo test eval`, `npm run eval`, `pnpm test --
+  -t eval`). A runner falls back to UNKNOWN as soon as its arguments can hand a
+  program to a shell: an `exec`/`dlx`/`x` word, a shell name, or `SHELL=`;
+- **anything else is UNKNOWN** (`flock`, `chroot`, `strace`, `parallel`, a tool
+  this file has never heard of): the bare word asks, and so does any quoted
+  multi-word argument whose own verb is the word.
 
 - **Concealing:** the builtin as the verb, after any separator, compound
   keyword, case arm, function body or launcher chain; inside a `<(…)`/`>(…)`
-  body; a variable assigned the word earlier in the same command and used as
-  the verb (`x=eval; $x y`); and as the verb of program text the shell is FED —
-  a `sh`/`bash`/`zsh`/`su`/`runuser -c` payload (`-lc`, `--command`, `-c --`),
-  `ssh host …`, `env -S`, `watch`, `trap`, `tmux new-session|run-shell|…`,
-  `find -exec|-execdir|-ok|-okdir`, a heredoc/here-string feeding a shell, the
-  `echo`/`printf` text of ANY earlier stage of a pipeline ending in a shell
-  (through `tee`, `cat`, `sed`, …, escapes expanded), `xargs sh -c`, and the
-  `echo`/`printf` body of a `<(…)` handed to a shell or `source`/`.`.
-- **Data:** the word as an argument of a known data consumer or a known
-  launcher's real verb (`echo`, `grep`, `git commit -m`, `gh --body`,
-  `agentwire …`, `tmux send-keys`, a quoted heredoc body not fed to a shell, a
-  comment), a body piped to an *interpreter* (`python3`, `node`, …), and
-  lookups. A data mention never shields a real call elsewhere in the command.
+  body; a head `$var`/`${…}` holding the word (`${x:-eval} y`) or a variable
+  assigned it earlier in the same command (`x=eval; $x y`); and as the verb of
+  program text a shell is FED: a `-c` payload, `ssh host …`, `env -S`, `npx
+  -c`, `watch`, `trap`, `tmux new-session|run-shell|…`, `find -exec|-execdir|
+  -ok|-okdir`, a heredoc or here-string feeding a shell, the `echo`/`printf`
+  text or here-string of ANY earlier stage of a pipeline ending in a shell —
+  through `tee`, `cat`, `sed`, … and inside `for`/`while`/`if`/`case`/function
+  bodies, as written and escape-expanded — `xargs sh -c`, and the body of a
+  `<(…)` handed to a shell or `source`/`.`. Text that expands an
+  alias variable (`echo "$p" | sh`, `sh <<< "$p"`) asks too.
+- **Data:** the word as an argument of a data consumer or a known launcher's
+  real verb, a `for`/`select` word list, `tmux send-keys`, a quoted heredoc
+  body not fed to a shell, a comment, bodies piped to an *interpreter*
+  (`python3`, `node`, …), arguments of a script run by a shell (`bash script.sh
+  -c x`), and lookups. A data mention never shields a real call elsewhere, and
+  a producer only feeds a shell it is PIPED to (`echo eval x; echo hi | sh`
+  allows).
 
 Residuals, stated plainly. Wrongful asks we accept as the price of the
-direction: an unknown launcher followed by the bare word (`uv run -q grep eval
-f`, `npx -y grep eval`, `parallel -j4 grep eval ::: f`), and a quoted `'>f'`
-used as a command name. **Not detected:** a verb produced indirectly (`alias
-a=eval; a x`, `$1 x`, `e${x}val`, a name assigned in another command), program
-text from a producer other than `echo`/`printf`/heredoc/here-string (`cat file
-| sh`, `curl … | sh`), `parallel '{eval} {}'`, and a call inside `$(…)`, which
-the substitution path judges. Command-position use is *always* unverifiable;
-a literal operand is not re-scanned as a command. With the kill switch off
-(`enabled: false`) nothing here applies — the switch allows everything by design.
+direction: an unknown launcher followed by the bare word (`parallel -j4 grep
+eval ::: f`, `flock /tmp/l grep eval f`, `poetry run`, `docker run … grep eval`),
+a quoted `'>f'` used as a command name, and a shell invoked with a payload
+that merely mentions the variable (`p=eval; sh -c 'echo $p'`). **Not detected:**
+a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}
+x`), `alias a=eval; a x`, `$1 x` outside a `-c` payload, `e${x}val`, a name
+assigned in another command, program text from a producer other than
+`echo`/`printf`/heredoc/here-string (`cat file | sh`, `curl … | sh`), a
+`crontab -` entry (deferred execution), `parallel '{eval} {}'`, and a call
+inside `$(…)`, which the substitution path judges. Command-position use is
+*always* unverifiable; a literal operand is not re-scanned as a command. With
+the kill switch off (`enabled: false`) nothing here applies — the switch
+allows everything by design.
 `tests/unit/test_damage_control_eval_position.py` is the differential: generated
 spelling × position × wrapper × consumer cases, one generated test per table
-(driven by an independent copy of the table spec so a deleted row goes red),
+(driven by independent copies of the table specs, so a deleted row or element goes red),
 committed corpora of executing spellings (never `allow`, also unattended and
 under size padding) and of data mentions (must `allow`).
 
