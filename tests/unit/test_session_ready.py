@@ -1430,7 +1430,7 @@ class TestDedupOnlyTrustsTheInputEcho:
             ("long wrapped prose", self.RENDERED, f"⏺ quoting it\n{self._wrapped(self.RENDERED)}"),
             ("elided in prose", self.RENDERED, f"⏺ they wrote\n  {elided}"),
             ("glyph in prose", self.SHORT, f"⏺ ❯ {self.SHORT}"),
-            ("after reply", self.SHORT, f"❯ earlier prompt\n⏺ reply\n  {self.SHORT}"),
+            ("after reply", self.SHORT, f"❯ earlier prompt\n\n⏺ reply\n  {self.SHORT}"),
         ):
             if session_ready.message_on_scrollback(self._cap(body), rendered):
                 bad.append(label)
@@ -1443,11 +1443,11 @@ class TestDedupOnlyTrustsTheInputEcho:
         """Blank rows INSIDE the echoed text belong to it (regression vs main)."""
         rendered = self.MULTI
         shapes = {
-            "blank rows inside": f"❯ {rendered}\n⏺ OK",
+            "blank rows inside": f"❯ {rendered}\n\n⏺ OK",
             "trailing blank before reply": f"❯ {rendered}\n\n⏺ OK",
             "token is the last row": f"earlier\n❯ {rendered}",
             "batch of two": f"❯ [MSG from w · note] hi  ⟨#111111⟩\n{rendered}\n\n⏺ OK",
-            "indented continuation": "❯ " + rendered.replace("\n", "\n  ") + "\n⏺ OK",
+            "indented continuation": "❯ " + rendered.replace("\n", "\n  ") + "\n\n⏺ OK",
         }
         missed = [k for k, body in shapes.items()
                   if not session_ready.message_on_scrollback(self._cap(body), rendered)]
@@ -1456,7 +1456,7 @@ class TestDedupOnlyTrustsTheInputEcho:
         # the callers all go through message_on_scrollback: exercise two of them
         # end to end (send_verified's pre-paste guard, the inbox dedup)
         _fake_clock(monkeypatch)
-        actions = _env(monkeypatch, lambda a: f"❯ {rendered}\n⏺ OK\n" + render_box())
+        actions = _env(monkeypatch, lambda a: f"❯ {rendered}\n\n⏺ OK\n" + render_box())
         assert session_ready.send_verified("s", rendered)
         assert actions["pastes"] == 0 and actions["enters"] == 0
 
@@ -1470,20 +1470,56 @@ class TestDedupOnlyTrustsTheInputEcho:
         assert not session_ready.message_on_scrollback(quoted + gt_box.replace("> \n", "❯ \n"), self.SHORT)
 
     def test_a_real_input_echo_still_counts(self):
-        elided = f"❯ {self.RENDERED[:60]}\n  …\n  {self.RENDERED[-40:]}\n⏺ OK"
+        elided = f"❯ {self.RENDERED[:60]}\n  …\n  {self.RENDERED[-40:]}\n\n⏺ OK"
         missed = []
         for label, rendered, body in (
-            ("one row", self.SHORT, f"❯ {self.SHORT}\n⏺ OK"),
+            ("one row", self.SHORT, f"❯ {self.SHORT}\n\n⏺ OK"),
             ("after an earlier turn", self.SHORT,
-             f"❯ first\n⏺ reply\n\n❯ {self.SHORT}\n⏺ OK"),
-            ("wrapped", self.RENDERED, f"❯ {self._wrapped(self.RENDERED)}\n⏺ OK"),
+             f"❯ first\n\n⏺ reply\n\n❯ {self.SHORT}\n\n⏺ OK"),
+            ("wrapped", self.RENDERED, f"❯ {self._wrapped(self.RENDERED)}\n\n⏺ OK"),
             ("soft-wrapped at column 0", self.RENDERED,
              "❯ " + "\n".join(self.RENDERED[i:i + 28] for i in range(0, len(self.RENDERED), 28))),
             ("elided middle", self.RENDERED, elided),
-                    ):
+        ):
             if not session_ready.message_on_scrollback(self._cap(body), rendered):
                 missed.append(label)
         assert not missed, missed
+
+    GLYPHS = "⏺⎿✻✳✶✢✽●"
+
+    def test_body_lines_starting_with_an_agent_glyph_stay_inside_the_echo(self):
+        """A done report with ``●`` bullets or a quoted ``⏺`` line: the id token
+        comes AFTER such a row, so cutting the echo there loses the evidence."""
+        missed = []
+        for g in self.GLYPHS:
+            text = f"[MSG from w · done] summary\n{g} item one\n{g} item two  ⟨#cc3b38⟩"
+            for label, body in (
+                ("indented continuation", "❯ " + text.replace("\n", "\n  ") + "\n\n⏺ OK"),
+                ("soft-wrapped at column 0", f"❯ {text}\n\n⏺ OK"),
+                ("after a body blank row, indented",
+                 "❯ " + text.replace("\n", "\n\n  ", 1).replace("\n" + g, "\n  " + g) + "\n\n⏺ OK"),
+            ):
+                if not session_ready.message_on_scrollback(self._cap(body), text):
+                    missed.append((g, label))
+        assert not missed, missed
+
+    def test_the_agent_response_at_column_0_after_a_blank_row_ends_the_echo(self):
+        # evidence that exists only in the agent's reply must not count, for any
+        # marker glyph, however the echo itself wrapped
+        bad = []
+        for g in self.GLYPHS:
+            for echo in ("❯ earlier prompt", "❯ earlier\n  prompt"):
+                body = f"{echo}\n\n{g} reply\n  {self.SHORT}"
+                if session_ready.message_on_scrollback(self._cap(body), self.SHORT):
+                    bad.append((g, echo))
+        assert not bad, bad
+
+    def test_a_column_0_glyph_after_a_body_blank_row_reads_as_agent_output(self):
+        """The documented safe-direction limit: ambiguous, so the entry is
+        retried rather than risk a silent drop on a quoted relay."""
+        text = "[MSG from w · done] a\n\n● b  ⟨#cc3b38⟩"
+        assert not session_ready.message_on_scrollback(
+            self._cap(f"❯ {text}\n\n⏺ OK"), text)
 
 
 class TestUndeliveredReason:

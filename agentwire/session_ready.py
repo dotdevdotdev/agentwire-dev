@@ -422,32 +422,42 @@ def strip_input_box(capture: str) -> "str | None":
     return None if split is None else split[0]
 
 
-#: Rows that open the AGENT's side of the transcript (reply, tool result, status
-#: line). They end an input echo; no row of an echoed message starts with one.
+#: Glyphs that open the AGENT's side of the transcript (reply, tool result,
+#: spinner/status row).
 _AGENT_ROW_MARKERS = "⏺⎿✻✳✶✢✽●"
 
 
 def input_echo_text(outside: str, glyph: str) -> str:
     """The part of *outside* (the capture above the input box) that is the agent
     echoing a SUBMITTED input: each row opening with *glyph* (the prompt glyph
-    the input box itself uses, at column 0) and everything after it up to the
-    first row where the AGENT's output begins (``⏺`` reply, ``⎿`` tool result,
-    spinner/status row) or the end of *outside*. Blank rows and indentation are
-    part of the echo — a multi-paragraph message echoes with blank rows, and a
-    pane soft-wraps at column 0 while Claude's own wrapping indents. Everything
-    outside an echo is the agent's own prose, tool output or a quote of one —
-    text a never-delivered message can appear in verbatim (a relay that quotes a
-    full header + token), so it never proves delivery (#1113).
+    the input box itself uses, at column 0) and everything after it up to where
+    the AGENT's output begins, or the end of *outside*.
+
+    Agent output starts a paragraph: a row whose FIRST character (column 0) is an
+    agent-output marker and which FOLLOWS A BLANK ROW. Nothing else ends an
+    echo. Blank rows, indentation and rows that merely start with a marker glyph
+    are part of the echo — a multi-paragraph message echoes with blank rows, a
+    done report may have ``●`` bullets or a quoted ``⏺`` line in its body
+    (indented continuation, or soft-wrapped at column 0 with no blank row before
+    it), and cutting there would hide the trailing id token. Known limit: a body
+    line that starts a paragraph at column 0 with a marker glyph right after a
+    blank row reads as agent output (the safe direction: the entry is retried,
+    never silently consumed). Everything outside an echo is the agent's own
+    prose, tool output or a quote of one — text a never-delivered message can
+    appear in verbatim (a relay that quotes a full header + token), so it never
+    proves delivery (#1113).
     """
     echo: list[str] = []
     in_echo = False
+    prev_blank = False
     for ln in outside.split("\n"):
         if ln[:1] == glyph:
             in_echo = True
-        elif ln.strip() and ln.lstrip()[0] in _AGENT_ROW_MARKERS:
+        elif prev_blank and ln[:1] in _AGENT_ROW_MARKERS and ln[:1]:
             in_echo = False
         if in_echo:
             echo.append(ln)
+        prev_blank = not ln.strip()
     return "\n".join(echo)
 
 

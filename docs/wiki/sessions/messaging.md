@@ -179,8 +179,9 @@ lands in a durable inbox and is injected only at a safe boundary.
    (`_exhaustion_verdict`): the message echoed on scrollback (head + id token) →
    it was delivered, unlinked, never dead-lettered; the agent's
    queued-messages placeholder → busy, keep waiting (bounded by age, below);
-   otherwise it dead-letters with reason `delivery could not be confirmed` (so
-   the owner mail says unconfirmed, not lost; load-bearing kinds email).
+   otherwise it dead-letters with reason `delivery could not be confirmed; the message may
+   still be in the agent's queue` (so the owner mail says unconfirmed, not lost,
+   and not to blindly re-send; load-bearing kinds email).
    The heal path only runs while the paste is inside the 10-minute
    `PASTE_HEAL_WINDOW_MS`; after that an entry falls to the ordinary busy defers.
    `target_busy` and `target_parked` remain unbounded (a park is bounded by its
@@ -188,7 +189,7 @@ lands in a durable inbox and is injected only at a safe boundary.
    (#1113): once `QUEUED_WAIT_MS` (40 min = `MAX_ATTEMPTS` minutes, measured from
    the paste, or from enqueue if the entry was never pasted) has passed, the
    drain looks for delivery evidence first (the agent's input echo → consumed as
-   delivered) and otherwise dead-letters as `delivery could not be confirmed`
+   delivered) and otherwise dead-letters as unconfirmed (reason above)
    with the owner mail for load-bearing kinds. The bound is on *age*, never on
    attempts, so a genuinely busy session still burns nothing before it; a
    session that consumes its queue before it (the echo appears) is delivered.
@@ -211,12 +212,16 @@ lands in a durable inbox and is injected only at a safe boundary.
    **Only the agent's input echo counts (#1113).** Both the full-line and the
    elided match run against the *input echo* alone: a row opening, at column 0,
    with the prompt glyph the input box itself uses (`❯`; `>` on a box that uses
-   it) and everything after it up to the first row where the AGENT's output
-   begins (`⏺` reply, `⎿` tool result, spinner/status row) or the end of the
-   capture. Blank rows and indentation are part of the echo (a multi-paragraph
-   message echoes with blank rows; a pane soft-wraps at column 0). The same text
-   in the agent's prose, a tool result, or a relayed quote therefore never marks
-   a never-delivered message as delivered (`session_ready.input_echo_text`).
+   it) and everything after it up to where the AGENT's output begins: a row whose
+   first character (column 0) is an agent marker (`⏺` reply, `⎿` tool result,
+   spinner/status glyph) **and which follows a blank row** — or the end of the
+   capture. Blank rows, indentation and rows that merely *start* with such a
+   glyph (a `●` bullet or quoted `⏺` line in a done report's body) stay inside
+   the echo, so the trailing id token is still seen. Known limit, the safe
+   direction: a body line starting a paragraph at column 0 with a marker glyph
+   right after a blank row reads as agent output (retried, never silently
+   consumed). The same text in the agent's prose, a tool result, or a relayed
+   quote therefore never marks a never-delivered message as delivered (`session_ready.input_echo_text`).
 
    **Failed deliveries say where the text is (#1105).** `safe_deliver` no
    longer returns `delivery_unverified` for everything. After a failed

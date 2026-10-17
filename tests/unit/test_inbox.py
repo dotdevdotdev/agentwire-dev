@@ -1553,7 +1553,7 @@ class TestHealClobberAndBounds:
         inbox.flush_session("s")
         assert inbox.list_messages("s") == []
         (dead,) = inbox.list_dead("s")
-        assert dead.reason == "delivery could not be confirmed"
+        assert dead.reason == inbox._UNCONFIRMED_REASON
         assert dead.heals == inbox.MAX_HEALS
 
     def test_exhaustion_email_says_unconfirmed_not_lost(self, isolate, monkeypatch):
@@ -1564,7 +1564,7 @@ class TestHealClobberAndBounds:
             inbox, "_escalate_dead_letters", lambda batch, r: reasons.append(r))
         for _ in range(inbox.MAX_HEALS):
             inbox.flush_session("s")
-        assert reasons[-1] == "delivery could not be confirmed"
+        assert reasons[-1] == inbox._UNCONFIRMED_REASON
 
     def _verdict(self, monkeypatch, scrollback, box_sgr):
         from agentwire import session_ready
@@ -1631,6 +1631,29 @@ class TestHealClobberAndBounds:
             assert "private" not in blob
 
 
+class TestUnconfirmedDeadLetterWording:
+    """#1113 review: an unconfirmed paste may still sit in the agent's queue, so
+    the owner mail must not say it was "never delivered" (a re-send duplicates)."""
+
+    def test_mail_and_fleet_alert_say_it_may_still_be_queued(self, isolate, monkeypatch):
+        sent, alerts = [], []
+        monkeypatch.setattr(
+            "agentwire.channels.email.send_email",
+            lambda **kw: sent.append(kw) or SimpleNamespace(success=True))
+        monkeypatch.setattr(inbox, "_alert_dead_letters", lambda batch, reason: alerts.append(reason))
+        wrong = []
+        for reason, queued_ok in ((inbox._UNCONFIRMED_REASON, True), ("target_gone", False)):
+            sent.clear()
+            msgs = inbox.enqueue("s", "report", kind="done", sender="w")
+            inbox._escalate_dead_letters(msgs, reason)
+            body = " ".join(str(v) for v in sent[0].values()) if sent else ""
+            if ("may still be in the agent's queue" in body) != queued_ok:
+                wrong.append((reason, body[:200]))
+            if queued_ok and "never delivered" in body:
+                wrong.append((reason, "says never delivered"))
+        assert not wrong, wrong
+
+
 class TestBusyWaitIsBoundedByAge:
     """#1113 — the busy defers (``queued_placeholder`` / ``box_static``) cost no
     attempts, so a placeholder that never clears used to hold an entry forever.
@@ -1676,7 +1699,7 @@ class TestBusyWaitIsBoundedByAge:
                 bad.append((label, "dead-lettered before the bound", state))
             if state[41] != (0, 1):
                 bad.append((label, "not dead-lettered past the bound", state))
-            if escalated != [(["request"], "delivery could not be confirmed")]:
+            if escalated != [(["request"], inbox._UNCONFIRMED_REASON)]:
                 bad.append((label, "no/odd owner escalation", escalated))
             inbox.purge_dead("s")
         assert not bad, bad

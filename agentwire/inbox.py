@@ -126,7 +126,9 @@ GONE_MAX_ATTEMPTS = 5
 # the load-bearing kinds email the owner) instead of deferring in silence.
 _HEAL_REASONS = frozenset({"stuck_in_box", "pasted_unsubmitted"})
 MAX_HEALS = 10
-_UNCONFIRMED_REASON = "delivery could not be confirmed"
+_UNCONFIRMED_REASON = (
+    "delivery could not be confirmed; the message may still be in the agent's queue"
+)
 # How long an entry may wait on a "the agent is busy with it" signal before the
 # drain stops waiting in silence: the same ~40 minutes MAX_ATTEMPTS buys any
 # other defer at one drain tick a minute, but measured in AGE (from the paste, or
@@ -849,7 +851,7 @@ def _alert_dead_letters(batch: list[Message], reason: str) -> None:
         fleet_alerts.emit_for(
             "dead_letter",
             f"{len(mirrored)} load-bearing {noun} ({kinds}) to "
-            f"{', '.join(recipients)} were never delivered and have been "
+            f"{', '.join(recipients)} {_undelivered_phrase(reason, plural=len(mirrored) != 1)} "
             f"dead-lettered (last defer reason: {reason}). They are recoverable "
             f"with `agentwire msg dead`, but nobody has seen them.",
             kind=kind,
@@ -857,6 +859,17 @@ def _alert_dead_letters(batch: list[Message], reason: str) -> None:
         )
     except Exception as exc:  # best-effort; never break the drain
         _log_event("dead_letter_alert_failed", count=len(batch), error=str(exc))
+
+
+def _undelivered_phrase(reason: str, plural: bool) -> str:
+    """Owner-mail predicate up to "dead-lettered". An unconfirmed paste may still
+    sit in the agent's queue, so it is never called "never delivered" (a re-send
+    could duplicate it)."""
+    were, pron, have = ("were", "they", "have") if plural else ("was", "it", "has")
+    if reason == _UNCONFIRMED_REASON:
+        return (f"could not be confirmed as delivered ({pron} may still be in the "
+                f"agent's queue) and {have} been")
+    return f"{were} never delivered and {have} been"
 
 
 def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
@@ -898,10 +911,9 @@ def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
                 f"[agentwire] {len(batch)} undelivered messages → {to} (dead-lettered)"
             )
         noun = "message" if len(batch) == 1 else "messages"
-        verb = "was" if len(batch) == 1 else "were"
         lines = [
-            f"{len(batch)} load-bearing {noun} on `{host}` {verb} never delivered "
-            f"and {'has' if len(batch) == 1 else 'have'} been dead-lettered "
+            f"{len(batch)} load-bearing {noun} on `{host}` "
+            f"{_undelivered_phrase(reason, plural=len(batch) != 1)} dead-lettered "
             f"(last defer reason: {reason}).",
             "",
         ]
