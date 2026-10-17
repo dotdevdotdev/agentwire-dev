@@ -1672,6 +1672,50 @@ top level too; false-block direction, not wrapper-specific). A substitution in a
 case pattern is ask-tier, never allowed. `<(rm -rf x)`, `sh <<< 'rm -rf /x'` and a
 heredoc into bash allow for non-control-plane verbs on main too (pre-existing).
 
+### A `)` / `;` inside a word's data does not hide the verb (#1119)
+
+`A=${x:-)} rm -rf /tmp/x` was ALLOWED while `rm -rf /tmp/x` was blocked. Two
+readers of the same text disagreed with bash about where a word ends:
+
+- `_scan_masked_tokens` cut at `;` `&` `|` newline inside `${...}`, so the
+  second half started `}` and became the "command" with `rm` as its argument.
+- `strip_command_openers` took the first `)` of a head token as a case-arm
+  terminator. Tokens arrive quote-resolved, so `A='a)b' rm`, `A="a)b" rm`,
+  `A=a\)b rm`, `A=$'a)b' rm` and `A=${x:-)} rm` all looked like an arm ending
+  mid-word; the leftover was the head and the real verb an operand.
+
+Fix, in one place per reader. The scanner reads `${...}` (brace-depth, quote,
+escape and `$(`/backtick aware; only `${` nests, a bare `{` is data, as in
+bash), `$'...'` and an assignment subscript `name[...]=`/`+=` as ONE word
+(`_word_span`, helpers `_param_expansion_end`/`_ansi_c_end`/`_subscript_end`).
+A subscript only counts when `=` follows the `]` — `a[x;rm -rf /x]` is two
+commands in bash and stays two here. Every `)` the scanner knows is data
+(quoted, escaped, inside a span) is written as `_DATA_PAREN` for the opener
+stripper and restored right after, so no rule sees it. Walkers without quote
+info (`strip_command_opener_words`) get the span-aware `_first_paren_outside_spans`.
+`_ASSIGN_TOKEN_RE` now accepts a subscripted name, so `a[)]=1 rm` is a prefix
+assignment like `A=1 rm`.
+
+An unclosed `${` / `$'` / `[` is NOT a span: the scanner falls back to plain
+character scanning, which sees every verb in the remainder (errs closed for the
+operation). A `$'a\'b'` that shlex cannot parse is ask-tier via the existing
+"unbalanced quotes" ambiguity, as is any substitution inside an expansion.
+
+Pinned by a differential in `tests/unit/test_damage_control_word_spans.py`
+(command x 20 constructs x 6 positions x 8 wrappers, equal to the top-level
+decision, plus the kill-switch-off / unattended states), with must-allow
+controls and scanner-shape pins.
+
+**Declared residuals:** `rm foo -rf /x` (any operand BEFORE the flags) is
+allowed at top level too — the `rm` rules require the flags directly after `rm`
+(core.yaml), so no construct is needed to hide it; that is a rule-regex gap, not
+a tokenizer one. The `cd <dir> && …` chain regex (`\w+=\S*` prefix) misses an
+assignment prefix whose value or subscript contains whitespace/newline
+(`A=${x:-\n} cd ~/.agentwire && touch …`); it lives in the protected-path
+resolution lane (#1121). `normalize_subcommands` / `_scope_segments` still split
+with shlex punctuation (their consumers are the raw/unanchored haystacks, which
+see the verb regardless).
+
 ### Defense in Depth
 
 Damage Control is ONE layer:
