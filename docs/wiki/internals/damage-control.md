@@ -1108,6 +1108,30 @@ substitution ask, which bypass/auto demote — it is just no longer misread as
 verb concealment. `tests/unit/test_damage_control_inert_view.py` pins both
 halves; each guard has a mutation that turns it red.
 
+**The dynamic-evaluation builtin is judged by position (#1115).** The old
+check was a whitespace-keyed word search, so it guarded the phrasing: any
+commit message, issue/PR body, grep pattern, `agentwire msg`/`send` payload or
+quoted heredoc that merely NAMED the builtin was an un-demotable
+`unverifiable` ask (a silent block loop when unattended) — while spellings the
+regex could not see (`\\eval`, `e''val`, `"eval" x`, `bash -c 'eval "$x"'`)
+passed. `has_command_position_eval()` now reads the masked token view
+(quote/escape variants normalize to the literal, message text is already
+blanked) and walks each segment's leading chain — launcher wrappers, `builtin`,
+assignments, options and their values, compound keywords (`then`/`do`/`else`/
+`{`/`(`/`!`), case-arm labels — reporting the builtin only when it is the verb.
+It is **concealing** at command position under any of those (and as a
+`find`/`watch`/`flock`-style runner's argument, in a `bash -c`/`ssh` payload,
+and in the body of a heredoc feeding a shell); it is **data** as an argument
+(`echo`, `grep`, `git commit -m`, `gh --body`, `agentwire ...`, `tmux
+send-keys`, a quoted heredoc body, a comment). A data mention never shields a
+real call elsewhere in the same command. Residuals, stated plainly:
+command-position use is *always* unverifiable — a literal operand is not
+re-scanned as a command (rare, and the cost of the extra ask is one confirm);
+an option value that happens to be the word errs closed; and a call inside a
+`$(…)` is judged by the substitution path, not this one.
+`tests/unit/test_damage_control_eval_position.py` is the differential: every
+(spelling x position x wrapper) must conceal, every data mention must not.
+
 ### Tool-channel parity (#923)
 
 Damage control is registered per tool matcher, and a guard that asks "did this

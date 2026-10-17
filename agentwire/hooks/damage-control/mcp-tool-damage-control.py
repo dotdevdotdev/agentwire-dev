@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "d1e82a5cc8d23a4500da992b7de7f264d81ff5e5abc6202a27b17f10cf4b84ab", "generated_at": "2026-10-17T04:28:22Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "a70b7a88c0a819f78f4655b193de7d057ebdec93833baedd3c2147fc44a407d7", "generated_at": "2026-10-17T12:56:59Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -1715,7 +1715,7 @@ def command_scope_dirs(
     command, mask_err = _mask_command_substitutions(command)
     if mask_err:
         return [], mask_err
-    if _EVAL_RE.search(command):
+    if has_command_position_eval(command):
         return [], "eval"
     if _BASE64_PIPE_RE.search(command):
         return [], "base64-decode pipeline"
@@ -3752,7 +3752,70 @@ def detect_escape_hatch(command: str) -> Optional[str]:
 # substitution (``echo "$(basename $p)"``) is demoted by bypass.
 
 _SUBSTITUTION_RE = re.compile(r"\$\(|`")
-_EVAL_RE = re.compile(r"(?:^|[\s;&|({])eval(?:\s|$)")
+
+# Words after which the shell is still at command position, beyond the launcher
+# wrappers: compound-statement keywords (``then``/``do``/``else``/``!``) and the
+# builtins that hand the next word to the shell (``builtin eval``).
+_EVAL_CHAIN_KEYWORDS = frozenset({
+    "if", "then", "elif", "else", "while", "until", "do", "time", "!", "{", "(",
+    "builtin", "exec", "coproc", "select",
+})
+# Tools that RUN one of their arguments: ``eval`` anywhere after one is an
+# executing call, not data.
+_EVAL_ARG_RUNNERS = frozenset({"find", "watch", "flock", "chroot", "script", "strace", "caffeinate"})
+
+
+def has_command_position_eval(command: str) -> bool:
+    """Whether the dynamic-evaluation builtin is the VERB of some command (#1115).
+
+    Guards the operation, not the phrasing: ``echo eval``, ``grep -rn eval``, a
+    commit/PR/issue message, a ``send`` payload and a quoted heredoc body all
+    contain the word and run nothing. Reads the masked token view, so quoting
+    and escaping variants (``e''val``, ``\\\\eval``, ``"eval"``) normalize to the
+    literal and message text is already blanked. Walks each segment's leading
+    chain (launcher wrappers, assignments, options and their values, compound
+    keywords, case-arm labels) and reports ``eval`` found anywhere in it — an
+    option value that happens to be the word errs closed. The first token that
+    is none of those is the real verb: ``eval`` after it is an argument.
+    """
+    # The body of a heredoc feeding a shell IS the program, so it is scanned as
+    # commands in its own right (the entries below strip every body as content).
+    for h in _heredocs(command):
+        if _heredoc_feeds_shell(command[: h.start]) and has_command_position_eval(
+            command[h.body_start : h.body_end]
+        ):
+            return True
+    for words, is_payload in _masked_subcommand_entries(command):
+        if is_payload:
+            continue
+        if words and words[0] == "case":
+            # ``case x in pat) body`` — the body begins after the first arm label.
+            arm = next((j for j, w in enumerate(words) if j > 2 and w.endswith(")")), None)
+            if arm is None:
+                continue
+            words = words[arm + 1:]
+        for i, tok in enumerate(words):
+            tok = tok.lstrip("({")
+            if tok == "eval":
+                return True
+            base = tok.rsplit("/", 1)[-1]
+            if base in _EVAL_ARG_RUNNERS:
+                return any(w.lstrip("({") == "eval" for w in words[i + 1:])
+            if (
+                not tok
+                or base in _EVAL_CHAIN_KEYWORDS
+                or base in _POSITION_WRAPPERS
+                or _ASSIGN_TOKEN_RE.match(tok)
+                or tok.startswith("-")
+                or tok[:1].isdigit()
+                or tok.endswith(")")
+            ):
+                continue
+            # An option's value (``sudo -u root eval``) keeps the chain open.
+            if i > 0 and words[i - 1].startswith("-"):
+                continue
+            break
+    return False
 _BASE64_PIPE_RE = re.compile(r"\bbase64\b[^\n|]*(?:-d|--decode)[^\n|]*\|", re.IGNORECASE)
 _ASSIGN_RE = re.compile(
     r"(?:^|[\n;&|]|&&|\|\|)\s*([A-Za-z_]\w*)=('[^']*'|\"[^\"]*\"|[^\s;|&]*)"
@@ -3855,7 +3918,7 @@ def detect_obfuscation(command: str) -> Optional[str]:
     """
     if _SUBSTITUTION_RE.search(command):
         return "command substitution"
-    if _EVAL_RE.search(command):
+    if has_command_position_eval(command):
         return "eval"
     if _BASE64_PIPE_RE.search(command):
         return "base64-decode pipeline"
@@ -3917,7 +3980,7 @@ def ambiguity_conceals_verb(command: str) -> Optional[str]:
     masked, mask_err = _mask_command_substitutions(inert_view(command))
     if mask_err:
         return mask_err
-    if _EVAL_RE.search(masked):
+    if has_command_position_eval(masked):
         return "eval"
     if _BASE64_PIPE_RE.search(masked):
         return "base64-decode pipeline"
