@@ -394,7 +394,7 @@ import, so an `install_hooks(allow_foreign=True)` test repointed the real links 
 its checkout. Now the dirs resolve at call time, every machine-global symlink goes
 through `hooks_cli._link_into_claude` (refuses a target outside the canonical
 install, before touching the existing link), and the test guard fails any test that
-writes under the real `~/.claude` or `~/.agentwire`.
+writes under the real `~/.claude` or `~/.agentwire`. The guard is detect-after-the-fact (an audit hook records, it does not block); prevention is the call-time dirs and `_link_into_claude`.
 
 ---
 

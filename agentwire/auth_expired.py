@@ -218,7 +218,7 @@ def recorded_transcripts(session: str) -> list[Path]:
     still evidence rather than a guess.
     """
     from .core import load_session_metadata
-    from .history import PROJECTS_DIR, encode_project_path
+    from .history import claude_projects_dir, encode_project_path
 
     try:
         meta = load_session_metadata(session)
@@ -228,7 +228,7 @@ def recorded_transcripts(session: str) -> list[Path]:
     ids = meta.get("conversation_ids") or []
     if not cwd or not ids:
         return []
-    base = Path(PROJECTS_DIR) / encode_project_path(str(cwd))
+    base = claude_projects_dir() / encode_project_path(str(cwd))
     return [p for p in (base / f"{cid}.jsonl" for cid in ids) if p.exists()]
 
 
@@ -245,9 +245,9 @@ def touched_transcripts(project_path, since: float) -> list[Path]:
     written during the window the caller is asking about, so a hit is a
     transcript this run actually produced.
     """
-    from .history import PROJECTS_DIR, encode_project_path
+    from .history import claude_projects_dir, encode_project_path
 
-    base = Path(PROJECTS_DIR) / encode_project_path(str(project_path))
+    base = claude_projects_dir() / encode_project_path(str(project_path))
     try:
         entries = list(base.glob("*.jsonl"))
     except OSError:

@@ -280,7 +280,12 @@ def cmd_network_status(args) -> int:
 
 def _render_hooks_section() -> int:
     """Print the agentwire-owned hook files (existence, drift, link target); return issues."""
-    from .hooks_cli import _managed_file_state, _managed_hook_files, get_hooks_source
+    from .hooks_cli import (
+        _managed_file_state,
+        _managed_hook_files,
+        claude_hooks_dir,
+        get_hooks_source,
+    )
 
     issues_found = 0
     try:
@@ -317,6 +322,17 @@ def _render_hooks_section() -> int:
             print(f"  [..] {label}: not found ({why})")
             print("     Run: agentwire hooks install")
 
+    # Links in the hooks dir that are not managed but aim at an agentwire hooks
+    # directory (a legacy hand-placed name like outcome-logger.py). Informational:
+    # nothing registers them, but the owner should know they exist and where they go.
+    managed = {h.name for h in _managed_hook_files()}
+    hooks_dir = claude_hooks_dir()
+    for entry in sorted(hooks_dir.iterdir()) if hooks_dir.is_dir() else []:
+        if entry.name in managed or not entry.is_symlink():
+            continue
+        dest = Path(os.readlink(entry))
+        if dest.parent.name == "hooks" and dest.parent.parent.name == "agentwire":
+            print(f"  [..] unmanaged hook link: {entry} -> {dest} (legacy; not installed or checked by agentwire)")
     return issues_found
 
 

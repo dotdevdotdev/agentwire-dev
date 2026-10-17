@@ -124,6 +124,14 @@ def _isolate_agentwire_home(request, tmp_path_factory, monkeypatch):
             elif REAL_AGENTWIRE_HOME in value.parents:
                 relocated = fake_config / value.relative_to(REAL_AGENTWIRE_HOME)
                 monkeypatch.setattr(module, attr, relocated, raising=False)
+            # Same walk for ~/.claude (#1118): history.CLAUDE_DIR/PROJECTS_DIR
+            # and the handoff CLAUDE_DIR are import-frozen, and history_migrate
+            # WRITES under them.
+            elif value == home_guard.REAL_CLAUDE_HOME:
+                monkeypatch.setattr(module, attr, fake_home / ".claude", raising=False)
+            elif home_guard.REAL_CLAUDE_HOME in value.parents:
+                relocated = fake_home / ".claude" / value.relative_to(home_guard.REAL_CLAUDE_HOME)
+                monkeypatch.setattr(module, attr, relocated, raising=False)
 
     # ``agentwire_dir()`` both resolves AND mkdirs, and callers bound it with
     # ``from .utils.paths import agentwire_dir`` — a per-module copy that

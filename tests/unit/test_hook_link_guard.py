@@ -141,3 +141,75 @@ class TestDoctorFlagsBadLinks:
         link.symlink_to(gone)
         issues, out = self._render(capsys)
         assert issues >= 1 and "dangling" in out and str(gone) in out
+
+
+class TestLinkIsAtomic:
+    def test_a_failure_while_replacing_leaves_the_old_link_and_no_temp(self, machine, monkeypatch):
+        home, canonical, _w = machine
+        target = home / ".claude" / "hooks" / "idle-handler.sh"
+        old = canonical / "hooks" / "other.sh"
+        old.write_text("x")
+        target.symlink_to(old)
+
+        def boom(*_a, **_k):
+            raise OSError("injected")
+
+        monkeypatch.setattr(hooks_cli.os, "replace", boom)
+        with pytest.raises(OSError, match="injected"):
+            hooks_cli._install_managed_file(
+                canonical / "hooks" / "idle-handler.sh", target, force=True
+            )
+        assert target.resolve() == old.resolve(), "the old link must survive a failed replace"
+        assert [p.name for p in target.parent.iterdir()] == ["idle-handler.sh"]
+
+
+class TestClaudeDirIsResolvedPerCall:
+    """history/handoff froze ~/.claude at import (#1118): resolve per call, and leave no
+    import-time Path constant naming the real ~/.claude anywhere in the package."""
+
+    def test_history_and_handoff_follow_a_redirected_home(self, tmp_path, monkeypatch):
+        from agentwire import history
+        from agentwire.handoff import instructions  # noqa: F401  (resolves claude_dir per call)
+        from agentwire.utils.paths import claude_dir
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        assert claude_dir() == tmp_path / ".claude"
+        assert history.claude_projects_dir() == tmp_path / ".claude" / "projects"
+        assert history.history_file() == tmp_path / ".claude" / "history.jsonl"
+
+    def test_no_loaded_module_holds_a_path_constant_under_the_real_claude_dir(self):
+        import sys
+
+        from tests import home_guard
+
+        real = home_guard.REAL_CLAUDE_HOME
+        frozen = sorted(
+            f"{name}.{attr}"
+            for name, mod in list(sys.modules.items())
+            if name == "agentwire" or name.startswith("agentwire.")
+            for attr, value in list(vars(mod or object).items())
+            if isinstance(value, Path) and (value == real or real in value.parents)
+        )
+        assert not frozen, f"import-frozen paths into the real ~/.claude: {frozen}"
+
+
+class TestDoctorLegacyLink:
+    def test_unmanaged_link_into_an_agentwire_hooks_dir_is_informational_not_scored(
+        self, machine, capsys, tmp_path
+    ):
+        home, canonical, _w = machine
+        legacy_src = tmp_path / "main" / "agentwire" / "hooks" / "outcome-logger.py"
+        legacy_src.parent.mkdir(parents=True)
+        legacy_src.write_text("x")
+        (home / ".claude" / "hooks" / "outcome-logger.py").symlink_to(legacy_src)
+        (home / ".claude" / "hooks" / "unrelated.sh").symlink_to(tmp_path / "elsewhere.sh")
+
+        before = doctor_cli._render_hooks_section()
+        out = capsys.readouterr().out
+        (home / ".claude" / "hooks" / "outcome-logger.py").unlink()
+        after = doctor_cli._render_hooks_section()
+        capsys.readouterr()
+
+        assert "[..] unmanaged hook link:" in out and str(legacy_src) in out
+        assert "unrelated.sh" not in out
+        assert before == after, "an informational line must not change the issue count"

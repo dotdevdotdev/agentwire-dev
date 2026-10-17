@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import importlib.resources
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 from typing import NamedTuple
+
+from .utils.paths import claude_dir
 
 
 # Resolved at CALL time, never frozen at import: an import-time constant keeps
@@ -21,15 +24,15 @@ from typing import NamedTuple
 # test's `install_hooks(allow_foreign=True)` unlinked and relinked the owner's
 # real hook symlinks into a worktree (#1118).
 def claude_hooks_dir() -> Path:
-    return Path.home() / ".claude" / "hooks"
+    return claude_dir() / "hooks"
 
 
 def claude_commands_dir() -> Path:
-    return Path.home() / ".claude" / "commands"
+    return claude_dir() / "commands"
 
 
 def claude_skills_dir() -> Path:
-    return Path.home() / ".claude" / "skills"
+    return claude_dir() / "skills"
 
 
 class LinkRefusedError(RuntimeError):
@@ -51,9 +54,19 @@ def _link_into_claude(source: Path, target: Path, *, allow_foreign: bool, direct
         if refusal is not None:
             raise LinkRefusedError("\n".join(refusal))
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() or target.is_symlink():
-        _remove_skill_target(target)
-    target.symlink_to(source.resolve(), target_is_directory=directory)
+    # Create the new link under a temp name and rename it over the slot, so a
+    # failure at any point leaves the old link (or nothing) — never a hole.
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.new")
+    if tmp.is_symlink() or tmp.exists():
+        tmp.unlink()
+    tmp.symlink_to(source.resolve(), target_is_directory=directory)
+    try:
+        if target.is_dir() and not target.is_symlink():
+            _remove_skill_target(target)  # a real directory can't be replaced by a rename
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def get_hooks_source() -> Path:
@@ -279,7 +292,7 @@ def register_hook_in_settings(event: str, hook_name: str) -> bool:
       }
     }
     """
-    settings_file = Path.home() / ".claude" / "settings.json"
+    settings_file = claude_dir() / "settings.json"
     # Use ~ for portability
     hook_command = f"~/.claude/hooks/{hook_name}"
 
@@ -552,7 +565,7 @@ def unregister_hook_from_settings(event: str, hook_name: str) -> bool:
 
     Returns True if settings were updated, False if not found.
     """
-    settings_file = Path.home() / ".claude" / "settings.json"
+    settings_file = claude_dir() / "settings.json"
     hook_command = f"~/.claude/hooks/{hook_name}"
 
     if not settings_file.exists():
@@ -596,7 +609,7 @@ def unregister_hook_from_settings(event: str, hook_name: str) -> bool:
 
 def is_hook_registered(event: str, hook_name: str) -> bool:
     """Check if a hook is registered under `event` in Claude's settings.json."""
-    settings_file = Path.home() / ".claude" / "settings.json"
+    settings_file = claude_dir() / "settings.json"
     hook_command = f"~/.claude/hooks/{hook_name}"
 
     if not settings_file.exists():

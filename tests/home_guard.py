@@ -86,7 +86,16 @@ def install() -> None:
         return
     _INSTALLED[0] = True
 
-    real_roots = (str(REAL_AGENTWIRE_HOME), str(REAL_CLAUDE_HOME))
+    # Both the spelled and the symlink-resolved form of each root. Matching is
+    # on the path as given (normpath'd, so ``a/../.claude`` is caught); a write
+    # reached through a DIFFERENT symlinked spelling of the home, or through a
+    # case-variant on a case-insensitive filesystem, is not detected — this
+    # guard detects after the fact, it does not prevent (#1118).
+    real_roots = tuple({
+        form
+        for root in (REAL_AGENTWIRE_HOME, REAL_CLAUDE_HOME)
+        for form in (str(root), os.path.realpath(root))
+    })
 
     def hook(event, args):
         if event == "open":
@@ -117,7 +126,7 @@ def install() -> None:
             return
         for target in targets:
             try:
-                path = str(target)
+                path = os.path.normpath(str(target))
             except Exception:
                 continue
             if not path.startswith(real_roots):
