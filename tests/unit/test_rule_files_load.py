@@ -116,6 +116,7 @@ GWS_WRITES = [
     "echo hi; gws drive permissions create", "env FOO=1 gws drive files copy",
     "gws gmail users messages delete", "gws drive files delete",
     "gws calendar events delete", "gws-auth ~/.config/gws-work",
+    "gws people people createContact", "gws people people deleteContact",
 ]
 
 GWS_READS = [
@@ -130,6 +131,7 @@ GWS_READS = [
     "gws schema gmail.users.messages.send", "gws gmail users messages send --dry-run",
     "gws drive permissions create --help", "gws help drive",
     "gws gmail users messages list --params '{\"q\":\"send create delete\"}'",
+    "gws calendar events insert --dry-run", "gws people people searchContacts",
     "echo gws gmail users messages send", "grep -r 'gws drive files create' docs",
 ]
 

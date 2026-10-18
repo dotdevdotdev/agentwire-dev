@@ -4,9 +4,8 @@
 # A user tooldefs dir REPLACES the bundled one, so run `agentwire safety install
 # --yes` first on a fresh machine (it installs the bundled files beside this one).
 # Verb-based enforcement lives in gws-user-rules.yaml: a tooldef can only name
-# fixed command prefixes. The `write` entries below are reference text; the rules
-# file shadows them (first match wins), so the calendar-create grant id is
-# `gws.calendar-event-create`.
+# fixed command prefixes. Writes are enforced there (it carries the --dry-run/--help carve-outs); the
+# calendar-create grant id is `gws.calendar-event-create`. Only `gws-auth` is a tooldef write.
 
 name: Google Workspace CLI
 binary: gws
@@ -63,10 +62,6 @@ commands:
     access: read
     description: Get account profile (confirms which account is active)
 
-  - cmd: "gws gmail users messages trash --params '{\"userId\":\"me\",\"id\":\"<id>\"}'"
-    access: write
-    description: Move message to trash
-
   - cmd: "gws gmail users messages delete --params '{\"userId\":\"me\",\"id\":\"<id>\"}'"
     access: blocked
     description: Permanently delete a message (bypasses trash)
@@ -88,18 +83,6 @@ commands:
     access: read
     description: Get a specific event
 
-  - cmd: "gws calendar events insert --params '{\"calendarId\":\"primary\"}' --json '{\"summary\":\"...\",\"start\":{...},\"end\":{...}}'"
-    access: write
-    description: Create a calendar event
-
-  - cmd: "gws calendar events update --params '{\"calendarId\":\"primary\",\"eventId\":\"<id>\"}'"
-    access: write
-    description: Update a calendar event
-
-  - cmd: "gws calendar events delete --params '{\"calendarId\":\"primary\",\"eventId\":\"<id>\"}'"
-    access: write
-    description: Delete a calendar event
-
   - cmd: "gws calendar calendars delete --params '{\"calendarId\":\"<id>\"}'"
     access: blocked
     description: Delete an entire calendar and all its events
@@ -112,14 +95,6 @@ commands:
   - cmd: "gws drive files get --params '{\"fileId\":\"<id>\"}'"
     access: read
     description: Get file metadata
-
-  - cmd: "gws drive files update --params '{\"fileId\":\"<id>\"}'"
-    access: write
-    description: Update file metadata or content
-
-  - cmd: "gws drive files copy --params '{\"fileId\":\"<id>\"}'"
-    access: write
-    description: Copy a file
 
   - cmd: "gws drive files delete --params '{\"fileId\":\"<id>\"}'"
     access: blocked
@@ -134,26 +109,10 @@ commands:
     access: read
     description: Read cell values from a range
 
-  - cmd: "gws sheets spreadsheets values update --params '{\"spreadsheetId\":\"<id>\",\"range\":\"<range>\"}'"
-    access: write
-    description: Write values to a range
-
-  - cmd: "gws sheets spreadsheets values append --params '{\"spreadsheetId\":\"<id>\",\"range\":\"<range>\"}'"
-    access: write
-    description: Append rows to a sheet
-
-  - cmd: "gws sheets spreadsheets values clear --params '{\"spreadsheetId\":\"<id>\",\"range\":\"<range>\"}'"
-    access: write
-    description: Clear values in a range
-
   # Docs
   - cmd: "gws docs documents get --params '{\"documentId\":\"<id>\"}'"
     access: read
     description: Get document content and structure
-
-  - cmd: "gws docs documents batchUpdate --params '{\"documentId\":\"<id>\"}'"
-    access: write
-    description: Apply edits to a document
 
   # Admin (requires admin privileges)
   - cmd: "gws admin users list"
@@ -164,14 +123,6 @@ commands:
     access: read
     description: Get user details (admin only)
 
-  - cmd: "gws admin users insert"
-    access: write
-    description: Create a new user (admin only)
-
-  - cmd: "gws admin users update --params '{\"userKey\":\"<email>\"}'"
-    access: write
-    description: Update user details (admin only)
-
   - cmd: "gws admin users delete --params '{\"userKey\":\"<email>\"}'"
     access: blocked
     description: Permanently delete a user account (admin only)
@@ -179,20 +130,3 @@ commands:
   - cmd: "gws admin users makeAdmin --params '{\"userKey\":\"<email>\"}'"
     access: blocked
     description: Grant admin privileges to a user
-
-  # Helper forms
-  - cmd: "gws gmail +send"
-    access: write
-    description: Send an email (helper)
-
-  - cmd: "gws gmail +insert"
-    access: write
-    description: Insert a message into the mailbox (helper)
-
-  - cmd: "gws gmail +upload"
-    access: write
-    description: Upload a message (helper)
-
-  - cmd: "gws calendar events quickAdd"
-    access: write
-    description: Create an event from text

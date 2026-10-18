@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "908bb0bc13a76dde2cf6543ab4afffe36d3f02e819a21d4693ff6450bc97b361", "generated_at": "2026-10-18T19:16:51Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "9e7619a81d6a51cd0340a9ac8a00ba10626f05f5c40f2aa32e794028107ee35d", "generated_at": "2026-10-18T23:27:26Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -142,7 +142,23 @@ READ_ONLY_BLOCKED = (
     + TRUNCATE_PATTERNS
 )
 
-NO_DELETE_BLOCKED = DELETE_PATTERNS
+# Emptying a guarded file is deleting it (owner ruling, #1127 family): the
+# truncate-to-nothing verbs count; a plain ``>`` redirect / ``echo x > file`` is
+# the ordinary edit path and stays allowed.
+EMPTY_PATTERNS = [
+    (r'\btruncate\s+.*{path}', "delete"),
+    (r'\bdd\s+.*\bof=["\']?\S*{path}', "delete"),
+    # a redirect whose source is a known-empty producer
+    (r'(?:^|\s)(?::|true|false)\s*>\|?\s*\S*{path}', "delete"),
+    (r'\bcat\s+/dev/null\s*>\|?\s*\S*{path}', "delete"),
+    (r'\bprintf\s+(?:\'\'|""|\x00)?\s*>\|?\s*\S*{path}', "delete"),
+    (r'\becho\s+-n\s*(?:\'\'|""|\x00)?\s*>\|?\s*\S*{path}', "delete"),
+    (r'\btee\s+(?:-\S+\s+)*\S*{path}\S*\s+<\s*/dev/null', "delete"),
+    (r'<\s*/dev/null\s+tee\s+(?:-\S+\s+)*\S*{path}', "delete"),
+    (r'(?:^|\s)(?:\'\'|""|\x00)\s*>\|?\s*\S*{path}', "delete"),
+]
+
+NO_DELETE_BLOCKED = DELETE_PATTERNS + EMPTY_PATTERNS
 
 # Interpreter programs can write a file without any shell-level write token:
 # ``python3 -c 'open(p, "w")...'``, a heredoc piped into ``python -``, or
@@ -756,6 +772,477 @@ def check_path_patterns(
         except re.error:
             continue
     return False, ""
+
+
+# ----------------------------------------------------------------------------
+# Producer-fed deletes (#1128) and moves/overwrites (#1127)
+# ----------------------------------------------------------------------------
+# The no-delete / read-only ladders pair a destructive VERB with a path in the
+# same simple command. A pipe, xargs, a loop or a substitution splits the two:
+# ``find ~/.claude | xargs rm`` has the path in one segment and the verb in
+# another, and nothing paired them. The scan below finds delete/move consumers
+# whose operands come from somewhere else and treats the OTHER segments' words
+# as the consumer's operands, so the ladders judge them like direct operands.
+# ``mv`` is not a delete verb, but moving a guarded file out of place deletes it
+# from where it was guarded, and moving or copying onto one overwrites it.
+
+_DELETE_VERBS = frozenset({"rm", "rmdir", "unlink", "shred"})
+_MOVE_VERBS = frozenset({"mv", "rename"})
+_COPY_VERBS = frozenset({"cp", "install", "rsync"})
+_FEEDERS = frozenset({"xargs", "parallel"})
+_PRODUCER_SCAN_VERBS_RE = re.compile(r"\b(?:rm|rmdir|unlink|shred|truncate|dd|mv|rename|cp|install|rsync|ln)\b")
+_FEEDER_VALUE_OPTS = frozenset(
+    {"-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a", "-J", "-R", "-S", "-j", "-N", "-l", "-i"}
+)
+_WRAPPER_VALUE_OPTS = frozenset(
+    {"-u", "-g", "-h", "-p", "-C", "-D", "-T", "-R", "-n", "-s", "-k", "-c", "-t", "-d", "-S"}
+)
+_COPY_VALUE_OPTS = frozenset("tSmogeB")
+_COPY_LONG_VALUE_OPTS = frozenset({
+    "--suffix", "--mode", "--owner", "--group", "--rsh", "--exclude", "--include",
+    "--filter", "--files-from", "--exclude-from", "--include-from", "--rsync-path",
+    "--temp-dir", "--log-file",
+})
+_FIND_FILTER_PRIMARIES = frozenset(
+    {"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex"}
+)
+_FIND_EXEC_PRIMARIES = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+_SEARCH_PRODUCERS = frozenset(
+    {"find", "ls", "tree", "du", "fd", "fdfind", "rg", "ag", "grep", "egrep", "fgrep", "locate"}
+)
+_VAR_ASSIGN_WORD_RE = re.compile(r"[A-Za-z_]\w*=")
+_GLOB_CHARS_RE = re.compile(r"[*?\[]")
+
+
+def _is_dynamic_operand(word: str) -> bool:
+    """An operand whose value the command text does not carry (variable, substitution, ``{}``)."""
+    return "$" in word or "`" in word or "{}" in word or word.endswith(")")
+
+
+def _command_head(words: List[str]) -> Optional[Tuple[str, List[str], bool]]:
+    """``(verb, args, fed_by_stdin)`` of one simple command, wrappers peeled; None if unmodelled."""
+    i, n, fed = 0, len(words), False
+    while i < n:
+        word = words[i]
+        base = posixpath.basename(word)
+        if _VAR_ASSIGN_WORD_RE.match(word):
+            i += 1
+        elif base in _PREFIX_WRAPPERS:
+            i += 1
+            while i < n and (words[i].startswith("-") or re.fullmatch(r"[\d.]+[smhd]?", words[i])):
+                opt = words[i]
+                i += 1
+                if opt in _WRAPPER_VALUE_OPTS and i < n and not words[i].startswith("-"):
+                    i += 1
+        elif base in _FEEDERS:
+            fed = True
+            i += 1
+            while i < n and words[i].startswith("-"):
+                opt = words[i]
+                i += 1
+                if opt in _FEEDER_VALUE_OPTS and i < n:
+                    i += 1
+        elif base == "git":
+            i += 1
+            while i < n and words[i].startswith("-"):
+                opt = words[i]
+                i += 1
+                if opt in {"-C", "-c", "--git-dir", "--work-tree", "--namespace"} and i < n:
+                    i += 1
+            if i < n and words[i] == "mv":
+                return "mv", words[i + 1:], fed
+            return None
+        else:
+            return base, words[i + 1:], fed
+    return None
+
+
+def _split_operands(args: List[str]) -> Tuple[List[str], Optional[str], bool]:
+    """``(positional operands, -t/--target-directory value, -T given)`` of an mv/cp-style command."""
+    ops: List[str] = []
+    target: Optional[str] = None
+    no_target = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            ops.extend(args[i + 1:])
+            break
+        if arg.startswith("--"):
+            name, eq, value = arg.partition("=")
+            if name == "--target-directory":
+                if eq:
+                    target = value
+                elif i + 1 < len(args):
+                    i += 1
+                    target = args[i]
+            elif name == "--no-target-directory":
+                no_target = True
+            elif name in _COPY_LONG_VALUE_OPTS and not eq:
+                i += 1
+        elif arg.startswith("-") and len(arg) > 1:
+            for j, ch in enumerate(arg[1:], 1):
+                if ch == "T":
+                    no_target = True
+                elif ch in _COPY_VALUE_OPTS:
+                    rest = arg[j + 1:]
+                    value = rest or (args[i + 1] if i + 1 < len(args) else None)
+                    if not rest:
+                        i += 1
+                    if ch == "t":
+                        target = value
+                    break
+        else:
+            ops.append(arg)
+        i += 1
+    return ops, target, no_target
+
+
+class _GuardedOp:
+    """One delete/move/overwrite consumer: what leaves its place, what is written over."""
+
+    __slots__ = ("sources", "dests", "fed", "operands", "relocates", "strict")
+
+    def __init__(
+        self, sources: List[str], dests: List[str], fed: bool, operands: List[str],
+        relocates: bool = True, strict: bool = False,
+    ):
+        self.sources, self.dests, self.fed, self.operands = sources, dests, fed, operands
+        self.relocates, self.strict = relocates, strict  # mv/cp-style; plain deletes are the regex ladder's job
+
+
+def _truncate_operands(args: List[str]) -> List[str]:
+    ops: List[str] = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in ("-s", "-r", "--size", "--reference"):
+            skip = True
+        elif not (a.startswith("-") and a != "-"):
+            ops.append(a)
+    return ops
+
+
+def _classify_guarded_op(
+    words: List[str], find_fed: bool = False, strict: bool = False
+) -> Optional[_GuardedOp]:
+    head = _command_head(words)
+    if head is None:
+        return None
+    verb, args, via_feeder = head
+    fed = via_feeder or find_fed
+    if via_feeder and " " in verb.strip():
+        # `parallel 'rm {}' ::: x`: the quoted word is the command line itself.
+        try:
+            nested = shlex.split(verb) + args
+        except ValueError:
+            return None
+        return _classify_guarded_op(nested, find_fed=True, strict=strict)
+    if verb in _DELETE_VERBS or verb == "truncate":
+        ops = _truncate_operands(args) if verb == "truncate" else [
+            a for a in args if not (a.startswith("-") and a != "-")
+        ]
+        return _GuardedOp(
+            ops, [], fed or any(_is_dynamic_operand(o) for o in ops), ops, relocates=False, strict=strict
+        )
+    if verb == "dd":
+        ops = [a[3:] for a in args if a.startswith("of=")]
+        return _GuardedOp(
+            ops, [], fed or any(_is_dynamic_operand(o) for o in ops), ops, relocates=False, strict=strict
+        )
+    if verb in _MOVE_VERBS or verb in _COPY_VERBS or (verb == "ln" and any(
+        a.startswith("-") and not a.startswith("--") and "f" in a or a == "--force" for a in args
+    )):
+        ops, target, no_target = _split_operands(args)
+        if verb == "rename":
+            return _GuardedOp(ops, [], fed or any(_is_dynamic_operand(o) for o in ops), ops, strict=strict)
+        if target is not None:
+            srcs, dests = ops, [target]
+        elif len(ops) >= 2 or no_target:
+            srcs, dests = ops[:-1], ops[-1:]
+        else:
+            srcs, dests = [], ops
+        if verb in _COPY_VERBS or verb == "ln":
+            srcs = []
+        dynamic = any(_is_dynamic_operand(o) for o in srcs + dests)
+        return _GuardedOp(
+            srcs, dests, fed or dynamic, ops + ([target] if target else []), strict=strict
+        )
+    if verb == "find":
+        for i, w in enumerate(args):
+            if w in _FIND_EXEC_PRIMARIES:
+                nested = []
+                for t in args[i + 1:]:
+                    if t in (";", "+"):
+                        break
+                    nested.append(t)
+                return _classify_guarded_op(nested, find_fed=True, strict=w != "-exec")
+    return None
+
+
+class _ProducerScan:
+    """What the command's consumers can be fed, and the direct mv/cp operands."""
+
+    __slots__ = ("pool", "searches", "direct", "deletes", "moves", "strict")
+
+    def __init__(self) -> None:
+        self.pool: List[str] = []
+        self.searches: List[Tuple[List[str], List[str], bool]] = []
+        self.direct: List[_GuardedOp] = []
+        self.deletes = False  # a fed rm/truncate/dd consumer is present
+        self.moves = False  # a fed mv/rename consumer is present
+        self.strict = False  # fed through find -execdir/-ok/-okdir: a "possible" is a block
+
+    def __bool__(self) -> bool:
+        return bool(self.pool or self.direct)
+
+
+_GIT_PRODUCER_SUBCOMMANDS = frozenset({"ls-files", "ls-tree", "status", "diff", "grep", "log", "show"})
+
+
+def _git_producer(head_args: List[str]) -> Optional[Tuple[List[str], List[str], bool]]:
+    """``(roots, filters, implicit_cwd)`` of ``git [-C dir] ls-files …``-style producers."""
+    roots: List[str] = []
+    i = 0
+    while i < len(head_args) and head_args[i].startswith("-"):
+        opt = head_args[i]
+        i += 1
+        if opt in {"-C", "-c", "--git-dir", "--work-tree"} and i < len(head_args):
+            if opt in ("-C", "--work-tree"):
+                roots.append(head_args[i])
+            i += 1
+    if i >= len(head_args) or head_args[i] not in _GIT_PRODUCER_SUBCOMMANDS:
+        return None
+    for a in head_args[i + 1:]:
+        if not a.startswith("-"):
+            roots.append(a)
+    return roots, [], not roots
+
+
+def _search_roots(head: str, args: List[str]) -> Tuple[List[str], List[str], bool]:
+    """``(roots, name filters, implicit_cwd)`` of a search producer's argument list."""
+    filters: List[str] = []
+    positional: List[str] = []
+    recursive = head in {"rg", "ag", "find", "ls", "tree", "du", "fd", "fdfind", "locate"}
+    expr_started = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if head == "find" and (a.startswith("-") or a in ("(", "!")):
+            expr_started = True
+        if head == "find" and expr_started:
+            if a in _FIND_FILTER_PRIMARIES and i + 1 < len(args):
+                filters.append(args[i + 1])
+            i += 1
+            continue
+        if a.startswith("-") and len(a) > 1:
+            if head in {"grep", "egrep", "fgrep"} and re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*|--recursive", a):
+                recursive = True
+            i += 1
+            continue
+        positional.append(a)
+        i += 1
+    if head in {"grep", "egrep", "fgrep", "rg", "ag", "fd", "fdfind", "locate"} and positional:
+        positional = positional[1:]  # the pattern, not a root
+    roots = [p for p in positional if not p.startswith("-")]
+    return roots, filters, (not roots and recursive)
+
+
+def _producer_head(words: List[str]) -> Optional[Tuple[List[str], List[str], bool]]:
+    """Search roots of a producer segment, or None when it is not a search."""
+    i = 0
+    while i < len(words) and (_VAR_ASSIGN_WORD_RE.match(words[i]) or words[i] in _PREFIX_WRAPPERS):
+        i += 1
+    if i >= len(words):
+        return None
+    verb, args = posixpath.basename(words[i]), words[i + 1:]
+    if verb == "git":
+        return _git_producer(args)
+    if verb in _SEARCH_PRODUCERS:
+        return _search_roots(verb, args)
+    return None
+
+
+def producer_scan(command: str) -> _ProducerScan:
+    """Find consumers fed from elsewhere (and direct mv/cp operands) in ``command``."""
+    scan = _ProducerScan()
+    if not _PRODUCER_SCAN_VERBS_RE.search(command):
+        return scan
+    segments = _masked_subcommand_words(mask_sed_substitutions(command), keep=lambda _t: True)
+    ops = [_classify_guarded_op(words) for words in segments]
+    for words, op in zip(segments, ops):
+        if op is None:
+            continue
+        if op.fed:
+            if op.relocates:
+                scan.moves = True
+            else:
+                scan.deletes = True
+            scan.strict = scan.strict or op.strict
+        elif op.relocates:
+            scan.direct.append(op)
+    if not (scan.deletes or scan.moves):
+        return scan
+    for words, op in zip(segments, ops):
+        head = _command_head(words)
+        if op is not None and op.fed:
+            scan.pool.extend(op.operands)
+            if ":::" in words or "::::" in words:
+                scan.pool.extend(words)
+            if head is None or head[0] != "find":
+                continue  # `find ... -exec rm` is both producer and consumer
+        scan.pool.extend(words)
+        found = _producer_head(words)
+        if found is not None:
+            scan.searches.append(found)
+    return scan
+
+
+def _expand_scan_word(word: str) -> str:
+    return os.path.expanduser(canonicalize_command(word.strip("'\"")))
+
+
+def _prefix_may_reach(root: str, entry_abs: str) -> bool:
+    """True when the directory ``root`` is (or contains) ``entry_abs``."""
+    root = root.rstrip("/") or "/"
+    if _GLOB_CHARS_RE.search(root):
+        parts = entry_abs.strip("/").split("/")
+        return any(
+            fnmatch.fnmatchcase("/" + "/".join(parts[:k]), root) for k in range(1, len(parts) + 1)
+        )
+    return root == "/" or entry_abs == root or entry_abs.startswith(root + "/")
+
+
+def producer_may_emit(scan: _ProducerScan, path: str, cwd: Optional[str]) -> Optional[str]:
+    """``"named"`` / ``"possible"`` / None: could a search producer emit a guarded file?
+
+    The producer's output is unknown, so a root that IS or contains the guarded
+    path, a variable-valued root, or a name filter that could match a guarded
+    basename counts. A literal root equal to or inside the guarded path is as
+    good as naming it (``named``); a root that merely contains it, or a
+    relative root that resolves into it, is ``possible``. A producer with no
+    protected argument, run from an unguarded cwd, is not a hit.
+    """
+    expanded = os.path.expanduser(path)
+    is_dir = expanded.endswith("/")
+    entry = expanded.rstrip("/")
+    leaf = posixpath.basename(entry)
+    absolute = entry.startswith("/")
+    best: Optional[str] = None
+    for roots, filters, implicit in scan.searches:
+        raw_roots = [_expand_scan_word(r) for r in roots] or (["."] if implicit else [])
+        name_filters = [_expand_scan_word(f) for f in filters]
+        filter_could_match = (not name_filters) or any(
+            fnmatch.fnmatchcase(leaf, posixpath.basename(f)) for f in name_filters
+        )
+        for root in raw_roots:
+            if "$" in root or "`" in root:
+                return "possible"  # a root held in a variable cannot be resolved
+            literal_root = root.startswith("/")
+            if literal_root:
+                root_abs = posixpath.normpath(root)
+            elif cwd:
+                root_abs = posixpath.normpath(posixpath.join(cwd, root))
+            else:
+                continue
+            if not absolute:
+                continue  # bare names are matched by the filter/glob scan below
+            if not _prefix_may_reach(root_abs, entry):
+                continue
+            if not (is_dir or filter_could_match):
+                continue
+            inside = root_abs == entry or root_abs.startswith(entry + "/")
+            if inside and literal_root:
+                return "named"
+            best = "possible"
+    # A bare-name entry (`README.md`) can only be reached through a glob/filter
+    # when the producer works from the cwd; a search rooted at literal absolute
+    # directories elsewhere is judged by those roots instead.
+    rooted_elsewhere = bool(scan.searches) and all(
+        roots and all(_expand_scan_word(r).startswith("/") for r in roots)
+        for roots, _filters, _implicit in scan.searches
+    )
+    for word in () if rooted_elsewhere else scan.pool:
+        w = _expand_scan_word(word)
+        if not absolute and "/" not in entry and _GLOB_CHARS_RE.search(w) and fnmatch.fnmatchcase(leaf, posixpath.basename(w)):
+            return "possible"
+    return best
+
+
+def producer_fed_hit(scan: _ProducerScan, path: str, patterns, cwd: Optional[str]) -> Optional[str]:
+    """``"named"`` / ``"possible"`` / None: does a fed consumer reach the guarded ``path``?
+
+    A directory entry guards runtime state agents legitimately move, so only a
+    fed DELETE consumer reaches it; a fed mv reaches the file entries.
+    """
+    if not scan.pool:
+        return None
+    if path.endswith("/") and not scan.deletes:
+        return None
+    hay = "rm " + canonicalize_command(" ".join(scan.pool))
+    if check_path_patterns(hay, path, patterns, "producer-fed")[0]:
+        return "named"
+    hit = producer_may_emit(scan, path, cwd)
+    if hit == "possible" and scan.strict:
+        return "named"  # find -execdir/-ok/-okdir rm: same verdict as -exec rm
+    return hit
+
+
+def _operand_hits(word: str, path: str) -> bool:
+    return check_path_patterns("rm " + canonicalize_command(word.strip("'\"")), path, DELETE_PATTERNS, "")[0]
+
+
+def _resolve_operand(word: str, cwd: Optional[str]) -> Optional[str]:
+    target = _expand_scan_word(word)
+    if target.startswith("/"):
+        return posixpath.normpath(target)
+    return posixpath.normpath(posixpath.join(cwd, target)) if cwd else None
+
+
+def move_overwrite_hit(scan: _ProducerScan, path: str, cwd: Optional[str]) -> Optional[Tuple[str, str]]:
+    """``(kind, why)`` when a direct mv/cp/install/rsync/ln -f/rename touches the no-delete ``path``.
+
+    ``kind`` is ``block`` or ``ask``. A SOURCE that is (or contains) a guarded
+    path leaves its place — moving a guarded directory deletes everything in
+    it. A DESTINATION that names a guarded FILE entry is overwritten. A
+    directory entry guards runtime state (cohorts, inbox, sessions…) that
+    agents move and replace as a matter of course, so only the directory
+    ITSELF (or an ancestor) counts for it; files inside are not in the mv
+    ladder. Renaming a guarded file inside its own directory is an ``ask``.
+    """
+    is_dir_entry = path.endswith("/")
+    expanded = os.path.expanduser(path).rstrip("/")
+    entry_abs = expanded if expanded.startswith("/") else (
+        posixpath.normpath(posixpath.join(cwd, expanded)) if cwd else None
+    )
+    leaf = posixpath.basename(expanded)
+    for op in scan.direct:
+        for src in op.sources:
+            if _is_dynamic_operand(src):
+                continue
+            src_abs = _resolve_operand(src, cwd)
+            names_file = not is_dir_entry and _operand_hits(src, path)
+            holds = (
+                entry_abs is not None and src_abs is not None and _prefix_may_reach(src_abs, entry_abs)
+            ) or (
+                not is_dir_entry and _GLOB_CHARS_RE.search(src) is not None
+                and fnmatch.fnmatchcase(leaf, posixpath.basename(src))
+            )
+            if not (names_file or holds):
+                continue
+            if names_file and src_abs is not None:
+                for dest in op.dests:
+                    dest_abs = _resolve_operand(dest, cwd)
+                    if dest_abs is not None and posixpath.dirname(dest_abs) == posixpath.dirname(src_abs):
+                        return "ask", "renamed inside its own directory"
+            return "block", "moved out of place"
+        if is_dir_entry:
+            continue
+        for dest in op.dests:
+            if not _is_dynamic_operand(dest) and not dest.endswith("/") and _operand_hits(dest, path):
+                return "block", "overwritten"
+    return None
 
 
 # ============================================================================
@@ -7181,6 +7668,26 @@ def _decide_command(
     # keep-predicate haystacks keep path-mentioning operands visible while
     # masking prose. zeroAccessPaths stays on the raw haystacks: it blocks a
     # MENTION regardless of any verb, so masking has nothing to fix there.
+    # Consumers fed from elsewhere (pipe, xargs, loop, substitution) and direct
+    # mv/cp operands: scanned once, judged per guarded path (#1128, #1127).
+    scan = producer_scan(command)
+    fed_ask: Optional[Dict[str, Any]] = None
+    rename_ask: Optional[Dict[str, Any]] = None
+
+    def _fed_possible(path: str) -> Dict[str, Any]:
+        return {
+            "decision": "ask",
+            "reason": (
+                f"Unverifiable command (a delete is fed by a producer that may emit {path}) — "
+                "nothing can analyze what the pipe carries, so a human must confirm it "
+                "(not demoted by bypass)"
+            ),
+            "pattern": f"producerFedDelete: {path}",
+            "command": command,
+            "id": "core.producer-fed-delete",
+            "unverifiable": True,
+        }
+
     for path in read_only:
         op = None
         for hay in path_ladder_haystacks(command, path):
@@ -7188,6 +7695,13 @@ def _decide_command(
             if matched:
                 op = _infer_operation_from_reason(reason)
                 break
+        fed = producer_fed_hit(scan, path, DELETE_PATTERNS, cwd) if op is None else None
+        if fed == "named":
+            op = "delete"
+        elif fed == "possible" and fed_ask is None and not is_command_path_allowed(
+            command, guarded_allowlist(allowed, read_only), "delete"
+        ):
+            fed_ask = _fed_possible(path)
         if op is not None:
             if is_command_path_allowed(command, guarded_allowlist(allowed, read_only), op):
                 continue
@@ -7199,18 +7713,44 @@ def _decide_command(
             }
 
     for path in no_delete:
-        if any(
-            check_path_patterns(hay, path, NO_DELETE_BLOCKED, "no-delete path")[0]
-            for hay in path_ladder_haystacks(command, path)
+        fed = producer_fed_hit(scan, path, NO_DELETE_BLOCKED, cwd)
+        moved = move_overwrite_hit(scan, path, cwd)
+        if moved and moved[0] == "ask":
+            if rename_ask is None and not is_command_path_allowed(
+                command, guarded_allowlist(allowed, no_delete), "delete"
+            ):
+                rename_ask = {
+                    "decision": "ask",
+                    "reason": f"No-delete path: {path} ({moved[1]}) — confirm the rename",
+                    "pattern": f"noDeletePath: {path}",
+                    "command": command,
+                    "id": "core.guarded-rename",
+                }
+            moved = None
+        if fed == "named" or moved or any(
+            check_path_patterns(
+                hay, path, DELETE_PATTERNS if path.endswith("/") else NO_DELETE_BLOCKED, "no-delete path"
+            )[0]
+            # `>|` (clobber) is read as a pipe by the scanner; it is a redirect.
+            for hay in path_ladder_haystacks(command.replace(">|", ">"), path)
         ):
             if is_command_path_allowed(command, guarded_allowlist(allowed, no_delete), "delete"):
                 continue
             return {
                 "decision": "block",
-                "reason": f"No-delete path: {path}",
+                "reason": f"No-delete path: {path}" + (f" ({moved[1]})" if moved else ""),
                 "pattern": f"noDeletePath: {path}",
                 "command": command,
             }
+        if fed == "possible" and fed_ask is None and not is_command_path_allowed(
+            command, guarded_allowlist(allowed, no_delete), "delete"
+        ):
+            fed_ask = _fed_possible(path)
+
+    if fed_ask is not None:
+        return fed_ask
+    if rename_ask is not None:
+        return rename_ask
 
     # Verb concealment outranks the ordinary ask collected above (`uv run
     # $(echo rm) -rf` matches the uv-run ask rule, whose id may carry an

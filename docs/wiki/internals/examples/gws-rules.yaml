@@ -2,6 +2,7 @@
 #   cp gws-user-rules.yaml ~/.agentwire/damage-control/gws.yaml
 # Guards the gws OPERATION: `gws <service> <resource>... <method> [--flags]` plus
 # `+helper` forms. The method is the last bare word before the first flag.
+# People/contacts verbs (createContact, updateContact, deleteContact...) are covered.
 # `schema`/`help`, `--dry-run` and `--help` are reads. Rules are first-match.
 # Unattended calendar create needs: unattended_allow: [gws.calendar-event-create]
 
@@ -35,7 +36,7 @@ bashToolPatterns:
 
   # Anything else that sends, creates, modifies, trashes or deletes.
   - id: gws.write-method
-    pattern: '\bgws\s+(?:-\S+\s+)*(?!schema\b|help\b)(?:[A-Za-z]\w*[.\s]+){1,6}?(?:send|create|insert|patch|update|modify|trash|untrash|import|move|copy|clear|append|upload|quickAdd|delete|undelete|emptyTrash|batch(?!Get)\w*)(?=\s|$)(?!.*(?:--dry-run|--help|\s-h)(?:\s|$))'
+    pattern: '\bgws\s+(?:-\S+\s+)*(?!schema\b|help\b)(?:[A-Za-z]\w*[.\s]+){1,6}?(?:send|create|insert|patch|update|modify|trash|untrash|import|move|copy|clear|append|upload|quickAdd|delete|undelete|emptyTrash|(?:create|update|delete)[A-Z]\w*|batch(?!Get)\w*)(?=\s|$)(?!.*(?:--dry-run|--help|\s-h)(?:\s|$))'
     reason: gws write method (send/create/insert/patch/update/modify/trash/delete/batch*)
     ask: true
     anchored: true
