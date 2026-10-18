@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "9e7619a81d6a51cd0340a9ac8a00ba10626f05f5c40f2aa32e794028107ee35d", "generated_at": "2026-10-18T23:27:26Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "2663c8af6e40fceb5e4affd61dc233b3745ef079923d02d946076facff1e6e74", "generated_at": "2026-10-18T23:43:45Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -5799,13 +5799,25 @@ def _strip_global_options(words: List[str]) -> Optional[List[str]]:
     """
     tool_idx = None
     grammar = None
+    wrapped = False
     for i, w in enumerate(words):
         candidate = _GLOBAL_OPTION_TABLE.get(w.rsplit("/", 1)[-1])
         if candidate is not None:
             tool_idx = i
             grammar = candidate
             break
-        if w not in _WRAPPER_PREFIXES and not _ASSIGN_TOKEN_RE.match(w):
+        if w in _WRAPPER_PREFIXES or w.rsplit("/", 1)[-1] in _POSITION_WRAPPERS:
+            wrapped = True
+            continue
+        if _ASSIGN_TOKEN_RE.match(w):
+            continue
+        # Past a wrapper, its own options and operands (``timeout 5``, ``nice
+        # -n 5``, ``sudo -u me``, ``flock /tmp/l``) sit before the tool.
+        # Skipping them cannot over-strip: stripping starts AFTER the tool, and
+        # the variant is additive and position-gated for anchored rules, so an
+        # unrelated word that is merely skipped only yields a variant no rule
+        # is allowed to start in. Without a wrapper the first word decides.
+        if not wrapped:
             return None
     if grammar is None:
         return None
@@ -6531,7 +6543,7 @@ def _masked_subcommand_entries(
 # superset of ``_WRAPPER_PREFIXES`` (which synthesizes haystacks and must stay
 # narrow — see the note there); here a too-wide entry only costs a false BLOCK,
 # never a bypass, so the arg-taking runners and package launchers are included.
-_POSITION_WRAPPERS = _WRAPPER_PREFIXES | {
+_POSITION_WRAPPERS = _WRAPPER_PREFIXES | _PREFIX_WRAPPERS | {
     "timeout", "setsid", "stdbuf", "ionice", "parallel",
     # package launchers — ``npx prisma migrate deploy`` runs prisma
     "npx", "pnpx", "bunx", "uvx", "pipx",
@@ -6540,6 +6552,12 @@ _POSITION_WRAPPERS = _WRAPPER_PREFIXES | {
     # missed one.
     "uv", "npm", "pnpm", "yarn", "bun", "bundle", "run", "exec", "dlx",
 }
+
+
+# Wrappers that take a bare operand BEFORE the command (``flock /tmp/l git …``,
+# ``chroot /new git …``, ``sg grp -c git …``): the operand is neither an option nor a number, so the
+# walk above would end the chain at it and hide the real command.
+_WRAPPER_OPERANDS = {"flock": 1, "lockf": 1, "chroot": 1, "sg": 1}
 
 
 def _allowed_match_spans(words: List[str]) -> List[Tuple[int, int]]:
@@ -6554,18 +6572,23 @@ def _allowed_match_spans(words: List[str]) -> List[Tuple[int, int]]:
     spans: List[Tuple[int, int]] = []
     pos = 0
     prev_was_option = False
+    operands = 0  # bare operands the last wrapper takes before the command
     for word in words:
         spans.append((pos, pos + len(word)))
         pos += len(word) + 1
         base = word.rsplit("/", 1)[-1]
         if base in _POSITION_WRAPPERS or word == _MASK or _ASSIGN_TOKEN_RE.match(word):
             prev_was_option = False
+            operands = _WRAPPER_OPERANDS.get(base, 0)
             continue
         if word.startswith("-"):
             prev_was_option = True
             continue
         if prev_was_option or (word[:1].isdigit()):
             prev_was_option = False
+            continue
+        if operands:
+            operands -= 1
             continue
         break
     return spans

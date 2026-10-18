@@ -346,7 +346,6 @@ other interpreters outside the list), a `cd` written inside interpreter source
 `sh -c '{}'` placeholder (`cat <<'EOF' | xargs -I{} sh -c '{}'` with the literal
 path in the body), `cd <dir> && rsync -a <file> host:x` (the absolute spelling
 is refused too — rsync's source is not distinguished from its destination), a
-a crontab line with a trailing `# …` comment that mentions the path (blocks),
 `<<$"EOF"` (not recognised as a heredoc, so a body line that is itself
 `cd <dir> && touch <file>` blocks; #1106), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
 resolved), a cwd known only from the session or set by `cd $dir` / `cd -` / a
@@ -442,7 +441,26 @@ Patterns live in **categorized YAML files** under `agentwire/hooks/damage-contro
 
 ### Flag position: `{ARGS}` (#1125)
 
-GNU tools and git accept options after operands, so `rm foo -rf x` is the same operation as `rm -rf foo x`. A rule spelled `verb\s+(-[^\s]*)*-f` only sees flags before the first operand. Such rules are authored with `pattern_src:` (containing `{ARGS}`, "any leading arguments of this command segment") on the line after `pattern:`; `scripts/gen_rule_patterns.py` expands it into the plain `pattern:` the hook reads (`--check` fails when stale, pinned by `test_damage_control_flag_order.py`). **The hook never expands anything**: an old hook reading new rules sees an ordinary valid regex. The first cut expanded at match time and an old hook + new rules ALLOWED every rm/push/reset/clean/chown (a literal `{ARGS}` matches nothing). A token is an argument unless it is a separator (`; & |`) or the bare `--` (everything after is an operand, so `rm -- -rf` stays allowed). Short flags match as cluster members (`-vrf`, `-hR`) plus the long option; `git branch` uses a case-sensitive `D` or delete+force (`-d -f`, `-df`, `--delete --force`); `git clean` is allowed when a dry run (`-n`, `--dry-run`) appears anywhere in the segment. Rules: rm, chown -R root, chmod 777/-R, git reset --hard, clean, push -f/--delete, branch -D, killall/pkill -9, mail -s, kubectl delete all --all. After editing a `pattern_src`, run the generator.
+GNU tools and git accept options after operands, so `rm foo -rf x` is the same operation as `rm -rf foo x`. A rule spelled `verb\s+(-[^\s]*)*-f` only sees flags before the first operand. Such rules are authored with `pattern_src:` (containing `{ARGS}`, "any leading arguments of this command segment") on the line after `pattern:`; `scripts/gen_rule_patterns.py` expands it into the plain `pattern:` the hook reads (`--check` fails when stale, pinned by `test_damage_control_flag_order.py`). **The hook never expands anything**: an old hook reading new rules sees an ordinary valid regex. The first cut expanded at match time and an old hook + new rules ALLOWED every rm/push/reset/clean/chown (a literal `{ARGS}` matches nothing). A token is an argument unless it is a separator (`; & |`) or the bare `--` (everything after is an operand, so `rm -- -rf` stays allowed). Short flags match as cluster members (`-vrf`, `-hR`) plus the long option; `git branch` uses a case-sensitive `D` or delete+force (`-d -f`, `-df`, `--delete --force`); `git clean` is allowed when a dry run (`-n`, `--dry-run`) appears anywhere in the segment. Rules: rm, chown -R root, chmod 777 (non-recursive: mode must be the first non-flag operand, `chmod u+x 777` allows, #1133), git reset --hard, clean, push -f/--delete, branch -D, killall/pkill -9, kill -9 (ask) / kill with the all-processes target `-1` (block), rsync --delete* (ask), mail -s, kubectl delete all --all. After editing a `pattern_src`, run the generator.
+
+### Batch-1 residual closures (#1133)
+
+Rule-YAML only; each ships independent of the hook scripts (plain regexes, no `{ARGS}` at match time).
+
+| operation | tier | rule id | notes |
+|---|---|---|---|
+| `kill` with `-1` as the target: `-1` anywhere but the first operand (`kill -9 -1`, `--signal TERM -1`, `-s KILL 1 -1`, `kill 123 -1`), or `-1` first followed by another option (`-1 -9`) | block | (unnamed) | bash parses options only up front, so a later `-1` is pid -1; `kill -1 123` (SIGHUP one pid) allows |
+| `kill -9` / `-KILL` / `-SIGKILL` / `-s KILL` / `-n 9` / `--signal KILL`, flag in any position | ask | `core.kill-sigkill` | unattended: needs `unattended_allow`; rephrase to plain `kill` |
+| `rsync` every `--delete*` long option (`--delete-missing-args`, `--delete-delay`, …), `--del`, `--remove-source-files` | ask | `core.rsync-delete` | `--no-delete`, `--max-delete` pass; a no-delete *destination* is the no-delete ladder's job |
+| `crontab` other than listing (`-l`, `-lu me`, `-ul me`, `--list`) or `-V` (file, `-`, `-e`, `-r`, bare) | ask | `core.crontab-install` | body is deferred execution and unreadable here; matched on the command word, so `crontab.sh` / `vim ./crontab` do not ask |
+| `git config <key> <value>` for redirect keys (`core.worktree`, `core.hooksPath`, `include.path`, `includeIf.*.path`) | ask | `git.config-set-redirect-key` | always |
+| `git config <exec-key> <value>` (the `git -c` key list) | ask unless the value is ONE known editor/pager word (`vim nvim vi view nano pico micro emacs ed ex less more cat bat most true false code subl mate zed`), bare or quoted, with optional plain flags (`'vim -f'`, `'code --wait'`) and scope flags | `git.config-set-exec-key` | unanchored (raw view: quoting/escaping decide safety); git runs the value through a shell, so `'less;sh'`, `"less\|sh"`, `less\;sh`, `vim\`id\``, `$'vim'`, `sh`, `python3` all ask |
+| `find … -exec` (or `-execdir`, `-ok`, `-okdir`) `chmod 777` | block | (unnamed) | the chmod sits in find's arguments, outside command position |
+| `git config alias.x '!cmd'` | ask | `git.config-set-alias-bang` | unanchored: the `!` is inside a masked quote |
+
+`git config core.hooksPath .githooks` asks (policy: it names a directory of programs git will run). Known price: `git config core.pager 'less -FRX'` asks once. The value is **not** re-scanned as a command in the set-form (that is `_core.py` work; the `-c` form is, via `_git_exec_config_payloads`), so the rule is a coarse bare-word test rather than a payload judgment. The `chmod` fix narrows only the non-recursive rule; `chmod -R` keeps 777-anywhere on purpose (an unreadable mode token such as `${m:-x}` must not hide a world-writable tree), so `chmod -R u+x 777` (a file named 777) still blocks.
+
+**Wrapper x git global options (#1133).** `timeout 5 git -C d push --force` used to allow, and so did `caffeinate git push -f` (no global option at all): the anchored-rule position walk knew only a narrow wrapper list, and the global-option stripper gave up at any token that was not a bare `sudo`/`env`/`nice`-class wrapper. `_POSITION_WRAPPERS` now includes every `_PREFIX_WRAPPERS` entry, wrappers that take a bare operand before the command (`flock FILE`, `lockf`, `chroot`, `sg GROUP`) are modelled in `_WRAPPER_OPERANDS`, and `_strip_global_options` skips a wrapper's own options/operands before the tool. Pinned by a 34-wrapper x 7-global-option x 11-destructive-op differential (decision wrapped >= decision top level). Still open (declared): wrappers that carry the command in a quoted string or have no stable operand grammar (`watch`, `script -qc`, `sg grp -c 'git …'` quoted) are judged by the shell-payload rescan, not this path. `./crontab` as a command no longer asks.
 
 ### Pattern Types
 
@@ -883,8 +901,9 @@ so a redirected in-scope store **refuses the commit** even though the command
 itself stays entirely within scope. The command-line spellings of the same
 redirect (`-c core.worktree=…`, `--config-env`, and the `include.path` /
 `includeIf.*` keys that can pull one in from an arbitrary file) refuse
-outright. The redirect *command* itself is still unruled — making it
-`ask`-tier is rule-file work, tracked in #927.
+outright. The redirect *command* itself is `ask`-tier too (#1133):
+`git config core.worktree|core.hooksPath|include.path|includeIf.*.path <value>`
+(`git.config-set-redirect-key`; reads, `--unset` and `--list` pass).
 
 **One limit that is NOT closed**, stated rather than implied: resolution is a
 **TOCTOU window** — the hook validates a path the command has not used yet.
@@ -968,11 +987,6 @@ already on `DEFAULT_UNATTENDED_ALLOW`.
 
 **Residual gaps (intentional / known):**
 
-- **MCP send paths bypass the hook.** Agents in agentwire sessions usually send
-  via MCP tools (`email_send`, `quo_send`), which are *not* Bash/Edit/Write and
-  so never reach this hook. The `outbound.*` rules only catch a shell-out to the
-  CLI. Closing the MCP path needs a guard at the MCP layer, not a rule — out of
-  scope here.
 - **File-fed SQL can't be introspected.** `psql -f migration.sql` /
   `mysql < dump.sql` carry their statements in a file the regex can't read, so
   they stay `allow` unless the file path trips a path rule. Catastrophic inline
@@ -1217,17 +1231,17 @@ eval ::: f`, `flock /tmp/l grep eval f`, `poetry run`, `docker run … grep eval
 a quoted `'>f'` used as a command name, and a shell invoked with a payload
 that merely mentions the variable (`p=eval; sh -c 'echo $p'`). **Not detected:**
 a data consumer that can itself run a command line, except `sed` and `git` above
-(also: producers `read c <<'EOF'` (quoted heredoc) and `read c < <(echo …)` — only `read c <<< word`
-is handled; `npm exec -c='…'`/`-c…`, `git rebase -x…`, `git difftool -x|--extcmd`, `git fetch
---upload-pack`, `git config core.editor`, `GIT_SEQUENCE_EDITOR`; any tool not in the
+(also: `read c < <(echo …)` — `read c <<< word` and `read c <<'EOF'; eval "$c"` ask via `ambiguous:eval`; `npm exec -c='…'`/`-c…`, `git difftool -x|--extcmd`, `git fetch
+--upload-pack` (`git config <exec-key> <value>` set-form asks since #1133; `git rebase -x` and
+`GIT_SEQUENCE_EDITOR` ask via the git.rebase rule); any tool not in the
 tables asks; Makefile/justfile recipe text from a plain file is undecidable)
 (`awk system()`, `python -c os.system`, `perl system`, `vim -c '!…'`, `tar
---to-command`, `rsync -e` — pinned as still
-allowed so the claim cannot drift); a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}
+--to-command`, `rsync -e` — refused **only when the payload names a control-plane
+path** (a text match on the path, not a judgment of the exec shape); a payload guarded by verb rules alone still allows); a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}
 x`), `alias a=eval; a x`, `$1 x` outside a `-c` payload, `e${x}val`, a name
 assigned in another command, program text from a producer other than
-`echo`/`printf`/heredoc/here-string (`cat file | sh`, `curl … | sh`), a
-`crontab -` entry (deferred execution), `parallel '{eval} {}'`, and a call
+`echo`/`printf`/heredoc/here-string (`cat file | sh`, `curl … | sh`),
+`parallel '{eval} {}'`, and a call
 inside `$(…)`, which the substitution path judges. Command-position use is
 *always* unverifiable; a literal operand is not re-scanned as a command. With
 the kill switch off (`enabled: false`) nothing here applies — the switch
