@@ -46,6 +46,10 @@ bashToolPatterns:
     bypassable: true
     anchored: true
 
+  - pattern: '\bfind\b.*-(?:exec|execdir|ok|okdir)\s+(?:\S*/)?chmod\s+(?:-[^\s;&|]*\s+)*(?:--\s+)?0?777\b'
+    reason: find -exec chmod 777 (world writable)
+    anchored: true
+
   - pattern: '\bfind\b.*-exec\s+rm\b'
     reason: find -exec rm (deletion via find - use git clean or manual cleanup)
     bypassable: true
@@ -90,17 +94,15 @@ bashToolPatterns:
   # `-1` is the all-processes TARGET (pid -1), not SIGHUP, whenever a signal
   # option accompanies it, in either order (`kill -1 -9`, `kill -s KILL -1`,
   # `kill -TERM -- -1`). `kill -1 123` (HUP to one pid) stays allowed (#1133).
-  - pattern: '\bkill\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-[A-Za-z0-9][^\s;&|]*\s+(?:[^\s;&|-][^\s;&|]*\s+)?(?:--\s+)?-1(?=[\s;&|)`]|$)'
-    pattern_src: '\bkill\s+{ARGS}-[A-Za-z0-9][^\s;&|]*\s+(?:[^\s;&|-][^\s;&|]*\s+)?(?:--\s+)?-1(?=[\s;&|)`]|$)'
+  # `-1` anywhere but the FIRST operand is a pid: bash parses options only up
+  # front, so `kill --signal TERM -1`, `kill -s KILL 1 -1`, `kill 123 -1` all
+  # signal every process. (As the first operand it is SIGHUP: `kill -1 123`.)
+  - pattern: '\bkill\s+(?:[^\s;&|]+\s+)+-1(?=[\s;&|)`]|$)'
     reason: kill all processes
     anchored: true
 
-  - pattern: '\bkill\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-1(?=\s)[^;&|]*?\s-[A-Za-z0-9]'
-    pattern_src: '\bkill\s+{ARGS}-1(?=\s)[^;&|]*?\s-[A-Za-z0-9]'
-    reason: kill all processes
-    anchored: true
-
-  - pattern: '\bkill\s+(?:[^\s;&|]+\s+)*?--\s+-1(?=[\s;&|)`]|$)'
+  # `kill -1 -9`: -1 first, then another option.
+  - pattern: '\bkill\s+-1(?=\s)[^;&|]*?\s-[A-Za-z0-9]'
     reason: kill all processes
     anchored: true
 
@@ -114,9 +116,9 @@ bashToolPatterns:
     anchored: true
 
   # Deferred execution: the crontab body runs later, unobserved, and a file or
-  # stdin payload is unreadable here. Only `-l` (list) is read-only.
+  # stdin payload is unreadable here. Only listing (`-l`, `-lu me`, `--list`) and `-V` are read-only.
   - id: core.crontab-install
-    pattern: '\bcrontab\b(?![^;&|]*\s-l\b)'
+    pattern: '(?<![\w.-])crontab(?=[\s;&|)`]|$)(?![^;&|]*\s(?:-[A-Za-z]*l[A-Za-z]*|--list|-V|--version)(?=[\s;&|)`]|$))'
     reason: crontab installs or edits scheduled commands
     ask: true
     anchored: true
@@ -124,8 +126,8 @@ bashToolPatterns:
   # `--delete*` removes destination files; `--remove-source-files` removes the
   # SOURCE after transfer. `--no-delete` and `--max-delete` do not match.
   - id: core.rsync-delete
-    pattern: '\brsync\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--(?:del|delete(?:-[a-z]+)?|remove-(?:source|sent)-files)(?=[\s=;&|)`]|$)'
-    pattern_src: '\brsync\s+{ARGS}--(?:del|delete(?:-[a-z]+)?|remove-(?:source|sent)-files)(?=[\s=;&|)`]|$)'
+    pattern: '\brsync\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--(?:del|delete[a-z-]*|remove-(?:source|sent)-files)(?=[\s=;&|)`]|$)'
+    pattern_src: '\brsync\s+{ARGS}--(?:del|delete[a-z-]*|remove-(?:source|sent)-files)(?=[\s=;&|)`]|$)'
     reason: rsync deletes files (--delete*, --remove-source-files)
     ask: true
     anchored: true

@@ -74,12 +74,12 @@ bashToolPatterns:
     ask: true
     anchored: true
 
-  # 2) Program-valued keys: a bare program name (`core.editor vim`,
-  # `core.fsmonitor true`) is the common setup step and passes; anything else
-  # (a path, flags, a quoted command, which masking shows as one opaque token)
-  # asks, because git will EXECUTE it.
+  # 2) Program-valued keys: a known editor/pager name (`core.editor vim`,
+  # `core.pager less`, `core.fsmonitor true`) is the common setup step and
+  # passes; anything else (a shell or interpreter, an unknown program, a path,
+  # flags, a quoted or backslash-escaped command) asks, because git EXECUTES it.
   - id: git.config-set-exec-key
-    pattern: '\bgit\s+config\b(?![^;&|]*\s(?:--(?:get|unset|list|edit)|-l\b|-e\b))[^;&|]*?\s(?:core\.(?:sshcommand|fsmonitor|pager|editor|askpass|alternaterefscommand)|sequence\.editor|gpg\.program|diff\.external|credential\.helper|uploadpack\.packobjectshook|filter\.[^.\s]+\.(?:clean|smudge|process)|difftool\.[^.\s]+\.cmd|mergetool\.[^.\s]+\.cmd|merge\.[^.\s]+\.driver|remote\.[^.\s]+\.(?:uploadpack|receivepack)|browser\.[^.\s]+\.cmd|man\.[^.\s]+\.cmd)\s+(?![A-Za-z][\w.+-]*(?=[\s;&|)`]|$))\S'
+    pattern: '\bgit\s+config\b(?![^;&|]*\s(?:--(?:get|unset|list|edit)|-l\b|-e\b))[^;&|]*?\s(?:core\.(?:sshcommand|fsmonitor|pager|editor|askpass|alternaterefscommand)|sequence\.editor|gpg\.program|diff\.external|credential\.helper|uploadpack\.packobjectshook|filter\.[^.\s]+\.(?:clean|smudge|process)|difftool\.[^.\s]+\.cmd|mergetool\.[^.\s]+\.cmd|merge\.[^.\s]+\.driver|remote\.[^.\s]+\.(?:uploadpack|receivepack)|browser\.[^.\s]+\.cmd|man\.[^.\s]+\.cmd)\s+(?!(?:vim|nvim|vi|view|nano|pico|micro|emacs|ed|ex|less|more|cat|bat|most|true|false)(?=(?:\s+--(?:global|local|system|worktree|replace-all|add))*\s*(?:$|[;&|)`])))\S'
     reason: git config sets a key that names a program git will execute
     ask: true
     anchored: true

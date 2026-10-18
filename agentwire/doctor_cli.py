@@ -565,6 +565,23 @@ def _render_damage_control_section() -> int:
     else:
         print("  [ok] Rule ids unique across the loaded rule set")
 
+    # A rule/tooldef file that fails to parse contributes nothing — every
+    # protection in it is silently absent (#1130).
+    try:
+        parse_failures = safety_commands.load_patterns().get("_parse_failures") or []
+    except Exception as e:
+        print(f"  [..] Could not check rule files for parse errors: {e}")
+        parse_failures = []
+    if parse_failures:
+        print("  [!!] Rule/tooldef files that FAILED TO PARSE and are not loaded:")
+        for f in parse_failures:
+            loc = f"{f['file']}:{f['line']}" if f.get("line") else f["file"]
+            print(f"       {loc}: {f['error']}")
+        print("       Every rule in these files is absent from enforcement.")
+        issues += 1
+    else:
+        print("  [ok] Every rule and tooldef file parses")
+
     # Matcher presence in ~/.claude/settings.json.
     missing_matchers = safety_commands.missing_damage_control_matchers()
     if missing_matchers:
