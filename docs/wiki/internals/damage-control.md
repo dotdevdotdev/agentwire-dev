@@ -1828,7 +1828,7 @@ stdin is NOT shell text (`python3 - <<< 'eval'` runs no eval); only the
 protected-path scan keeps reading it as shell, as before.
 
 `parallel … :::`, `flock LOCK cmd` / `flock LOCK -c 'cmd'` and `docker|podman|nerdctl
-run|exec IMAGE cmd` (`--entrypoint` joins the command) are hidden-command
+run|exec IMAGE cmd` (also `docker container exec`, `docker compose|docker-compose exec|run`, `kubectl exec POD -- cmd`; `--entrypoint` joins the command; a quoted `parallel 'cmd {}' :::` line is scanned whole) are hidden-command
 carriers for the verb rules too: the launched command is judged as if typed
 (`flock /tmp/l rm -rf /x` blocks like `rm -rf /x`). The eval check models the same
 grammars, so only the eval word's wrongful ask is gone — `docker run alpine ls`

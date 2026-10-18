@@ -3836,6 +3836,24 @@ def _program_text(text: str, consumer_words: List[str]) -> str:
 _REMOTE_SHELLS = frozenset({"ssh", "slogin", "mosh"})
 
 
+def _inside_quotes(text: str, pos: int) -> bool:
+    """Whether offset ``pos`` sits inside a quoted span of ``text`` (single, double, backslash-aware)."""
+    quote, i = "", 0
+    while i < pos:
+        ch = text[i]
+        if quote:
+            if ch == "\\" and quote == '"':
+                i += 1
+            elif ch == quote:
+                quote = ""
+        elif ch == "\\":
+            i += 1
+        elif ch in "'\"":
+            quote = ch
+        i += 1
+    return bool(quote)
+
+
 def _as_inline_program(text: str, consumer_words: List[str]) -> List[str]:
     """``text`` as the inline program (``lua -e '…'``) of an interpreter that reads it on stdin (#18).
 
@@ -3902,8 +3920,11 @@ def _stdin_program_commands(command: str, rules: bool = False) -> List[str]:
         for body, _quoted, line in _heredoc_bodies(command):
             words = _feed_words(line)
             emit(body, words)
-        for m in _HERE_STRING_RE.finditer(command):
-            line = command[command.rfind("\n", 0, m.start()) + 1 : m.start()]
+        visible = _hide_heredoc_bodies(command, keep_programs=True)
+        for m in _HERE_STRING_RE.finditer(visible):
+            if _inside_quotes(visible, m.start()):
+                continue  # ``'lua <<< x'`` in a message body is text, not a redirection
+            line = visible[visible.rfind("\n", 0, m.start()) + 1 : m.start()]
             words = _feed_words(line)
             emit(" ".join(_words(m.group(1))), words)
     if "|" in command:
@@ -4037,7 +4058,11 @@ _SED_E_CMD_RE = _rx(
     r"[ \t]*!?[ \t]*e[ \t]+(?P<cmd>[^\n]*)",
     0,
 )
-_SED_S_FLAG_E_RE = _rx(r"s([^\w\s\\])(?:\\.|(?!\1).)*\1((?:\\.|(?!\1).)*)\1[a-zA-Z0-9]*e", 0)
+_SED_S_FLAG_E_RE = _rx(
+    r"(?:^|[;{}\n])[ \t]*(?:[0-9$,~]+|/(?:\\.|[^/\\\n])*/)?[ \t]*!?[ \t]*"
+    r"s([^\w\s\\])(?:\\.|(?!\1)[^\\])*\1((?:\\.|(?!\1)[^\\])*)\1[a-zA-Z0-9]*e",
+    0,
+)
 
 
 def _sed_payloads(args: List[str]) -> List[str]:
@@ -4197,7 +4222,7 @@ def _net_payloads(base: str, args: List[str]) -> List[str]:
 
 _HIDDEN_TOOLS = frozenset({
     "sed", "gsed", "awk", "gawk", "mawk", "tar", "gtar", "bsdtar", "git", "npm", "npx", "ssh", "scp", "sftp",
-    "flock", "parallel", "docker", "podman", "nerdctl",
+    "flock", "parallel", "docker", "podman", "nerdctl", "docker-compose", "kubectl",
 })
 
 
@@ -4220,8 +4245,21 @@ def _launcher_payloads(base: str, args: List[str]) -> List[str]:
     if base == "flock":
         return _flock_payloads(args)
     if base == "parallel":
-        cmd, _repl = _parallel_command(args)
-        return [" ".join(_quote_word(w) for w in cmd)] if cmd else []
+        cmd, repl = _parallel_command(args)
+        if not cmd:
+            return []
+        if len(cmd) == 1 or any(ch.isspace() for ch in cmd[0]):
+            # parallel hands a quoted command LINE to a shell, ``{}`` standing for each input
+            line = _PARALLEL_REPLACEMENT.sub("x", cmd[0])
+            if repl:
+                line = line.replace(repl, "x")
+            return [" ".join([line] + [_quote_word(w) for w in cmd[1:]])]
+        return [" ".join(_quote_word(w) for w in cmd)]
+    if base == "kubectl":  # ``kubectl exec POD -- cmd``
+        if "--" in args and any(w in ("exec", "run") for w in args[: args.index("--")]):
+            tail = args[args.index("--") + 1 :]
+            return [" ".join(_quote_word(w) for w in tail)] if tail else []
+        return []
     launched = _eval_container_command(args)
     return [" ".join(_quote_word(w) for w in launched)] if launched else []
 
@@ -4262,7 +4300,7 @@ def _exec_payload_commands(command: str, _depth: int = 0) -> List[str]:
             out += _npm_payloads(base, args)
         elif base in ("ssh", "scp", "sftp"):
             out += _net_payloads(base, args)
-        elif base in ("flock", "parallel", "docker", "podman", "nerdctl"):
+        elif base in ("flock", "parallel", "docker", "podman", "nerdctl", "docker-compose", "kubectl"):
             out += _launcher_payloads(base, args)
         # A shell's ``-c`` text and an ssh remote command are judged by their own
         # rules where they sit; a hidden command INSIDE them is still hidden.
@@ -5255,6 +5293,8 @@ def _eval_container_command(rest: List[str]) -> Optional[List[str]]:
     falls back to the old unknown-command scan, which asks).
     """
     sub = next((k for k, w in enumerate(rest) if not w.startswith("-")), None)
+    if sub is not None and rest[sub] in ("container", "compose"):  # ``docker container exec`` / ``docker compose run``
+        sub = next((k for k in range(sub + 1, len(rest)) if not rest[k].startswith("-")), None)
     if sub is None or rest[sub] not in ("run", "exec"):
         return None
     args = rest[sub + 1 :]

@@ -68,6 +68,14 @@ CARRIERS = [
     "docker run --rm -e A=1 alpine {p}",
     "podman exec c {p}",
     "parallel -j4 {p} ::: a b",
+    "parallel '{p}' ::: a",
+    "parallel \"{p}\" ::: a",
+    "parallel --pipe '{p}' ::: a",
+    "parallel -a f '{p}; echo {{}}'",
+    "docker container exec c {p}",
+    "docker compose exec svc {p}",
+    "docker-compose run --rm svc {p}",
+    "kubectl exec pod -- {p}",
     "sed -n '1e {p}' f",
     "sed -e 's/x/{p2}/e' f",
     "echo x | sed -ne '$e {p}'",
@@ -248,3 +256,27 @@ def test_known_launchers_see_the_verb_not_the_word_after_it():
 def test_container_entrypoint_is_the_launched_program(bash_hook, cfg):
     assert _decide(bash_hook, cfg, "docker run --entrypoint rm alpine -rf /x") == "block"
     assert _decide(bash_hook, cfg, "docker run alpine ls") == _decide(bash_hook, cfg, "docker run alpine true")
+
+
+# Real audit-log commands the first cut wrongly asked on (data that merely LOOKS like a carrier).
+DATA_THAT_LOOKS_LIKE_A_CARRIER = [
+    "sed 's/x/My own changes do not touch `resume.ts`, the PDF or `\\/resume`./' f",
+    "gh pr view 1 --json body -q .body | sed 's/a/b `c` \\/d e/'",
+    "cat > f.md <<'EOF'\nprose: read c <<< eval; bash -c \"$c\" (plain `read c <<< eval; also `mapfile`)\nEOF",
+    "agentwire msg send --to x --kind request \"(2) 'echo os.execute(...) | lua', 'lua <<< ...' and 'flock /tmp/l -c \\\"rm\\\"' it's data\"",
+    "echo 'sh <<< rm' | cat",
+    "sed -n 's/e/E/p' f",
+]
+
+
+def test_text_that_only_resembles_a_carrier_stays_data(bash_hook, cfg):
+    bad = [c for c in DATA_THAT_LOOKS_LIKE_A_CARRIER if _decide(bash_hook, cfg, c) != "allow"]
+    assert not bad, bad
+
+
+def test_a_message_body_quoting_carrier_syntax_is_data(bash_hook, cfg):
+    """A real audit-log ``agentwire msg send`` whose body quotes ``'lua <<< …'`` and ``flock … -c "…"``."""
+    from pathlib import Path
+
+    body = (Path(__file__).resolve().parent.parent / "fixtures" / "dc_msg_body_quoting_carriers.txt").read_text()
+    assert _decide(bash_hook, cfg, body) == "allow"
