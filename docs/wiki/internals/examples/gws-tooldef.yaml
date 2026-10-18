@@ -1,3 +1,13 @@
+# USER-LEVEL tooldef (not shipped by agentwire). Install:
+#   cp gws-user-tooldef.yaml ~/.agentwire/tooldefs/gws.yaml
+#   cp gws-user-rules.yaml   ~/.agentwire/damage-control/gws.yaml
+# A user tooldefs dir REPLACES the bundled one, so run `agentwire safety install
+# --yes` first on a fresh machine (it installs the bundled files beside this one).
+# Verb-based enforcement lives in gws-user-rules.yaml: a tooldef can only name
+# fixed command prefixes. The `write` entries below are reference text; the rules
+# file shadows them (first match wins), so the calendar-create grant id is
+# `gws.calendar-event-create`.
+
 name: Google Workspace CLI
 binary: gws
 purpose: Interact with Gmail, Drive, Calendar, Sheets, Docs, Chat, and Admin — AI-friendly JSON output
@@ -169,3 +179,20 @@ commands:
   - cmd: "gws admin users makeAdmin --params '{\"userKey\":\"<email>\"}'"
     access: blocked
     description: Grant admin privileges to a user
+
+  # Helper forms
+  - cmd: "gws gmail +send"
+    access: write
+    description: Send an email (helper)
+
+  - cmd: "gws gmail +insert"
+    access: write
+    description: Insert a message into the mailbox (helper)
+
+  - cmd: "gws gmail +upload"
+    access: write
+    description: Upload a message (helper)
+
+  - cmd: "gws calendar events quickAdd"
+    access: write
+    description: Create an event from text

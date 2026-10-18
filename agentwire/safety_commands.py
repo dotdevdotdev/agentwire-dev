@@ -983,6 +983,32 @@ def tooldefs_drift() -> Dict[str, str]:
     return _yaml_sync_states(source_dir, TOOLDEFS_DIR, "tooldefs")
 
 
+def retired_installed() -> Dict[str, Dict[str, str]]:
+    """Installed rule/tooldef files the bundle no longer ships (#1137).
+
+    ``{section: {filename: pristine | edited}}``. ``pristine`` — byte-identical
+    to a version we once shipped, so it is a leftover; ``edited`` — same name,
+    different content, so it is the user's own. Heal never deletes either: a
+    removed-from-bundle file is not drift, and a file that may be hand-written
+    is never ours to remove.
+    """
+    out: Dict[str, Dict[str, str]] = {"rules": {}, "tooldefs": {}}
+    try:
+        bundled = {
+            "rules": {p.name for p in get_damage_control_source().glob("*.yaml")},
+            "tooldefs": {p.name for p in get_tooldefs_source().glob("*.yaml")},
+        }
+    except FileNotFoundError:
+        return out
+    manifest = load_rule_baselines()
+    for section, live_dir in (("rules", RULES_DIR), ("tooldefs", TOOLDEFS_DIR)):
+        for name, hashes in manifest.get(section, {}).items():
+            if name in bundled[section] or not (live_dir / name).exists():
+                continue
+            out[section][name] = "pristine" if _sha256(live_dir / name) in hashes else "edited"
+    return out
+
+
 def _rule_entries(path: Path) -> Dict[str, List[str]]:
     """Index one rule YAML by protection: ``{section: [key, ...]}``.
 

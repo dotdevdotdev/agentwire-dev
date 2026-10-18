@@ -1358,6 +1358,36 @@ readOnlyPaths:
 
 ---
 
+## A file that fails to parse is reported, not skipped (#1130, #1137)
+
+A rule, tooldef or policy YAML that does not parse contributes **nothing** — every protection in it is absent, and a skip that says nothing looks identical to a healthy set. `tooldefs/gws.yaml` shipped like that (an unquoted `format: full|…` inside a plain scalar) until #1130.
+
+- **stderr:** `agentwire damage-control: SKIPPED <file>:<line>: <yaml error>` on every load. The print is guarded: a dead stderr never changes a verdict.
+- **`load_config` / `safety status`:** the merged config carries `_parse_failures` (`file`, `line`, `error`); `safety status` exposes it as `parse_failures`.
+- **`agentwire doctor`:** `[!!] Rule/tooldef/policy files that FAILED TO PARSE` naming file and line, or `[ok] Every rule, tooldef and policy file parses`. This includes the global `damagecontrol.yml` and the nearest project `.damagecontrol.yml`, whose loaders stay fail-secure (a bad file leaves defaults in force) but now say so (`policy_file_parse_failures`).
+- **Pin:** `tests/unit/test_rule_files_load.py` loads every shipped rule/tooldef file and asserts none is skipped.
+
+Fix the YAML (quote any scalar containing `: `, `|` or `#`), then `agentwire safety install --yes` if the broken copy is the installed one — a pristine older release reads `outdated` and is brought forward.
+
+### Writing your own tooldef (user-level policy, #1137)
+
+agentwire ships policy only for tools nearly everyone has (git, gh, docker, cloud CLIs…). A tool you authed by hand for your own reasons — `gws` is the worked example — is yours to guard, in your user dirs, not ours:
+
+| Drop it in | What it is |
+|---|---|
+| `~/.agentwire/tooldefs/<tool>.yaml` | A tooldef: `commands:` with `cmd:` (fixed prefix tokens; stops at the first `<placeholder>` or `[optional]`), `access: read`, `write` or `blocked`, and an optional `id:`. Each `write` line becomes an anchored **ask** rule on that prefix; `read` lines carve subcommands out of a shorter write prefix; `blocked` lines are documentation only. |
+| `~/.agentwire/damage-control/<tool>.yaml` | Rules: `bashToolPatterns:` with a regex `pattern:`, `anchored: true`, `ask: true` (omit for a hard block), and a stable `id:` you can name in `unattended_allow`. Use this when the operation needs a *grammar* (a verb after any resource path) that a fixed prefix can't express. |
+
+Things that bite:
+
+- **A user dir replaces the bundled dir.** `~/.agentwire/tooldefs/` (and `damage-control/`) win as a whole once they hold any `*.yaml`. Run `agentwire safety install --yes` first so the bundled files sit beside yours; `agentwire doctor` flags missing bundled files as `[!!]`.
+- **Rules are first-match**, rules before tooldefs, so a rule file shadows tooldef lines for the same command.
+- **A parse failure is loud**: `SKIPPED <file>:<line>` on stderr and `[!!]` in `agentwire doctor`.
+- **Heal leaves your file alone.** `safety install` only touches names the bundle ships; a same-named file that matches no shipped version is `unknown` and is held back (`--force` replaces it, keeping a `.bak`). A name the bundle used to ship and no longer does (gws, removed in #1137) is never deleted; `doctor` notes a pristine leftover with a quiet `[..]` and calls an edited one yours.
+- **Unattended grants** name a rule `id:` (`unattended_allow: [<id>]` in the policy file or task). Give the intended write its own id.
+
+Worked example, ready to copy: [`examples/gws-tooldef.yaml`](examples/gws-tooldef.yaml) (reference and reads) and [`examples/gws-rules.yaml`](examples/gws-rules.yaml) (verb-based enforcement: send, create, insert, patch, update, modify, trash, import, batch*, delete, sharing changes, `+helper` forms; reads, `schema`, `--dry-run` and `--help` allowed; calendar `events insert|quickAdd` is `ask` under id `gws.calendar-event-create`). They are documentation, not part of the loaded bundled set.
+
 ## Deployment: merged is not deployed (#936 + #916)
 
 `heal_damage_control` is the one function that puts rules, tooldefs and hook

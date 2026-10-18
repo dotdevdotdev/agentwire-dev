@@ -48,6 +48,14 @@ SECTIONS = {
     "tooldefs": Path("agentwire/tooldefs"),
 }
 
+# Files removed from the bundle. Their history stays in the manifest so doctor can
+# tell a pristine leftover copy ("shipped once, yours now") from a hand-written
+# file of the same name. Heal never deletes either (#1137).
+RETIRED = {
+    "rules": ["gws.yaml"],
+    "tooldefs": ["gws.yaml"],
+}
+
 HEADER = (
     "sha256 of every version of each bundled rule/tooldef file that has ever "
     "shipped on the main line. Used by heal_damage_control to tell a pristine "
@@ -100,7 +108,10 @@ def build_manifest() -> Dict[str, object]:
             # exists in history.
             hashes.add(hashlib.sha256(src.read_bytes()).hexdigest())
             entries[src.name] = sorted(hashes)
-        manifest[section] = entries
+        for name in RETIRED.get(section, []):
+            if name not in entries:
+                entries[name] = _historical_hashes(str(reldir / name))
+        manifest[section] = dict(sorted(entries.items()))
     return manifest
 
 
