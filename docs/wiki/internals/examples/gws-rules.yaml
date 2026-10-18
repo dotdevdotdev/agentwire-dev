@@ -1,0 +1,48 @@
+# USER-LEVEL gws rules (not shipped by agentwire). Install:
+#   cp gws-user-rules.yaml ~/.agentwire/damage-control/gws.yaml
+# Guards the gws OPERATION: `gws <service> <resource>... <method> [--flags]` plus
+# `+helper` forms. The method is the last bare word before the first flag.
+# People/contacts verbs (createContact, updateContact, deleteContact...) are covered.
+# `schema`/`help`, `--dry-run` and `--help` are reads. Rules are first-match.
+# Unattended calendar create needs: unattended_allow: [gws.calendar-event-create]
+
+bashToolPatterns:
+  # Permanent deletion (bypasses trash) — hard blocks. Space-separated (the CLI's
+  # real spelling); a dotted spelling also matches.
+  - id: gws.delete-permanent
+    pattern: '\bgws\s+(?:-\S+\s+)*(?:gmail[.\s]+users[.\s]+messages[.\s]+(?:delete|batchDelete)|drive[.\s]+files[.\s]+(?:delete|emptyTrash)|calendar[.\s]+calendars[.\s]+delete|admin[.\s]+users[.\s]+delete)(?=\s|$)'
+    reason: gws permanent deletion (bypasses trash / deletes a calendar or user)
+    anchored: true
+
+  - id: gws.make-admin
+    pattern: '\bgws\s+(?:-\S+\s+)*admin[.\s]+users[.\s]+makeAdmin(?=\s|$)'
+    reason: gws admin makeAdmin (grants admin privileges)
+    ask: true
+    anchored: true
+
+  # The intended write (Calendar read+create), own id so a grant can name just it.
+  - id: gws.calendar-event-create
+    pattern: '\bgws\s+(?:-\S+\s+)*(?!schema\b|help\b)calendar[.\s]+events[.\s]+(?:insert|quickAdd)(?=\s|$)(?!.*(?:--dry-run|--help|\s-h)(?:\s|$))'
+    reason: gws calendar event create (insert/quickAdd)
+    ask: true
+    anchored: true
+
+  # Changes WHO can see or act on data — public share, ACL, membership, delegation.
+  - id: gws.share
+    pattern: '\bgws\s+(?:-\S+\s+)*(?!schema\b|help\b)(?:\w+[.\s]+)*?(?:permissions|acl|members|delegates|forwardingAddresses|sendAs)[.\s]+(?:create|insert|update|patch)(?=\s|$)(?!.*(?:--dry-run|--help|\s-h)(?:\s|$))'
+    reason: gws sharing/permission change (permissions, acl, members, delegates)
+    ask: true
+    anchored: true
+
+  # Anything else that sends, creates, modifies, trashes or deletes.
+  - id: gws.write-method
+    pattern: '\bgws\s+(?:-\S+\s+)*(?!schema\b|help\b)(?:[A-Za-z]\w*[.\s]+){1,6}?(?:send|create|insert|patch|update|modify|trash|untrash|import|move|copy|clear|append|upload|quickAdd|delete|undelete|emptyTrash|(?:create|update|delete)[A-Z]\w*|batch(?!Get)\w*)(?=\s|$)(?!.*(?:--dry-run|--help|\s-h)(?:\s|$))'
+    reason: gws write method (send/create/insert/patch/update/modify/trash/delete/batch*)
+    ask: true
+    anchored: true
+
+  - id: gws.write-helper
+    pattern: '\bgws\s+(?:-\S+\s+)*\w+\s+\+(?:send|reply|reply-all|forward|insert|upload|append|write|create|import|share)(?=\s|$)(?!.*(?:--dry-run|--help|\s-h)(?:\s|$))'
+    reason: gws helper write (+send/+reply/+insert/+upload/...)
+    ask: true
+    anchored: true

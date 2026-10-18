@@ -78,7 +78,7 @@ def bundled_config(bash_hook):
     hand = [p for p in cfg["bashToolPatterns"] if p.get("source") != "tooldef"]
     # 177 before #924: 8 remote.yaml ssh-twins deleted (redundant with the
     # wrapper-payload rescan) + 1 payloads.yaml rule added (#921).
-    assert len(hand) == 170, f"expected 170 hand-written rules, got {len(hand)}"
+    assert len(hand) == 163, f"expected 163 hand-written rules, got {len(hand)}"
     cfg["safety"] = dict(SAFETY)
     return cfg
 
@@ -309,13 +309,6 @@ DANGEROUS_SAMPLE = {
     '\\bgit\\s+stash\\s+drop\\b': 'git stash drop',
     '\\bgit\\s+rm\\b(?!.*--cached)': 'git rm tracked.txt',
     '\\bgit\\s+push\\s+\\S+\\s+:\\S+': 'git push origin :feature',
-    '\\bgws\\s+gmail\\s+users[.\\s]+messages[.\\s]+delete\\b': 'gws gmail users messages delete',
-    '\\bgws\\s+gmail\\s+users[.\\s]+messages[.\\s]+batchDelete\\b': 'gws gmail users messages batchDelete',
-    '\\bgws\\s+drive\\s+files[.\\s]+delete\\b': 'gws drive files delete',
-    '\\bgws\\s+drive\\s+files[.\\s]+emptyTrash\\b': 'gws drive files emptyTrash',
-    '\\bgws\\s+calendar\\s+calendars[.\\s]+delete\\b': 'gws calendar calendars delete',
-    '\\bgws\\s+admin\\s+users[.\\s]+delete\\b': 'gws admin users delete',
-    '\\bgws\\s+admin\\s+users[.\\s]+makeAdmin\\b': 'gws admin users makeAdmin',
     '\\bterraform\\s+destroy\\b': 'terraform destroy',
     '\\bpulumi\\s+destroy\\b': 'pulumi destroy',
     '\\bserverless\\s+remove\\b': 'serverless remove',
