@@ -646,7 +646,27 @@ noDeletePaths:
   - ~/.agentwire/sessions/
 ```
 
-Blocks: `rm`, `unlink`, `rmdir`, `shred`
+Blocks: `rm`, `unlink`, `rmdir`, `shred`, plus the three ways to the same end that the verb list used to miss (#1127, #1128; see [What the no-delete ladder judges](#what-the-no-delete-ladder-judges-1127-1128)).
+
+##### What the no-delete ladder judges (#1127, #1128)
+
+`noDeletePaths` (and the delete half of `readOnlyPaths`) used to pair a delete verb with a path inside ONE simple command. Four shapes got around it; each is now judged like the direct operand (`rm <path>`), by `producer_scan` / `producer_fed_hit` / `move_overwrite_hit` in `_core.py`.
+
+**Producer-fed deletes (#1128).** A delete consumer whose operands come from elsewhere: `xargs [opts] rm`, `parallel rm`, `rm $(…)` / `` rm `…` ``, `while read f; do rm "$f"; done`, `for f in …; do rm $f; done`, `find … -exec rm {} +` (also inside `ssh`/`sh -c`/`sudo`/`if`/`( )`). The words of every OTHER segment are treated as its operands:
+
+- the producer **names** a guarded path or file (`find ~/.claude -name CLAUDE.md`, `echo ~/.claude/x`, `cat <path>`) → **block**, same as `rm <path>` (allowlist `delete` entries still re-permit);
+- the producer is a **search** (`find`/`ls`/`tree`/`du`/`fd`/`rg`/`ag`/`grep -r`) whose root contains a guarded absolute path (`find ~ …`, `find ~/.claude -name '*.o'`), or in the repo (relative root, or the implicit cwd) with no name filter or a filter that could match a guarded name (`find . -type f`, `-name 'README*'`, `ls`) → **ask, unverifiable** (id `core.producer-fed-delete`; not demoted by bypass, a block unattended). A name filter that cannot match a guarded FILE basename (`find . -name '*.o'`) exempts that file; a guarded DIRECTORY is never exempted by a filter, since everything under it is guarded.
+- scratch is untouched: `find /tmp/work -name '*.o' | xargs rm`, `cat /tmp/list | xargs rm`, `ls /tmp/work | parallel rm` stay allowed; a relative root inside a scratch dir is skipped.
+
+**mv / rename (#1127, owner ruling: moving it out of place deletes it).** A SOURCE that names a guarded path is a delete of it: `mv`, `mv -t DIR`, `mv --target-directory=DIR`, `mv -T`, `git mv` (incl. `git -C`), `rename`, `sudo`/`nohup`/`ssh`/`sh -c`/compound bodies, and mv fed by `xargs`/`find -exec`. A DESTINATION is an overwrite: `mv`, `cp`, `install`, `rsync`, `ln -f`/`-sf`/`--force` onto a guarded FILE entry (`~/.agentwire/settings.json`, `CLAUDE.md`, `README.md`) is blocked; into a guarded DIRECTORY entry it is blocked only when the destination already exists as a file there.
+
+**Emptying == deleting.** `truncate …`, `dd … of=<path>` and `: > <path>` onto a guarded path block. A plain `>` redirect and `echo x > file` stay allowed (the ordinary edit path).
+
+**Stated cost (the rephrase side).** A rename INSIDE a guarded directory (`mv ~/.claude/a ~/.claude/b`, a backup rename of a guarded file) blocks — its source is the guarded path. Moving an unrelated file into a guarded directory, `mv`/`cp` of scratch files, and copying a guarded file OUT (`cp ~/.claude/CLAUDE.md /tmp/b`) are allowed. `find . -type f | xargs rm` in a repo asks; `cd /tmp/work && find . | xargs rm` asks too (the hook's cwd, not the `cd`, resolves the relative root) — rephrase with the absolute path.
+
+**Declared residual** (not closable by a text hook): the CONTENT of a list file (`cat /tmp/list | xargs rm` is judged by where the list lives, not by what it names); roots held in variables not assigned in the same command (`find "$d" | xargs rm`); `rm $f` loops with non-literal operands were already refused by the generic rm rule; an `rsync --delete` into a guarded directory is not modelled.
+
+Pinned by `tests/unit/test_damage_control_producer_fed.py`: a differential (consumer spellings × producers × targets × homes × {default, kill switch off, unattended}) against the direct-operand decision, plus must-allow controls. Logic lives only in `_core.py` (no rule-YAML change), so a newer ruleset never needs a newer hook.
 
 #### 5. allowedPaths (Granular path-based allowlist)
 
