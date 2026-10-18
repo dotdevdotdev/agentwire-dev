@@ -98,3 +98,37 @@ def test_rules_are_plain_regexes_for_an_older_hook(bash_hook):
     cfg = bash_hook.load_config(RULES_DIR, TOOLDEFS_DIR)
     unexpanded = [p["id"] if p.get("id") else p["pattern"] for p in cfg["bashToolPatterns"] if "{ARGS}" in p["pattern"]]
     assert not unexpanded, unexpanded
+
+
+# ---- wrapper x git global option x destructive git op (differential) ----
+PREFIX_WRAPPERS = [
+    "timeout 5", "gtimeout 5", "nice", "nice -n 5", "ionice -c 3", "caffeinate", "caffeinate -i",
+    "env", "env X=1", "sudo", "sudo -u me", "nohup", "time", "stdbuf -o0", "chrt 1", "taskset 0x1",
+    "setsid", "command", "exec", "doas", "flock /tmp/l", "unbuffer", "numactl -N 0",
+    "sshpass -p x", "strace", "fakeroot", "arch -arm64", "watchexec", "systemd-run", "chronic",
+    "nsenter -t 1", "sg grp -c", "runuser -u me --", "chroot /new",
+]
+GIT_GLOBALS = ["", "-C d", "-c a=b", "--git-dir=g", "--work-tree=w", "--no-pager", "-C d -c a=b --no-pager"]
+GIT_OPS = ["push -f origin main", "push --force origin main", "push origin --delete x",
+           "reset --hard HEAD~1", "clean -fd", "branch -D x", "checkout -- .", "stash drop",
+           "filter-branch", "restore .", "push origin :x"]
+
+
+def test_wrapper_and_git_global_options_do_not_weaken_destructive_git(decide):
+    bad = []
+    for op in GIT_OPS:
+        want = RANK[decide(f"git {op}")]
+        assert want, f"git {op} must be refused at top level"
+        for w in PREFIX_WRAPPERS:
+            for g in GIT_GLOBALS:
+                cmd = f"{w} git {g} {op}".replace("  ", " ")
+                if RANK[decide(cmd)] < want:
+                    bad.append(cmd)
+    assert not bad, bad
+
+
+def test_wrapped_benign_git_decides_like_top_level(decide):
+    benign = ["git status", "git -C d log", "git -c a=b diff", "git --no-pager log -5"]
+    bad = [f"{w} {b}" for b in benign for w in PREFIX_WRAPPERS if decide(f"{w} {b}") != decide(b)]
+    assert not bad, bad
+    assert decide("sudo grep rm x") == "allow" and decide("flock f grep git x") == "allow"

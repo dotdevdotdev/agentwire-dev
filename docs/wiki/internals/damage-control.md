@@ -459,6 +459,8 @@ Rule-YAML only; each ships independent of the hook scripts (plain regexes, no `{
 
 Known price: `git config core.pager 'less -FRX'` asks once. The value is **not** re-scanned as a command in the set-form (that is `_core.py` work; the `-c` form is, via `_git_exec_config_payloads`), so the rule is a coarse bare-word test rather than a payload judgment. The `chmod` fix narrows only the non-recursive rule; `chmod -R` keeps 777-anywhere on purpose (an unreadable mode token such as `${m:-x}` must not hide a world-writable tree), so `chmod -R u+x 777` (a file named 777) still blocks.
 
+**Wrapper x git global options (#1133).** `timeout 5 git -C d push --force` used to allow, and so did `caffeinate git push -f` (no global option at all): the anchored-rule position walk knew only a narrow wrapper list, and the global-option stripper gave up at any token that was not a bare `sudo`/`env`/`nice`-class wrapper. `_POSITION_WRAPPERS` now includes every `_PREFIX_WRAPPERS` entry, wrappers that take a bare operand before the command (`flock FILE`, `lockf`, `chroot`, `sg GROUP`) are modelled in `_WRAPPER_OPERANDS`, and `_strip_global_options` skips a wrapper's own options/operands before the tool. Pinned by a 34-wrapper x 7-global-option x 11-destructive-op differential (decision wrapped >= decision top level). Still open: wrappers that carry their command in a quoted string are judged through the shell-payload rescan, not this path.
+
 ### Pattern Types
 
 #### 1. bashToolPatterns (Bash commands)
