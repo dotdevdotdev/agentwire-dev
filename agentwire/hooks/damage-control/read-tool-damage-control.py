@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "4102485282896b569d410ffa981e77b96bd507500228d62d8ea5c727f57ecf8a", "generated_at": "2026-10-18T23:49:17Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "fbdc9e80184ba9712dc9faae1cc49de786de0084201feab18f3e6b5c63b858d0", "generated_at": "2026-10-18T23:54:16Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3901,6 +3901,25 @@ def _pipe_stages(command: str) -> List[Tuple[str, str]]:
 _HERE_STRING_RE = _rx(r"<<<[ \t]*('[^']*'|\"[^\"]*\"|\S+)")
 
 
+def _here_strings(text: str):
+    """Real ``<<<`` redirections of ``text`` (matches outside quotes).
+
+    A quoted ``<<<`` is skipped by resuming just past its three characters: the regex
+    would otherwise consume the NEXT, real ``<<<`` as the quoted one's argument
+    (``echo '<<<'; sh <<< 'rm -rf x'``).
+    """
+    pos = 0
+    while True:
+        m = _HERE_STRING_RE.search(text, pos)
+        if m is None:
+            return
+        if _inside_quotes(text, m.start()):
+            pos = m.start() + 3
+            continue
+        yield m
+        pos = m.end()
+
+
 _CRON_FIELDS = _rx(r"^[ \t]*(?:@\w+|(?:\S+[ \t]+){5})")
 
 
@@ -4001,9 +4020,7 @@ def _stdin_program_commands(command: str, rules: bool = False) -> List[str]:
             words = _feed_words(line)
             emit(body, words)
         visible = _hide_heredoc_bodies(command, keep_programs=True)
-        for m in _HERE_STRING_RE.finditer(visible):
-            if _inside_quotes(visible, m.start()):
-                continue  # ``'lua <<< x'`` in a message body is text, not a redirection
+        for m in _here_strings(visible):  # ``'lua <<< x'`` in a message body is text
             line = visible[visible.rfind("\n", 0, m.start()) + 1 : m.start()]
             words = _feed_words(line)
             emit(" ".join(_words(m.group(1))), words)
@@ -4017,6 +4034,10 @@ def _stdin_program_commands(command: str, rules: bool = False) -> List[str]:
             if words and os.path.basename(words[0]) in ("echo", "printf"):
                 text = " ".join(w for w in words[1:] if not re.fullmatch(r"-[neE]+", w))
                 emit(text, consumer_words)
+                if os.path.basename(words[0]) == "printf" and len(words) > 2 and "%" in words[1]:
+                    emit(" ".join(words[2:]), consumer_words)  # ``printf '%s' X``: X is the text
+            elif words and os.path.basename(words[0]) == "cat" and "<<<" in words[1:-1]:
+                emit(words[words.index("<<<") + 1], consumer_words)  # ``cat <<< X | sh``
     return out
 
 
@@ -4140,7 +4161,7 @@ _SED_E_CMD_RE = _rx(
 )
 _SED_S_FLAG_E_RE = _rx(
     r"(?:^|[;{}\n])[ \t]*(?:[0-9$,~]+|/(?:\\.|[^/\\\n])*/)?[ \t]*!?[ \t]*"
-    r"s([^\w\s\\])(?:\\.|(?!\1)[^\\])*\1((?:\\.|(?!\1)[^\\])*)\1[a-zA-Z0-9]*e",
+    r"s([^\w\s\\]|_)(?:\\.|(?!\1)[^\\])*\1((?:\\.|(?!\1)[^\\])*)\1[a-zA-Z0-9]*e",
     0,
 )
 
@@ -4302,7 +4323,7 @@ def _net_payloads(base: str, args: List[str]) -> List[str]:
 
 _HIDDEN_TOOLS = frozenset({
     "sed", "gsed", "awk", "gawk", "mawk", "tar", "gtar", "bsdtar", "git", "npm", "npx", "ssh", "scp", "sftp",
-    "flock", "parallel", "docker", "podman", "nerdctl", "docker-compose", "kubectl",
+    "flock", "parallel", "docker", "podman", "nerdctl", "docker-compose", "kubectl", "oc",
 })
 
 
@@ -4335,7 +4356,7 @@ def _launcher_payloads(base: str, args: List[str]) -> List[str]:
                 line = line.replace(repl, "x")
             return [" ".join([line] + [_quote_word(w) for w in cmd[1:]])]
         return [" ".join(_quote_word(w) for w in cmd)]
-    if base == "kubectl":  # ``kubectl exec POD -- cmd``
+    if base in ("kubectl", "oc"):  # ``kubectl exec POD -- cmd``
         if "--" in args and any(w in ("exec", "run") for w in args[: args.index("--")]):
             tail = args[args.index("--") + 1 :]
             return [" ".join(_quote_word(w) for w in tail)] if tail else []
@@ -4361,7 +4382,15 @@ def _exec_tool(words: List[str]) -> Tuple[Optional[str], List[str]]:
     return None, []
 
 
-def _exec_payload_commands(command: str, _depth: int = 0) -> List[str]:
+def _inner_hidden(payload: str, rules: bool, depth: int) -> List[str]:
+    """Hidden commands of a wrapper's payload (``sh -c '…'``, ``ssh host '…'``), judged as a command itself."""
+    return (
+        _stdin_program_commands(payload, rules) + _procsub_bodies(payload)
+        + _exec_payload_commands(payload, rules, depth + 1)
+    )
+
+
+def _exec_payload_commands(command: str, rules: bool = False, _depth: int = 0) -> List[str]:
     """Commands that the tools in ``command`` run from option values or embedded programs."""
     if _depth > _RESCAN_DEPTH:
         return []
@@ -4380,7 +4409,7 @@ def _exec_payload_commands(command: str, _depth: int = 0) -> List[str]:
             out += _npm_payloads(base, args)
         elif base in ("ssh", "scp", "sftp"):
             out += _net_payloads(base, args)
-        elif base in ("flock", "parallel", "docker", "podman", "nerdctl", "docker-compose", "kubectl"):
+        elif base in ("flock", "parallel", "docker", "podman", "nerdctl", "docker-compose", "kubectl", "oc"):
             out += _launcher_payloads(base, args)
         # A shell's ``-c`` text and an ssh remote command are judged by their own
         # rules where they sit; a hidden command INSIDE them is still hidden.
@@ -4389,11 +4418,11 @@ def _exec_payload_commands(command: str, _depth: int = 0) -> List[str]:
         if head in _SHELL_NAMES and head != "su":
             inner, _rest = _eval_shell_invocation(words[k + 1 :], False)
             if inner:
-                out += _exec_payload_commands(inner, _depth + 1)
+                out += _inner_hidden(inner, rules, _depth)
         elif base == "ssh":
             remote = " ".join(w for w in _ssh_remote_command(args) if w != "--")
             if remote:
-                out += _exec_payload_commands(remote, _depth + 1)
+                out += _inner_hidden(remote, rules, _depth)
     return [p for p in out if p.strip()]
 
 
@@ -4404,7 +4433,7 @@ def _hidden_commands(command: str, rules: bool = False) -> List[str]:
     reading an interpreter's stdin as shell text too, as it always has (fail-closed net).
     """
     return list(dict.fromkeys(
-        _stdin_program_commands(command, rules) + _procsub_bodies(command) + _exec_payload_commands(command)
+        _stdin_program_commands(command, rules) + _procsub_bodies(command) + _exec_payload_commands(command, rules)
     ))[:_RESCAN_FANOUT]
 
 
@@ -5112,7 +5141,7 @@ def _eval_fed_programs(command: str, consumer=None) -> List[str]:
     for h in _heredocs(command):
         if consumer(_feed_words(h.line)):
             out.append(h.body)
-    for m in _HERE_STRING_RE.finditer(command):
+    for m in _here_strings(command):
         line = command[command.rfind("\n", 0, m.start()) + 1 : m.start()]
         if consumer(_feed_words(line)):
             out.append(" ".join(_words(m.group(1))))
@@ -5325,7 +5354,7 @@ def _eval_run_shell(base: str, rest: List[str], aliases: frozenset, rescan, resc
 
 
 _EVAL_SED_E_COMMAND_RE = _rx(r"(?:^|[;{}\n]|[0-9$/IM]|\\([^\w\s\\])(?:(?!\1).)*\1)\s*!?\s*e(?:\s|$)", 0)
-_EVAL_SED_S_FLAG_E_RE = _rx(r"s([^\w\s\\])(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[a-zA-Z0-9]*e", 0)
+_EVAL_SED_S_FLAG_E_RE = _rx(r"(?:^|[;{}\n])[ \t]*(?:[0-9$,~]+|/(?:\\.|[^/\\\n])*/)?[ \t]*!?[ \t]*s([^\w\s\\]|_)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[a-zA-Z0-9]*e", 0)
 
 
 def _eval_sed_executes(arg: str) -> bool:
@@ -5365,6 +5394,25 @@ _CONTAINER_VALUE_OPTS = frozenset({
 })
 
 
+# Options that sit BEFORE the subcommand and take a value: docker's, compose's and podman's.
+_CONTAINER_GLOBAL_VALUE_OPTS = frozenset({
+    "-H", "--host", "--context", "-c", "-l", "--log-level", "--config", "--tlscacert", "--tlscert",
+    "--tlskey", "-f", "--file", "-p", "--project-name", "--profile", "--env-file", "--project-directory",
+    "--ansi", "--parallel", "--connection", "--url", "-r", "--remote", "--identity", "--root", "--runroot",
+})
+
+
+def _container_subcommand(rest: List[str], start: int) -> Optional[int]:
+    """Index of the first subcommand word at/after ``start``, skipping global options and their values."""
+    i = start
+    while i < len(rest):
+        w = rest[i]
+        if not w.startswith("-"):
+            return i
+        i += 2 if w in _CONTAINER_GLOBAL_VALUE_OPTS else 1
+    return None
+
+
 def _eval_container_command(rest: List[str]) -> Optional[List[str]]:
     """The command words ``docker|podman run|exec [opts] IMAGE|CONTAINER cmd …`` launches, or None.
 
@@ -5372,9 +5420,9 @@ def _eval_container_command(rest: List[str]) -> Optional[List[str]]:
     value joins the command. Anything this does not parse as a run/exec returns None (the caller
     falls back to the old unknown-command scan, which asks).
     """
-    sub = next((k for k, w in enumerate(rest) if not w.startswith("-")), None)
-    if sub is not None and rest[sub] in ("container", "compose"):  # ``docker container exec`` / ``docker compose run``
-        sub = next((k for k in range(sub + 1, len(rest)) if not rest[k].startswith("-")), None)
+    sub = _container_subcommand(rest, 0)
+    while sub is not None and rest[sub] in ("container", "compose"):  # ``docker container exec`` / ``docker compose run``
+        sub = _container_subcommand(rest, sub + 1)
     if sub is None or rest[sub] not in ("run", "exec"):
         return None
     args = rest[sub + 1 :]

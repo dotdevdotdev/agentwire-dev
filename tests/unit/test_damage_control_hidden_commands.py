@@ -280,3 +280,40 @@ def test_a_message_body_quoting_carrier_syntax_is_data(bash_hook, cfg):
 
     body = (Path(__file__).resolve().parent.parent / "fixtures" / "dc_msg_body_quoting_carriers.txt").read_text()
     assert _decide(bash_hook, cfg, body) == "allow"
+
+
+R3_BLOCK = [
+    # a quoted <<< before the real one, in every separator / position
+    "echo '<<<' ; sh <<< 'rm -rf xx'", "echo '<<<' && sh <<< 'rm -rf xx'", "echo '<<<' || sh <<< 'rm -rf xx'",
+    "echo '<<<'\nsh <<< 'rm -rf xx'", "echo '<<<' | cat; sh <<< 'rm -rf xx'", "echo \"$(echo '<<<'; sh <<< 'rm -rf xx')\"",
+    "cat <<'EOF'\nbody\nEOF\necho '<<<'; sh <<< 'rm -rf xx'",
+    # here-string / stdin inside a -c or ssh payload
+    "bash -c 'sh <<< \"rm -rf xx\"'", "sh -c 'sh <<< \"rm -rf xx\"'", "bash -c \"sh <<< 'rm -rf xx'\"",
+    "ssh host \"sh <<< 'rm -rf xx'\"", "bash -c 'cat <(rm -rf xx)'",
+    # producers beyond echo
+    "cat <<< 'rm -rf xx' | sh", "cat <<< 'rm -rf xx' | bash -s", "printf '%s' 'rm -rf xx' | sh", "printf '%s\\n' 'rm -rf xx' | bash",
+    # container global options
+    "docker compose -f x.yml exec web rm -rf xx", "docker compose -p x run web rm -rf xx",
+    "docker --context x compose exec web rm -rf xx", "docker -H host container exec c rm -rf xx",
+    "docker-compose -f x.yml exec web rm -rf xx", "oc exec pod -- rm -rf xx", "kubectl -n ns exec pod -- rm -rf xx",
+    "oc exec pod -- git push --force origin main", "oc -n ns exec pod -- git reset --hard HEAD~3",
+    f"oc exec pod -- touch {CTL}",
+    # sed delimiter
+    "sed 's_a_rm -rf xx_e' f", "echo a | sed 's|a|rm -rf xx|e'",
+]
+R3_ALLOW = [
+    "echo '<<<'; echo hi", "echo '<<<' ; sh <<< 'echo hi'", "bash -c 'sh <<< \"echo hi\"'",
+    "cat <<< 'echo hi' | sh", "printf '%s' 'echo hi' | sh", "docker compose -f x.yml exec web true".replace("exec web true", "ps"),
+    "sed 's_a_b_' f", "sed 's_a_b_g' f",
+    "sed -i '' 's/if _EVAL_RE.search(command):/if has_it(command):/; s/if _EVAL_RE.search(masked):/if has_it(masked):/' f",
+]
+
+
+def test_round3_evasions_and_gaps_block(bash_hook, cfg):
+    bad = [c for c in R3_BLOCK if _decide(bash_hook, cfg, c) != "block"]
+    assert not bad, bad
+
+
+def test_round3_data_stays_allowed(bash_hook, cfg):
+    bad = [c for c in R3_ALLOW if _decide(bash_hook, cfg, c) != "allow"]
+    assert not bad, bad
