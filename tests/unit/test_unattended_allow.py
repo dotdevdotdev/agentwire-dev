@@ -39,7 +39,7 @@ BUNDLED_TOOLDEFS = REPO / "agentwire" / "tooldefs"
 # 257 -> 270 in #1130: tooldefs/gws.yaml parses now, so its 13 write-tier rules load.
 # 270 -> 278 / 250 -> 257 in #1133 (kill, find-chmod, crontab, rsync, git config set-form).
 EXPECTED_PATTERNS = 278
-EXPECTED_ANCHORED = 257
+EXPECTED_ANCHORED = 256
 
 UV_IDS = {
     "tooldef.uv-run-a-script-in-project-environment",

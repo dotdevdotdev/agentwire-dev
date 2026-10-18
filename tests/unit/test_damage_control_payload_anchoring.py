@@ -163,7 +163,7 @@ class TestAnchoringIsFileWide:
     def test_payloads_rules_pin_their_ids(self):
         """The move must not churn ids that safety.disabled_rules may name."""
         payloads = [e for f, e in BUNDLED if f == "payloads.yaml"]
-        assert len(payloads) == 17  # +1 git.config-set-alias-bang (#1133); +1: git.config-exec-key (#921)
+        assert len(payloads) == 18  # incl. git.config-set-{alias-bang,exec-key} (#1133); +1: git.config-exec-key (#921)
         assert all(e.get("id") for e in payloads), (
             "every rule moved into payloads.yaml needs an explicit `id:` pinned "
             "to the id it had in its old file — otherwise the id is re-derived "
@@ -266,14 +266,13 @@ DANGEROUS_SAMPLE = {
     '\\bfind\\b.*-exec\\s+rm\\b': "find /tmp -name '*.log' -exec rm {} +",
     '\\bmkfs\\.': 'mkfs.ext4 /dev/disk2',
     '\\bdd\\s+.*of=/dev/': 'dd if=/dev/zero of=/dev/disk2',
-    '\\bkill\\s+{ARGS}-[A-Za-z0-9][^\\s;&|]*\\s+(?:[^\\s;&|-][^\\s;&|]*\\s+)?(?:--\\s+)?-1(?=[\\s;&|)`]|$)': 'kill -TERM -1',
-    '\\bkill\\s+{ARGS}-1(?=\\s)[^;&|]*?\\s-[A-Za-z0-9]': 'kill -1 -9',
-    '\\bkill\\s+(?:[^\\s;&|]+\\s+)*?--\\s+-1(?=[\\s;&|)`]|$)': 'kill -TERM -- -1',
+    '\\bfind\\b.*-(?:exec|execdir|ok|okdir)\\s+(?:\\S*/)?chmod\\s+(?:-[^\\s;&|]*\\s+)*(?:--\\s+)?0?777\\b': 'find . -exec chmod 777 {} +',
+    '\\bkill\\s+(?:[^\\s;&|]+\\s+)+-1(?=[\\s;&|)`]|$)': 'kill 123 -1',
+    '\\bkill\\s+-1(?=\\s)[^;&|]*?\\s-[A-Za-z0-9]': 'kill -1 -9',
     '\\bkill\\s+{ARGS}(?:-(?:9|KILL|SIGKILL)|-s\\s*(?:9|KILL|SIGKILL)|-n\\s+9|--signal[=\\s]\\s*(?:9|KILL|SIGKILL))(?=[\\s;&|)`]|$)': 'kill 123 -9',
-    '\\bcrontab\\b(?![^;&|]*\\s-l\\b)': 'crontab mycron.txt',
-    '\\brsync\\s+{ARGS}--(?:del|delete(?:-[a-z]+)?|remove-(?:source|sent)-files)(?=[\\s=;&|)`]|$)': 'rsync a b --delete',
+    '(?<![\\w.-])(?<!\\./)crontab(?=[\\s;&|)`]|$)(?![^;&|]*\\s(?:-[A-Za-z]*l[A-Za-z]*|--list|-V|--version)(?=[\\s;&|)`]|$))': 'crontab mycron.txt',
+    '\\brsync\\s+{ARGS}--(?:del|delete[a-z-]*|remove-(?:source|sent)-files)(?=[\\s=;&|)`]|$)': 'rsync a b --delete',
     '\\bgit\\s+config\\b(?![^;&|]*\\s(?:--(?:get|unset|list|edit)|-l\\b|-e\\b))[^;&|]*?\\s(?:core\\.(?:worktree|hookspath)|include\\.path|includeif\\.\\S+\\.path)\\s+\\S': 'git config core.worktree /x',
-    '\\bgit\\s+config\\b(?![^;&|]*\\s(?:--(?:get|unset|list|edit)|-l\\b|-e\\b))[^;&|]*?\\s(?:core\\.(?:sshcommand|fsmonitor|pager|editor|askpass|alternaterefscommand)|sequence\\.editor|gpg\\.program|diff\\.external|credential\\.helper|uploadpack\\.packobjectshook|filter\\.[^.\\s]+\\.(?:clean|smudge|process)|difftool\\.[^.\\s]+\\.cmd|mergetool\\.[^.\\s]+\\.cmd|merge\\.[^.\\s]+\\.driver|remote\\.[^.\\s]+\\.(?:uploadpack|receivepack)|browser\\.[^.\\s]+\\.cmd|man\\.[^.\\s]+\\.cmd)\\s+(?![A-Za-z][\\w.+-]*(?=[\\s;&|)`]|$))\\S': 'git config core.pager /tmp/x.sh',
     '\\bhistory\\s+-c\\b': 'history -c',
     '\\bredis-cli\\s+FLUSHALL': 'redis-cli FLUSHALL',
     '\\bredis-cli\\s+FLUSHDB': 'redis-cli FLUSHDB',

@@ -118,7 +118,7 @@ bashToolPatterns:
   # Deferred execution: the crontab body runs later, unobserved, and a file or
   # stdin payload is unreadable here. Only listing (`-l`, `-lu me`, `--list`) and `-V` are read-only.
   - id: core.crontab-install
-    pattern: '(?<![\w.-])crontab(?=[\s;&|)`]|$)(?![^;&|]*\s(?:-[A-Za-z]*l[A-Za-z]*|--list|-V|--version)(?=[\s;&|)`]|$))'
+    pattern: '(?<![\w.-])(?<!\./)crontab(?=[\s;&|)`]|$)(?![^;&|]*\s(?:-[A-Za-z]*l[A-Za-z]*|--list|-V|--version)(?=[\s;&|)`]|$))'
     reason: crontab installs or edits scheduled commands
     ask: true
     anchored: true

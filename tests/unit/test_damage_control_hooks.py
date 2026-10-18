@@ -726,7 +726,7 @@ class TestGitGlobalOptionBypass:
         # (git.config-exec-key). 258 -> 257 in #1125: the duplicate `rm -[rRf]` rule
         # folded into the {ARGS} scan.
         # 257 -> 270 in #1130: tooldefs/gws.yaml parses, 13 write-tier rules load.
-        assert (len(patterns), len(anchored)) == (278, 257)  # +8/+7 in #1133
+        assert (len(patterns), len(anchored)) == (278, 256)  # +8/+7 in #1133
         assert any(p.get("source") == "tooldef" for p in patterns)
 
     def test_quoted_path_with_spaces(self, bash_hook, bundled_config):

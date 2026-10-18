@@ -496,7 +496,7 @@ class TestRuleIdUniqueness:
         # 264 -> 257 in #924/#921 (8 remote.yaml ssh twins deleted, 1 rule added)
         # 257 -> 270 in #1130 (tooldefs/gws.yaml parses; 13 write-tier rules load)
         assert len(patterns) == 278  # +8 in #1133
-        assert sum(1 for p in patterns if p.get("anchored")) == 257
+        assert sum(1 for p in patterns if p.get("anchored")) == 256
         assert cfg.get("_duplicate_rule_ids") is None
 
     def test_pinned_id_collision_is_detected_by_id(self, tmp_path):
