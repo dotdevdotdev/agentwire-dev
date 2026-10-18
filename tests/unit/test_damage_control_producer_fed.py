@@ -33,7 +33,7 @@ def decide(bash_hook, bundled_config, monkeypatch, tmp_path):
     cwd = tmp_path / "repo"
     cwd.mkdir()
 
-    def _decide(command, setting="default", home=HOMES[0]):
+    def _decide(command, setting="default", home=HOMES[0], where=None):
         monkeypatch.setenv("HOME", home)
         if setting == "unattended":
             monkeypatch.setenv("AGENTWIRE_UNATTENDED", "1")
@@ -41,7 +41,7 @@ def decide(bash_hook, bundled_config, monkeypatch, tmp_path):
             monkeypatch.delenv("AGENTWIRE_UNATTENDED", raising=False)
         cfg = dict(bundled_config)
         cfg["safety"] = dict(SAFETY, enabled=(setting != "kill_switch_off"))
-        return bash_hook.check_command(command, cfg, cwd=str(cwd))["decision"]
+        return bash_hook.check_command(command, cfg, cwd=where or str(cwd))["decision"]
 
     return _decide
 
@@ -147,24 +147,68 @@ def test_search_root_above_a_guarded_path_is_not_allowed(decide):
     assert not bad, bad
 
 
-def test_relative_search_in_the_repo_cannot_hide_a_guarded_name(decide):
+def test_relative_search_is_judged_by_where_it_can_reach(decide, tmp_path):
+    """A producer with no protected argument in an unguarded cwd is allowed (these were allowed
+    before #1128); a name filter that could match a guarded name, an unresolved variable root, or a
+    cwd INSIDE a guarded dir is not."""
     refused = [
-        "find . -type f | xargs rm",
         "find . -name 'README*' | xargs rm",
         "find . -name '*.md' | xargs rm",
-        "ls | xargs rm",
+        'find "$d" | xargs rm',
+        'ls $d | xargs rm',
+        "git ls-files ~/.claude | xargs rm",
+        "git -C ~/.claude ls-files | xargs rm",
     ]
     allowed = [
         "find . -name '*.o' | xargs rm",
+        "find . -type f | xargs rm",
+        "find . -mtime +7 | xargs rm",
+        "ls | xargs rm",
+        "ls build | xargs rm",
+        "ls -t | tail | xargs rm",
+        "git ls-files | xargs rm",
+        "git ls-files src | xargs rm",
     ]
     bad = [(c, got) for c in refused if (got := decide(c)) == "allow"]
     bad += [(c, got) for c in allowed if (got := decide(c)) != "allow"]
+    guarded_cwd = str(tmp_path / "home" / ".claude")
+    (tmp_path / "home" / ".claude").mkdir(parents=True)
+    for c in ("ls | xargs rm", "find . -type f | xargs rm", "git ls-files | xargs rm"):
+        if (got := decide(c, home=str(tmp_path / "home"), where=guarded_cwd)) == "allow":
+            bad.append((c, "cwd inside a guarded dir", got))
+    assert not bad, bad
+
+
+def test_execdir_ok_and_parallel_forms_equal_the_exec_decision(decide):
+    bad = []
+    for root in ("~/.claude/CLAUDE.md", "~/.claude", "~", "~/.agentwire/settings.json", "/tmp/work"):
+        base = decide(f"find {root} -name x -exec rm {{}} \\;")
+        for prim in ("-execdir", "-ok", "-okdir"):
+            got = decide(f"find {root} -name x {prim} rm {{}} \\;")
+            if got != base:
+                bad.append((root, prim, got, base))
+    for target in NO_DELETE_TARGETS:
+        direct = decide(f"rm {target}")
+        for c in (f"parallel 'rm {{}}' ::: {target}", f"parallel rm ::: {target}", f"git ls-files {target} | xargs rm"):
+            if (got := decide(c)) != direct:
+                bad.append((c, got, direct))
     assert not bad, bad
 
 
 MOVE_BLOCKED = [
     "mv ~/.claude/CLAUDE.md /var/tmp/away",
-    "mv ~/.claude/CLAUDE.md ~/.claude/CLAUDE.md.bak",
+    "mv ~/.claude ~/.claude.bak",
+    "mv ~/.agentwire /tmp/aw",
+    "mv ~/.agentwire/sessions /tmp/s",
+    "mv -t /tmp/aw ~/.agentwire",
+    "mv * /tmp/away",
+    "find ~/.claude | xargs truncate -s0",
+    "find ~/.claude -name CLAUDE.md -exec truncate -s0 {} +",
+    "cat /dev/null > ~/.claude/CLAUDE.md",
+    "true > ~/.claude/CLAUDE.md",
+    "printf '' > ~/.claude/CLAUDE.md",
+    ": >| ~/.claude/CLAUDE.md",
+    "tee ~/.claude/CLAUDE.md </dev/null",
     "mv -t /tmp/away ~/.claude/CLAUDE.md",
     "mv --target-directory=/tmp/away ~/.claude/CLAUDE.md",
     "mv -f ~/.agentwire/settings.json /tmp/s",
@@ -175,7 +219,6 @@ MOVE_BLOCKED = [
     "mv README.md /tmp/r",
     "mv /tmp/new README.md",
     "git mv README.md docs/README.md",
-    "git -C ~/.claude mv CLAUDE.md x",
     "rename s/a/b/ ~/.claude/CLAUDE.md",
     "cp /tmp/a ~/.agentwire/settings.json",
     "cp -f /tmp/a CLAUDE.md",
@@ -244,13 +287,35 @@ def test_unrelated_moves_and_copies_stay_allowed(decide):
     assert not bad, bad
 
 
-def test_destination_inside_a_guarded_dir_is_refused_only_when_it_exists(decide, tmp_path):
-    """A new file moved INTO a no-delete dir is fine; replacing a file already there is an overwrite."""
-    home = tmp_path / "home"
-    (home / ".claude").mkdir(parents=True)
-    (home / ".claude" / "settings.json").write_text("{}")
-    h = str(home)
-    assert decide("mv /tmp/a ~/.claude/settings.json", home=h) == "block"
-    assert decide("cp /tmp/a ~/.claude/settings.json", home=h) == "block"
-    assert decide("mv /tmp/a ~/.claude/never-existed.json", home=h) == "allow"
-    assert decide("cp /tmp/a ~/.claude/never-existed.json", home=h) == "allow"
+STATE_MOVES_ALLOWED = [
+    # the real owner command (audit log): a backup-rename of runtime state
+    "mv ~/.agentwire/cohorts/x.json x.json.held",
+    "mv ~/.agentwire/cohorts/x.json ~/.agentwire/cohorts/x.json.held",
+    "mv ~/.agentwire/inbox/s/a.json /tmp/a.json",
+    "mv /tmp/a.json ~/.agentwire/inbox/s/a.json",
+    "cp /tmp/a ~/.agentwire/cohorts/y.json",
+    "find ~/.agentwire/cohorts -name '*.json' | xargs -I{} mv {} /tmp/old",
+    ": > ~/.agentwire/cohorts/y.json",
+    "echo x > ~/.claude/CLAUDE.md",
+]
+
+
+def test_runtime_state_is_not_in_the_mv_ladder(decide):
+    """Directory entries guard state agents move and replace routinely; only the dir itself counts."""
+    bad = [(c, s, got) for c in STATE_MOVES_ALLOWED for s in SETTINGS if (got := decide(c, s)) != "allow"]
+    assert not bad, bad
+
+
+def test_renaming_a_guarded_file_inside_its_own_directory_asks(decide):
+    renames = [
+        "mv ~/.claude/CLAUDE.md ~/.claude/CLAUDE.md.bak",
+        "mv ~/.agentwire/settings.json ~/.agentwire/settings.json.bak",
+        "mv README.md README.old",
+        "git -C ~/.claude mv CLAUDE.md x",
+    ]
+    bad = []
+    for c in renames:
+        for setting, want in (("default", "ask"), ("unattended", "ask"), ("kill_switch_off", "allow")):
+            if (got := decide(c, setting)) != want:
+                bad.append((c, setting, got))
+    assert not bad, bad
