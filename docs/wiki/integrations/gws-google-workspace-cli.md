@@ -6,7 +6,7 @@
 - **npm:** https://www.npmjs.com/package/@googleworkspace/cli
 - **License:** Apache-2.0
 - **Status:** Pre-v1.0, not officially supported by Google. Breaking changes expected.
-- **Latest (2026-03-10):** v0.9.1 — stale: `agentwire/tooldefs/gws.yaml` now notes behavior specific to v0.16.0 (`GOOGLE_WORKSPACE_CLI_ACCOUNT` no longer exists as of that version), so the CLI has moved well past v0.9.1. Check `npm view @googleworkspace/cli version` for the actual current release rather than trusting this line.
+- **Latest (2026-03-10):** v0.9.1 — stale: the CLI is past v0.16.0 (`GOOGLE_WORKSPACE_CLI_ACCOUNT` no longer exists as of that version), so the CLI has moved well past v0.9.1. Check `npm view @googleworkspace/cli version` for the actual current release rather than trusting this line.
 
 ---
 
@@ -339,3 +339,7 @@ Skills index: https://github.com/googleworkspace/cli/blob/main/docs/skills.md
 **ADC project conflicts:** If your global `gcloud` project doesn't have an API enabled but your gws-specific project does, set `GOOGLE_WORKSPACE_PROJECT_ID` to override. Fixed properly in v0.8.1.
 
 **Pre-v1.0 stability:** Pin versions in automation scripts and test after updates.
+
+## Guarding gws in agentwire
+
+agentwire ships no gws policy (user-level control). To add your own, see [Writing your own tooldef](../internals/damage-control.md#writing-your-own-tooldef-user-level-policy-1137) — gws is the worked example.

@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "725c1b39d8beeea37d6a9d620056b9ad38038115a993ffdf8ac2ea6383dd5281", "generated_at": "2026-10-18T23:14:13Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "9e7619a81d6a51cd0340a9ac8a00ba10626f05f5c40f2aa32e794028107ee35d", "generated_at": "2026-10-18T23:27:26Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -563,8 +563,8 @@ def _find_project_config() -> Tuple[str, List[Any]]:
                         paths = data.get("allowed_paths", [])
                         if isinstance(paths, list):
                             return current, paths
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_load_failure(Path(config_file), exc, None)
             return current, []
         parent = os.path.dirname(current)
         if parent == current:
@@ -1282,8 +1282,8 @@ def _cmd_to_regex(
 ) -> Optional[str]:
     """Convert a tooldef command string to a regex matching its fixed prefix.
 
-    Example: ``gws gmail +send --to <addr>`` ->
-    ``\\bgws\\s+gmail\\s+\\+send(?![\\w-])``
+    Example: ``gh pr create --title <t>`` ->
+    ``\\bgh\\s+pr\\s+create(?![\\w-])``
 
     ``read_prefixes`` are the token prefixes of the same tooldef's
     ``access: read`` commands. Any read command that EXTENDS this write prefix
@@ -2512,6 +2512,45 @@ def unattended_grant_allows(
     )
 
 
+def policy_file_parse_failures(
+    global_config_path: Optional[Path] = None,
+    cwd: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Parse failures in the global policy file and the nearest project
+    ``.damagecontrol.yml`` (#1137). The loaders swallow these by design (fail
+    secure), so doctor asks here instead; same record shape as ``_parse_failures``.
+    """
+    failures: List[Dict[str, Any]] = []
+    if not yaml:
+        return failures
+    if global_config_path is None:
+        global_config_path = Path.home() / ".agentwire" / "damagecontrol.yml"
+    candidates = [global_config_path]
+    current = os.path.abspath(cwd or os.environ.get("PWD", os.getcwd()))
+    while True:
+        project = os.path.join(current, ".damagecontrol.yml")
+        if os.path.isfile(project):
+            candidates.append(Path(project))
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            yaml.safe_load(path.read_text())
+        except Exception as exc:
+            mark = getattr(exc, "problem_mark", None)
+            failures.append({
+                "file": str(path),
+                "line": mark.line + 1 if mark is not None else None,
+                "error": str(getattr(exc, "problem", None) or exc),
+            })
+    return failures
+
+
 def load_safety_config(
     global_config_path: Optional[Path] = None,
     cwd: Optional[str] = None,
@@ -2563,8 +2602,8 @@ def load_safety_config(
             genabled = _absorb(gdata)
             if genabled is not None:
                 enabled = genabled
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_load_failure(global_config_path, exc, None)
 
     if cwd is None:
         cwd = os.environ.get("PWD", os.getcwd())
@@ -2576,8 +2615,8 @@ def load_safety_config(
                 with open(candidate, "r") as f:
                     pdata = yaml.safe_load(f) or {}
                 project_enabled = _absorb(pdata)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_load_failure(Path(candidate), exc, None)
             break
         parent = os.path.dirname(current)
         if parent == current:

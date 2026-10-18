@@ -494,9 +494,8 @@ class TestRuleIdUniqueness:
         cfg = load_config(BUNDLED_RULES, BUNDLED_TOOLDEFS)
         patterns = cfg["bashToolPatterns"]
         # 264 -> 257 in #924/#921 (8 remote.yaml ssh twins deleted, 1 rule added)
-        # 257 -> 270 in #1130 (tooldefs/gws.yaml parses; 13 write-tier rules load)
-        assert len(patterns) == 270
-        assert sum(1 for p in patterns if p.get("anchored")) == 250
+        assert len(patterns) == 250
+        assert sum(1 for p in patterns if p.get("anchored")) == 230
         assert cfg.get("_duplicate_rule_ids") is None
 
     def test_pinned_id_collision_is_detected_by_id(self, tmp_path):
@@ -744,7 +743,7 @@ class TestInstalledPathBehaviour:
         live = load_config(safety_commands.RULES_DIR, safety_commands.TOOLDEFS_DIR)
         # floor lowered 260 -> 255 when #924 deleted 8 redundant remote.yaml
         # ssh twins (net -7 rules)
-        assert len(live["bashToolPatterns"]) >= 255, "live corpus is suspiciously small"
+        assert len(live["bashToolPatterns"]) >= 248, "live corpus is suspiciously small"
         before_decision = __import__(
             "agentwire.safety._core", fromlist=["check_command"]
         ).check_command(NETLIFY_CMD, live)
