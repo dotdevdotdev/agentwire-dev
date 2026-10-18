@@ -767,7 +767,9 @@ HARMLESS_CORPUS = [
     ("cargo build --release", "allow"), ("pip list | grep requests", "allow"), ("docker ps -a", "allow"),
     ("curl -s https://example.com | jq .", "allow"), ("tar -czf a.tgz dir", "allow"), ("diff a b", "allow"),
     # declared wrongful asks: an unknown launcher followed by the bare word cannot be told from a verb
-    (f"someunknowntool {W}", "ask"), (f"parallel -j4 grep {W} ::: f", "ask"), (f"flock /tmp/l grep {W} f", "ask"),
+    (f"someunknowntool {W}", "ask"),
+    # launchers with a modelled grammar (#14): the word after the lock file / before ``:::`` is the verb
+    (f"parallel -j4 grep {W} ::: f", "allow"), (f"flock /tmp/l grep {W} f", "allow"),
     (f"foo --flag '{W}'", "ask"),
 ]
 
