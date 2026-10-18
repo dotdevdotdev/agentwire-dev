@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "7680791d5f08a76d1e52d2205a3ca6be9427a7246ddd329e7cef8f77675e176a", "generated_at": "2026-10-18T19:07:22Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "31ae1f3491ba290c47c14f44a966d53bfc6c899cfff9d2124b5d366c170d0a12", "generated_at": "2026-10-18T19:24:04Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3751,7 +3751,33 @@ def _net_payloads(base: str, args: List[str]) -> List[str]:
 
 _HIDDEN_TOOLS = frozenset({
     "sed", "gsed", "awk", "gawk", "mawk", "tar", "gtar", "bsdtar", "git", "npm", "npx", "ssh", "scp", "sftp",
+    "flock", "parallel", "docker", "podman", "nerdctl",
 })
+
+
+def _flock_payloads(args: List[str]) -> List[str]:
+    """``flock [opts] LOCK cmd …`` / ``flock LOCK -c 'cmd'``: the launched command (#14)."""
+    value_opts = {"-w", "-E", "--timeout", "--wait", "--conflict-exit-code"}
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] != "--":
+        i += 2 if args[i] in value_opts else 1
+    if i < len(args) and args[i] == "--":
+        i += 1
+    rest = args[i + 1 :]  # args[i] is the lock file / fd
+    if rest and re.fullmatch(r"-[A-Za-z]*c|--command", rest[0]):
+        return rest[1:2]
+    return [" ".join(_quote_word(w) for w in rest)] if rest else []
+
+
+def _launcher_payloads(base: str, args: List[str]) -> List[str]:
+    """The command a launcher runs, as a command in its own right (the eval table's twin for rules)."""
+    if base == "flock":
+        return _flock_payloads(args)
+    if base == "parallel":
+        cmd, _repl = _parallel_command(args)
+        return [" ".join(_quote_word(w) for w in cmd)] if cmd else []
+    launched = _eval_container_command(args)
+    return [" ".join(_quote_word(w) for w in launched)] if launched else []
 
 
 def _exec_tool(words: List[str]) -> Tuple[Optional[str], List[str]]:
@@ -3790,6 +3816,8 @@ def _exec_payload_commands(command: str, _depth: int = 0) -> List[str]:
             out += _npm_payloads(base, args)
         elif base in ("ssh", "scp", "sftp"):
             out += _net_payloads(base, args)
+        elif base in ("flock", "parallel", "docker", "podman", "nerdctl"):
+            out += _launcher_payloads(base, args)
         # A shell's ``-c`` text and an ssh remote command are judged by their own
         # rules where they sit; a hidden command INSIDE them is still hidden.
         k = next((j for j, w in enumerate(words) if not _ASSIGN_TOKEN_RE.match(w)), None)

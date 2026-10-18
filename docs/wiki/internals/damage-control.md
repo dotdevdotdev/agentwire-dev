@@ -1807,17 +1807,21 @@ one can never lower the outer verdict. For the general rules an interpreter's
 stdin is NOT shell text (`python3 - <<< 'eval'` runs no eval); only the
 protected-path scan keeps reading it as shell, as before.
 
-`parallel … :::`, `flock LOCK cmd` and `docker|podman run|exec IMAGE cmd` have
-modelled grammars in the eval check, so the verb is the command (and `--entrypoint`
-joins it), not the word after the lock file / image.
+`parallel … :::`, `flock LOCK cmd` / `flock LOCK -c 'cmd'` and `docker|podman|nerdctl
+run|exec IMAGE cmd` (`--entrypoint` joins the command) are hidden-command
+carriers for the verb rules too: the launched command is judged as if typed
+(`flock /tmp/l rm -rf /x` blocks like `rm -rf /x`). The eval check models the same
+grammars, so only the eval word's wrongful ask is gone — `docker run alpine ls`
+still asks, by the docker write-tier rule.
 `tests/unit/test_damage_control_hidden_commands.py` is the differential.
 
 **Declared residuals (undecidable statically, or text a program produces):**
 `sed e` with no operand and `awk system($0)` run input data; `awk -f prog` /
 `sed -f script` are files; `cat x.sh | sh` and other non-`echo` producers; an
-interpreter's stdin on a LOCAL `python3 - <<EOF` is judged by the protected-path
-net only, not the general rules (a prose literal in a heredoc script would
-otherwise block, as `python3 -c` does).
+interpreter's stdin on a LOCAL run (`echo 'os.execute(…)' | lua`, `lua <<< …`,
+`… | python3`, `python3 - <<EOF`) is judged by the protected-path net only, not
+the general verb rules (a prose literal in a heredoc script would otherwise
+block, as `python3 -c` does); a remote interpreter's stdin IS judged.
 
 ### A `)` / `;` inside a word's data does not hide the verb (#1119)
 

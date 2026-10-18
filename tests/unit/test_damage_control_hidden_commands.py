@@ -59,6 +59,15 @@ CARRIERS = [
     "echo {q} | ssh host",
     "echo {q} | mosh host",
     "mosh host -- {p}",
+    "flock /tmp/l {p}",
+    "flock -n /tmp/l {p}",
+    "flock /tmp/l -c {q}",
+    "nohup flock -w 5 /tmp/l {p}",
+    "sudo flock /tmp/l {p}",
+    "docker run alpine {p}",
+    "docker run --rm -e A=1 alpine {p}",
+    "podman exec c {p}",
+    "parallel -j4 {p} ::: a b",
     "sed -n '1e {p}' f",
     "sed -e 's/x/{p2}/e' f",
     "echo x | sed -ne '$e {p}'",
@@ -234,3 +243,8 @@ def test_known_launchers_see_the_verb_not_the_word_after_it():
     bad = [c for c in LAUNCHER_DATA if has_command_position_eval(c)]
     bad += [c for c in LAUNCHER_EXEC if not has_command_position_eval(c)]
     assert not bad, bad
+
+
+def test_container_entrypoint_is_the_launched_program(bash_hook, cfg):
+    assert _decide(bash_hook, cfg, "docker run --entrypoint rm alpine -rf /x") == "block"
+    assert _decide(bash_hook, cfg, "docker run alpine ls") == _decide(bash_hook, cfg, "docker run alpine true")
