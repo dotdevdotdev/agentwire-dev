@@ -547,6 +547,18 @@ def _render_damage_control_section() -> int:
         if not (missing or outdated or unknown):
             print(f"  [ok] Damage-control {label} installed and match bundled")
 
+    # Files the bundle used to ship and no longer does. Informational: heal
+    # never deletes them, and an edited one is the user's own (#1137).
+    for section, files in safety_commands.retired_installed().items():
+        for name, kind in sorted(files.items()):
+            live_dir = safety_commands.RULES_DIR if section == "rules" else safety_commands.TOOLDEFS_DIR
+            if kind == "pristine":
+                print(f"  [..] {live_dir / name} is no longer shipped by agentwire "
+                      f"(a copy of an old release, still loaded). Keep it if you use it; "
+                      f"otherwise delete it.")
+            else:
+                print(f"  [ok] {live_dir / name}: your own file (agentwire no longer ships one by that name)")
+
     # Duplicate rule ids — the only detector for a partially-applied rule set
     # (#916). Two live rules sharing one id makes `disabled_rules` and
     # `unattended_allow` ambiguous, which is the surface #914's scoped grants
@@ -568,19 +580,22 @@ def _render_damage_control_section() -> int:
     # A rule/tooldef file that fails to parse contributes nothing — every
     # protection in it is silently absent (#1130).
     try:
-        parse_failures = safety_commands.load_patterns().get("_parse_failures") or []
+        from .safety._core import policy_file_parse_failures
+        parse_failures = (
+            safety_commands.load_patterns().get("_parse_failures") or []
+        ) + policy_file_parse_failures()
     except Exception as e:
         print(f"  [..] Could not check rule files for parse errors: {e}")
         parse_failures = []
     if parse_failures:
-        print("  [!!] Rule/tooldef files that FAILED TO PARSE and are not loaded:")
+        print("  [!!] Rule/tooldef/policy files that FAILED TO PARSE and are not loaded:")
         for f in parse_failures:
             loc = f"{f['file']}:{f['line']}" if f.get("line") else f["file"]
             print(f"       {loc}: {f['error']}")
         print("       Every rule in these files is absent from enforcement.")
         issues += 1
     else:
-        print("  [ok] Every rule and tooldef file parses")
+        print("  [ok] Every rule, tooldef and policy file parses")
 
     # Matcher presence in ~/.claude/settings.json.
     missing_matchers = safety_commands.missing_damage_control_matchers()
