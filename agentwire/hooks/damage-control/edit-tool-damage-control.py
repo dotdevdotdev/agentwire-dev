@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "126bcacb6637b5f8de76c6690573038aa22db5cbd63668d40b4eb707b4043820", "generated_at": "2026-10-18T18:57:12Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "47f8cd2ae3415dfb3d79822e91e4adb9212aafaba518fa115e5b90343cabeefa", "generated_at": "2026-10-18T19:03:02Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -59,7 +59,7 @@ import signal
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 try:
     import yaml
@@ -3392,7 +3392,31 @@ def _brace_variants_of(command: str) -> List[str]:
     return brace_variants(command) or []
 
 
-_GLOB_TOKEN = _rx(r"(?<![\w$'\"])[^\s'\"`;|&<>()]*(?:[*?\[]|\$(?:\w|\{))[^\s'\"`;|&<>()]*")
+_GLOB_RUN = _rx(r"[^\s'\"`;|&<>()]+")
+_GLOB_MARK = _rx(r"[*?\[]|\$(?:\w|\{)")
+_NOT_WORD_OR_DOLLAR = _rx(r"[^\w$]")
+_WORD_OR_DOLLAR = _rx(r"[\w$'\"]")
+
+
+def _glob_tokens(command: str) -> "Iterator[str]":
+    """Each unquoted word holding a glob / expansion mark, from where a word may start (#1132).
+
+    One linear pass over the word runs. A single regex of the form
+    ``[^delims]*(?:mark)[^delims]*`` retries from every offset of a long run
+    that holds no mark, which made a 20 KB run of ``../`` or ``\\`` cost seconds
+    (#1111). The result is the same text: a word preceded by a word character,
+    ``$`` or a quote starts at its first character after a non-word one.
+    """
+    for m in _GLOB_RUN.finditer(command):
+        run, begin = m.group(0), m.start()
+        start = 0
+        if begin and _WORD_OR_DOLLAR.match(command[begin - 1]):
+            gap = _NOT_WORD_OR_DOLLAR.search(run)
+            if gap is None:
+                continue
+            start = gap.start() + 1
+        if _GLOB_MARK.search(run, start):
+            yield run[start:]
 _EXPANSION = _rx(r"\$(?:\w+|\{[^}]*\})")
 _GLOB_PATH_CAP = 32
 
@@ -3458,12 +3482,12 @@ def _glob_variants(command: str) -> List[str]:
     run of 3+ characters (``rm *`` names nothing in particular). A component
     that is only an expansion (``~/.agentwire/$f``) stays a declared residual.
     """
-    if not _GLOB_TOKEN.search(command):
+    tokens = list(_glob_tokens(command))
+    if not tokens:
         return []
     _, project = _protected_glob_candidates(os.path.expanduser("~"))
     out: List[str] = []
-    for m in _GLOB_TOKEN.finditer(command):
-        tok = m.group(0)
+    for tok in tokens:
         if tok.startswith("/"):
             hits = _glob_hits(tok)
         else:

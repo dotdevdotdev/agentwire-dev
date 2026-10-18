@@ -12,7 +12,10 @@ against the bundled rules, never the machine's live copies.
 """
 
 import os
+import random
+import re
 import shlex
+import time
 from pathlib import Path
 
 import pytest
@@ -293,3 +296,35 @@ def test_a_path_that_already_aliases_the_control_plane_is_judged_as_the_file(rea
     ]
     assert not _wrongly(writes, "refuse", cfg)
     assert not _wrongly(fine, "allow", cfg)
+
+
+# ---- #21: the glob-word scan is linear ---------------------------------------
+
+# The scan this replaced, verbatim: a regex that retries from every offset of a
+# long run of non-delimiters. Kept as the oracle for the decision-preserving
+# claim and as the measure of what the replacement avoids.
+_OLD_GLOB_TOKEN = re.compile(r"(?<![\w$'\"])[^\s'\"`;|&<>()]*(?:[*?\[]|\$(?:\w|\{))[^\s'\"`;|&<>()]*")
+
+
+def test_glob_words_are_the_same_words_the_old_regex_found():
+    rng = random.Random(1132)
+    alphabet = ["a", "b", "_", "$", "*", "?", "[", "]", "{", "/", ".", " ", "'", '"', ";", "(", "é", "-", "x$", "$x"]
+    differing = []
+    for _ in range(4000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 24)))
+        old = [m.group(0) for m in _OLD_GLOB_TOKEN.finditer(text)]
+        if old != list(_core._glob_tokens(text)):
+            differing.append(text)
+    assert not differing, differing[:5]
+
+
+def test_glob_word_scan_does_not_retry_from_every_offset_of_a_long_run():
+    runs = ["../" * 7000, "\\" * 20000, "{a," * 7000, "x" * 20000]
+    slow = []
+    for run in runs:
+        start = time.perf_counter()
+        list(_core._glob_tokens("ls " + run))
+        took = time.perf_counter() - start
+        if took > 0.5:  # the old scan took seconds on each; this takes milliseconds
+            slow.append((run[:6], round(took, 2)))
+    assert not slow, slow

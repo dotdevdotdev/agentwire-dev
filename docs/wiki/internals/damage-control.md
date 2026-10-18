@@ -274,8 +274,7 @@ it would unwrapped:
   than hidden (a rephrase, not a
   bypass): a `case … esac` pattern `)`
   inside `$(…)` can end that span early; `<<` inside a nested `$(…)` within
-  `$((…))` is not walked; a single very long line is quadratic in the rule
-  path on main and here (tracked in #1108, not part of this change); `cat <<\EOF | xargs sh -c` (a heredoc body fed to a
+  `$((…))` is not walked; `cat <<\EOF | xargs sh -c` (a heredoc body fed to a
   data-fed program) is allowed, as it already was for the other quote spellings. `tests/unit/test_heredoc_marker_liveness.py` pins both
   halves (non-heredoc contexts × dangerous tails must block; real heredocs'
   prose bodies must keep their decision) and each guard has a mutation that
@@ -1758,9 +1757,13 @@ whether `SENTINEL` exists. A control hook that exits 2 at once must block.
 Speed: the protected/zero-access path patterns are prefiltered on the path's
 required literal and `_PATH_ODDITY` is anchored at token starts. This makes
 long UNQUOTED tokens linear (10 k chars: 9.8 s -> 0.2 s) and plain quoted
-strings linear (30 k chars: 0.2 s). Quoted strings full of path-like text are
-still super-linear (30 K of `a/b/` takes ~2 s, a quoted `../` run ~8.5 s); those,
-and runs of `\` or `{a,`, are bounded by the clock budget rather than fixed.
+strings linear (30 k chars: 0.2 s). The glob-word scan (`_glob_tokens`, #1132)
+is one pass over the word runs: the single regex it replaced retried from every
+offset of a long run holding no glob mark, which was the whole cost of a 7 000-
+fold `../` run (4.9 s), a 20 000-fold `\` run (2.1 s) and a 7 000-fold `{a,` run
+(1.8 s) — now 0.6 / 0.3 / 0.5 s, and doubling the input doubles the time for
+quoted and unquoted `../`, `a/b/`, `\` and `{a,` runs alike. The clock budget
+stays the backstop for a shape not yet found, not the mechanism for these.
 A writer verb next to a protected path stays blocked with a long quoted string
 before it, after it, or holding the path, balanced or not (pinned; a differential
 against main over that slice found no decision differences). Known allow, same
