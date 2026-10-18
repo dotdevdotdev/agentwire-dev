@@ -178,7 +178,7 @@ def test_sftp_writes_its_last_operand_like_scp(bash_hook, cfg):
         f"sftp -P 22 host:/x {CTL}",
         f"sftp host <<< 'get /x {CTL}'",
         f"sftp host <<< '!touch {CTL}'",
-        f"printf 'lcd ~/.agentwire\\nget /x damagecontrol.yml\\n' | sftp host",
+        "printf 'lcd ~/.agentwire\\nget /x damagecontrol.yml\\n' | sftp host",
     ]
     bad = [c for c in blocked if _decide(bash_hook, cfg, c) != "block"]
     assert not bad, bad
