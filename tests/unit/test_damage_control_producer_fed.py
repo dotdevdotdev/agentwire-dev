@@ -168,6 +168,14 @@ def test_relative_search_is_judged_by_where_it_can_reach(decide, tmp_path):
         "ls -t | tail | xargs rm",
         "git ls-files | xargs rm",
         "git ls-files src | xargs rm",
+        "fd -e o . build | xargs rm",
+        # a cp/mv with a $var operand is not a producer, and a search verb in ANOTHER
+        # segment is not feeding it (wrongful unverifiable ask on benign scripts)
+        "cp a.txt $D/b.txt; grep -n foo bar.json",
+        "for i in a b; do cp t/$i.webp /tmp/$i.webp; done; grep -n foo bar.json",
+        "mv $a /tmp/b; ls",
+        "mv $a /tmp/b; find . -name x",
+        "cp $a /tmp/b && git ls-files",
     ]
     bad = [(c, got) for c in refused if (got := decide(c)) == "allow"]
     bad += [(c, got) for c in allowed if (got := decide(c)) != "allow"]
@@ -210,6 +218,12 @@ MOVE_BLOCKED = [
     ": >| ~/.claude/CLAUDE.md",
     "tee ~/.claude/CLAUDE.md </dev/null",
     "mv -t /tmp/away ~/.claude/CLAUDE.md",
+    # target-directory parsing: only a correct -t / --target-directory reads the SOURCE as a source
+    "mv -t /tmp/away ~/.claude",
+    "mv --target-directory=/tmp/away ~/.agentwire",
+    "mv --target-directory /tmp/away ~/.agentwire",
+    "fd . ~/.claude | xargs rm",
+    "fd -e md . ~/.agentwire | xargs rm",
     "mv --target-directory=/tmp/away ~/.claude/CLAUDE.md",
     "mv -f ~/.agentwire/settings.json /tmp/s",
     "mv ~/.agentwire/sessions /tmp/s",

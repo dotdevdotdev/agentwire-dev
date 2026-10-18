@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "d46f77383f9805554a42f1ae9e874415fe1e97ea554841a2d0d76026f9994553", "generated_at": "2026-10-18T19:21:07Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "d46f77383f9805554a42f1ae9e874415fe1e97ea554841a2d0d76026f9994553", "generated_at": "2026-10-18T19:26:07Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
