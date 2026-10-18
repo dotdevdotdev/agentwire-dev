@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "62d21e18b39eff68d6e02576fb98ca163b4b16a9004b5c5230a8ebad9560a25f", "generated_at": "2026-10-18T18:51:48Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "e29510ac1d0c9f5a8fd7577a54eef42fc35d4e4b1c24666839847d16c2cf694e", "generated_at": "2026-10-18T19:13:46Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -1204,7 +1204,33 @@ def _cmd_to_regex(
     return pattern
 
 
-def load_write_patterns_from_tooldefs(tooldefs_dir: Optional[Path]) -> List[Dict[str, Any]]:
+def _record_load_failure(
+    path: Path, exc: BaseException, failures: Optional[List[Dict[str, Any]]]
+) -> None:
+    """Say out loud that a rule/tooldef file was skipped (#1130).
+
+    A file that fails to parse contributes NOTHING, so every protection in it is
+    silently absent — indistinguishable from a healthy set (#885's shape).
+    Names the file and, for a YAML error, the line; goes to stderr and into
+    ``failures`` so ``agentwire doctor`` can report it too.
+    """
+    mark = getattr(exc, "problem_mark", None)
+    line = mark.line + 1 if mark is not None else None
+    detail = getattr(exc, "problem", None) or str(exc) or type(exc).__name__
+    where = f"{path}:{line}" if line else str(path)
+    try:
+        print(f"agentwire damage-control: SKIPPED {where}: {detail}", file=sys.stderr)
+    except Exception:
+        # A dead stderr must not turn a reporting line into a changed verdict.
+        pass
+    if failures is not None:
+        failures.append({"file": str(path), "line": line, "error": str(detail)})
+
+
+def load_write_patterns_from_tooldefs(
+    tooldefs_dir: Optional[Path],
+    failures: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """Generate ``ask:true`` patterns from write-tier commands in tooldef YAMLs."""
     if not yaml:
         return []
@@ -1248,8 +1274,8 @@ def load_write_patterns_from_tooldefs(tooldefs_dir: Optional[Path]) -> List[Dict
                 if cmd_def.get("id"):
                     entry["id"] = str(cmd_def["id"])
                 patterns.append(entry)
-        except Exception:
-            continue
+        except Exception as exc:
+            _record_load_failure(tf_file, exc, failures)
     return patterns
 
 
@@ -1328,6 +1354,7 @@ def load_config(
         return merged
     taken_ids: set = set()
     duplicate_ids: set = set()
+    parse_failures: List[Dict[str, Any]] = []
     yaml_files = sorted(rules_dir.glob("*.yaml"))
     for rules_file in yaml_files:
         try:
@@ -1341,10 +1368,10 @@ def load_config(
                             _assign_rule_id(it, rules_file.stem, taken_ids, duplicate_ids)
                             it.setdefault("source", rules_file.stem)
                 merged[key].extend(items)
-        except Exception:
-            continue
+        except Exception as exc:
+            _record_load_failure(rules_file, exc, parse_failures)
     if tooldefs_dir is not None:
-        tooldef_patterns = load_write_patterns_from_tooldefs(tooldefs_dir)
+        tooldef_patterns = load_write_patterns_from_tooldefs(tooldefs_dir, parse_failures)
         for it in tooldef_patterns:
             _assign_rule_id(it, "tooldef", taken_ids, duplicate_ids)
             it.setdefault("source", "tooldef")
@@ -1353,6 +1380,8 @@ def load_config(
     # config keeps exactly the keys it always had.
     if duplicate_ids:
         merged["_duplicate_rule_ids"] = sorted(duplicate_ids)
+    if parse_failures:
+        merged["_parse_failures"] = parse_failures
     return merged
 
 
