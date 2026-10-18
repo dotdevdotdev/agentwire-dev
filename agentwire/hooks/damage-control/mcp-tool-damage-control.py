@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "75da6d2dad2b85c7646002c00d8ce3071ab9920f139f68d7ee468199bc7355f1", "generated_at": "2026-10-17T19:18:02Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "126bcacb6637b5f8de76c6690573038aa22db5cbd63668d40b4eb707b4043820", "generated_at": "2026-10-18T18:57:12Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -112,7 +112,8 @@ WRITE_PATTERNS = [
     (r'>\s*{path}', "write"),
     (r'\btee\s+(?!.*-a).*{path}', "write"),
     (r'\bdd\s+.*\bof=\S*{path}', "write"),
-    (r'\brsync\s+.*\s+{path}', "write"),
+    # rsync writes its DESTINATION: the last operand (options may trail it)
+    (r'\brsync\b[^\n|;&]*\s["\']?{path}[^\s|;&]*(?:\s+--?[\w-]+(?:=\S*)?(?:\s+[^-\s]\S*)?)*\s*(?:$|[;&|#]|\d*[<>])', "write"),
     (r'\btar\s+(-c|--create)\S*\s+.*{path}', "write"),
     (r'\binstall\s+.*\s+{path}', "write"),
 ]
@@ -259,9 +260,10 @@ _CMD_HEAD = (
     r')\s+(?:-\S+\s+|\d+[smhd]?\s+)*)*(?:\S*/)?'
 )
 PROTECTED_WRITER_PATTERNS = [
-    # ln/link replace the TARGET (last operand); using the path as the source
-    # (``ln -s <path> /tmp/l``) is a read.
-    (r'\b(?:ln|link)\b' + _SEG + r'\s["\']?{path}[^\s|;&]*\s*(?:$|[;&|#]|\d*[<>])', "write"),
+    # ln/link naming the path on EITHER side: as the target it is replaced, as
+    # the source it becomes a symlink / hardlink alias that a later write
+    # (``echo x > /tmp/l``) reaches the file through, outside this scan's view.
+    (r'\b(?:ln|link)\b' + _SEG + r'\s["\']?{path}', "write"),
     # downloaders: output file flags (incl. log/header/cookie-jar sinks)
     (r'\bcurl\b' + _SEG + r'(?:\s-(?-i:[A-Za-z0-9]*[oDc])\s*|\s--(?:output|dump-header'
      r'|cookie-jar|trace|trace-ascii|stderr|etag-save)[\s=])["\']?{path}', "write"),
@@ -311,6 +313,8 @@ PROTECTED_DIR_EXTRACT_PATTERNS = [
     r'\bunzip\b' + _SEG + r'\s-d\s*["\']?{dir}' + _DIR_END,
     r'\b(?:cp|mv|install|ln)\b' + _SEG +
     r'(?:\s-(?-i:[A-Za-z]*t)\s*|\s--target-directory[=\s])["\']?{dir}' + _DIR_END,
+    # a link to the directory (``ln -s <dir> /tmp/d``) is an alias for every file in it
+    r'\b(?:ln|link)\b' + _SEG + r'\s["\']?{dir}' + _DIR_END,
 ]
 
 _CONCAT_RE = _rx(
@@ -2628,10 +2632,11 @@ def _extracts_into_protected_dir(command: str) -> Optional[str]:
 # concatenate (``'E'OF`` is the delimiter ``EOF``), and ANY quote or backslash
 # in it makes the body literal.
 _HEREDOC_WORD = (
-    r"(?:'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.|\$'[^']*'|[^\s;&|<>()'\"\\$]+|\$(?!['\"]))+"
+    r"(?:'[^']*'|\$?\"(?:[^\"\\]|\\.)*\"|\\.|\$'[^']*'|[^\s;&|<>()'\"\\$]+|\$(?!['\"]))+"
 )
 _HEREDOC_OPEN_RE = _rx(r"(?<!<)<<(?!<)(?P<dash>-?)[ \t]*(?P<word>" + _HEREDOC_WORD + r")")
 _HEREDOC_PART = _rx(r"'([^']*)'|\"((?:[^\"\\]|\\.)*)\"|\\(.)|\$'([^']*)'|([^'\"\\]+)")
+_LOCALE_QUOTE = _rx(r"'[^']*'|\$(?=\")")
 _RESCAN_DEPTH = 3
 _RESCAN_FANOUT = 32
 _RESCAN_BUDGET = 200  # derived commands scanned per top-level check
@@ -2639,6 +2644,8 @@ _RESCAN_BUDGET = 200  # derived commands scanned per top-level check
 
 def _heredoc_delimiter(word: str) -> Tuple[str, bool]:
     """``(delimiter, body_is_literal)`` for a heredoc delimiter word."""
+    # ``$"EOF"`` is a locale-translated string: bash quotes it like ``"EOF"``
+    word = _LOCALE_QUOTE.sub(lambda m: "" if m.group(0) == '$' else m.group(0), word)
     parts = _HEREDOC_PART.findall(word)
     delim = "".join("".join(p) for p in parts)
     return delim, any(p[0] or p[1] or p[2] or p[3] for p in parts) or "'" in word or '"' in word
@@ -3482,7 +3489,7 @@ def _glob_variants(command: str) -> List[str]:
             rx = _token_regex(tok)
             hits = []
             if rx is not None and re.search(
-                r"[A-Za-z0-9_.\-]{3,}", _EXPANSION.sub("", re.sub(r"[*?\[\]]", " ", tok))
+                r"[A-Za-z0-9_.\-]{3,}", _EXPANSION.sub("", re.sub(r"\[[^\]]*\]|[*?\[\]]", " ", tok))
             ):
                 hits = [p for p in project if rx.fullmatch(p) or rx.fullmatch("x" + p)]
         for hit in hits:
@@ -3505,9 +3512,19 @@ def _glob_hits(tok: str) -> List[str]:
     return hits
 
 
-_CD_RE = _rx(
-    r"(?:^\s*|(?:\b(?:then|do|else|elif|if|while|until|time|coproc)\b|[;&|\n(){!])\s*)(?:(?:time|nohup|command|builtin|env|exec|sudo|!|\w+=\S*)\s+(?:-\S+\s+)*)*(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
+# A command's start: line start or after a separator / reserved word, then any
+# wrappers and ``VAR=value`` prefixes. A prefix value may hold whitespace inside
+# ``${…}`` / quotes (``A=${x:-\n} cd dir``), which a bare ``\S*`` cut short.
+_CMD_START = (
+    r"(?:^\s*|(?:\b(?:then|do|else|elif|if|while|until|time|coproc)\b|[;&|\n(){!])\s*)"
+    r"(?:(?:time|nohup|command|builtin|env|exec|sudo|!|\w+=(?:\$\{[^}]*\}|\"[^\"]*\"|'[^']*'|[^\s\"'$;&|()]|\$)*)\s+(?:-\S+\s+)*)*"
 )
+_CD_RE = _rx(
+    _CMD_START
+    + r"(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
+)
+# ``popd`` returns to a directory the command cannot see: an unresolvable cwd.
+_POPD_RE = _rx(_CMD_START + r"popd\b[^\n;&|()]*\s*(?=&&|;|\|\||\n)")
 _REL_WORD = _rx(r"(?<![^\s;&|(<>'\"=])([A-Za-z0-9_.][^\s;&|()'\"<>]*)")
 
 
@@ -3580,6 +3597,234 @@ def _absolutize(text: str, cwd: str) -> str:
     return " ".join(w if _PUNCT_WORD.fullmatch(w) else _quote_word(w) for w in resolved)
 
 
+_ASSIGN_STMT = _rx(
+    r"(?:^|[;&|\n({]|\b(?:then|do|else))[ \t]*(?:(?:export|local|declare|readonly)[ \t]+)?(?P<n>[A-Za-z_]\w*)=(?P<v>(?:'[^']*'|\"[^\"]*\"|[^\s;&|()<>'\"])*)(?=[ \t]*(?:[;&|\n]|$))"
+)
+_VAR_REF = _rx(r"\$(?:(?P<a>[A-Za-z_]\w*)|\{(?P<b>[A-Za-z_]\w*)\})")
+
+
+def _literal_vars(prefix: str) -> Dict[str, Optional[str]]:
+    """``NAME=value`` statements in ``prefix``: the literal value, or None when it is computed.
+
+    The last assignment wins, so a later ``d=$(…)`` makes ``d`` unknown again.
+    """
+    out: Dict[str, Optional[str]] = {}
+    for m in _ASSIGN_STMT.finditer(prefix):
+        lit = re.sub(r"['\"]", "", m.group("v"))
+        out[m.group("n")] = None if re.search(r"[$`]", lit) else lit
+    return out
+
+
+def _expand_literal_vars(text: str, known: Dict[str, Optional[str]]) -> str:
+    """``text`` with each ``$name`` / ``${name}`` a same-command literal assignment defines replaced."""
+    def _sub(m: "re.Match[str]") -> str:
+        val = known.get(m.group("a") or m.group("b"))
+        return m.group(0) if val is None else val
+
+    return _VAR_REF.sub(_sub, text)
+
+
+# Options that make the command run in another directory, per command word:
+# ``(short options, long options, stop-at-first-operand)``. ``git -C`` / ``env
+# -C`` / ``patch -d`` change the cwd of the command itself, which is what a
+# relative operand (or a diff's own target paths) is resolved against.
+_CHDIR_OPTIONS = {
+    "git": (("-C",), ("--work-tree",), False),
+    "env": (("-C",), ("--chdir",), True),
+    "patch": (("-d",), ("--directory",), False),
+}
+_CHDIR_HINT = _rx(
+    r"\bgit\b[^\n]*(?:\s-C\b|--work-tree)|\benv\b[^\n]*(?:\s-C|--chdir)|\bpatch\b[^\n]*(?:\s-d|--directory)"
+)
+
+
+_GROUP_WORDS = frozenset({"{", "}", "!", "then", "do", "else", "elif", "if", "while", "until", "time", "fi", "done"})
+
+
+def _segment_words(seg: str) -> List[str]:
+    """Words of one simple command, without the group / reserved words around it."""
+    words = _words(seg)
+    while words and words[0] in _GROUP_WORDS:
+        words = words[1:]
+    while words and words[-1] in _GROUP_WORDS:
+        words = words[:-1]
+    return words
+
+
+_SHELL_C_FLAG = _rx(r"-[A-Za-z]*c[A-Za-z]*")
+
+
+def _wrapper_payload_commands(command: str) -> List[str]:
+    """Programs a command hands to a shell or ``ssh`` as one argument: ``sh -c '…'``, ``ssh host '…'``.
+
+    The wrapped command is the command: the payload is re-scanned in its own
+    right, so a ``cd <dir> && touch <file>`` inside it is resolved exactly as it
+    is at the top level (the generators that read directories only recognise a
+    ``cd`` at a command start, which a quote hides).
+    """
+    if not re.search(r"\b(?:sh|bash|zsh|dash|ksh|su|ssh)\b", command):
+        return []
+    segments, err = _scope_segments(command, grouping_ok=True)
+    if err:
+        return []
+    out: List[str] = []
+    for argv, _op in segments:
+        _, words = _split_assignments(argv)
+        words = [w for w in words if w not in _GROUP_WORDS]
+        remote = _ssh_remote_payload(words)
+        if remote:
+            out.append(remote)
+        for i, w in enumerate(words):
+            base = os.path.basename(w)
+            if base in _POSITION_WRAPPERS or _ASSIGN_TOKEN_RE.match(w) or w.startswith("-"):
+                continue
+            if base in _SHELL_NAMES:
+                for j in range(i + 1, len(words) - 1):
+                    if _SHELL_C_FLAG.fullmatch(words[j]):
+                        out.append(words[j + 1])
+                        break
+            break
+    return out
+
+
+def _chdir_option_split(words: List[str]) -> Tuple[List[str], List[str]]:
+    """``(directories, remaining words)`` for a command word that takes a chdir option."""
+    start = 0
+    while start < len(words) and _ASSIGN_WORD.match(words[start]):
+        start += 1
+    kind = os.path.basename(words[start]) if start < len(words) else ""
+    if kind not in _CHDIR_OPTIONS:
+        return [], words
+    short, long_, stop_at_operand = _CHDIR_OPTIONS[kind]
+    dirs: List[str] = []
+    rest: List[str] = []
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if i > start and w in short and i + 1 < len(words):
+            dirs.append(words[i + 1])
+            i += 2
+            continue
+        if i > start and kind != "git" and w[:2] in short and len(w) > 2 and not w.startswith("--"):
+            dirs.append(w[2:])
+        elif i > start and any(w.startswith(o + "=") for o in long_):
+            dirs.append(w.partition("=")[2])
+        elif i > start and w in long_ and i + 1 < len(words):
+            dirs.append(words[i + 1])
+            i += 1
+        else:
+            if stop_at_operand and i > start and not w.startswith("-") and not _ASSIGN_WORD.match(w):
+                rest.extend(words[i:])
+                break
+            rest.append(w)
+        i += 1
+    return dirs, rest
+
+
+def _cwd_scopes(command: str) -> Tuple[List[Tuple[str, str]], List[str]]:
+    """``(known, unknown)`` for every place the command changes directory (#1101).
+
+    ``known`` pairs a literal directory with the text that runs in it —
+    ``cd <dir> &&`` (until the next ``cd``), ``git -C`` / ``--work-tree``,
+    ``env -C`` / ``--chdir`` and ``patch -d`` — with ``d=<dir>; cd $d`` resolved
+    through the same command's literal assignments. ``unknown`` holds the text
+    that runs after a ``cd`` the command cannot resolve (``cd -``, ``popd``,
+    ``cd $x`` with ``x`` set from a substitution or not at all).
+    """
+    known: List[Tuple[str, str]] = []
+    unknown: List[str] = []
+    if re.search(r"\b(?:cd|pushd|popd)\b", command):
+        events = [(m.start(), m.end(), m.group("d").strip("'\"")) for m in _CD_RE.finditer(command)]
+        events += [(m.start(), m.end(), "-") for m in _POPD_RE.finditer(command)]
+        events.sort()
+        cwd: Optional[str] = None
+        for k, (start, stop, target) in enumerate(events):
+            end = events[k + 1][0] if k + 1 < len(events) else len(command)
+            rest = command[stop:end]
+            target = _expand_literal_vars(target, _literal_vars(command[:start]))
+            if target == "-" or re.search(r"[$`]", target):
+                cwd = None
+                unknown.append(rest)
+                continue
+            cwd = _join_dir(cwd, target)
+            if cwd:
+                known.append((cwd, rest))
+    if _CHDIR_HINT.search(command):
+        for seg in re.split(r"[;&|\n()]", command):
+            dirs, rest = _chdir_option_split(_segment_words(seg))
+            cwd = None
+            for d in dirs:
+                cwd = _join_dir(cwd, d)
+            if cwd and dirs:
+                known.append((cwd, " ".join(_quote_word(w) for w in rest)))
+    return known, unknown
+
+
+_PATH_WORD = _rx(r"(?<![^\s'\"`;|&<>()=])[^\s'\"`;|&<>()$*?\[\]{}]*[^\s'\"`;|&<>()$*?\[\]{}=-]")
+_REALPATH_WORD_CAP = 64
+
+
+@functools.lru_cache(maxsize=4)
+def _protected_inodes(home: str) -> Tuple[Tuple[str, "os.stat_result"], ...]:
+    """``(path, stat)`` of each concrete protected file that exists (hardlink detection)."""
+    out = []
+    for pat in PROTECTED_CONTROL_PLANE_PATHS:
+        if is_glob_pattern(pat):
+            continue
+        path = os.path.expanduser(pat)
+        try:
+            out.append((path, os.stat(path)))
+        except OSError:
+            continue
+    return tuple(out)
+
+
+def _under_protected(path: str) -> bool:
+    """Protected file, or a directory that holds / is inside one."""
+    if is_protected_control_plane(path):
+        return True
+    for d in _protected_ancestor_dirs():
+        e = os.path.expanduser(d)
+        if path == e or path.startswith(e + "/"):
+            return True
+    return False
+
+
+def _realpath_variants(command: str) -> List[str]:
+    """The command with each path word that is an EXISTING alias of a protected file spelled as that file (#1101).
+
+    The link was made by a separate command, an earlier turn, or someone else:
+    by the time ``echo x > /tmp/l`` runs, its text names nothing protected. The
+    hook can ask the filesystem. Every path word is resolved (a symlink anywhere
+    in it, a directory alias like ``/tmp/d/damagecontrol.yml`` included, and a
+    hardlink to a protected file); a word that lands on the control plane is
+    rewritten to where it really goes and the result is scanned as the command
+    it is.
+    """
+    out: List[str] = []
+    seen = set()
+    home = os.path.expanduser("~")
+    for m in itertools.islice(_PATH_WORD.finditer(command), _REALPATH_WORD_CAP):
+        word = m.group(0)
+        if word in seen or len(word) < 2:
+            continue
+        seen.add(word)
+        path = os.path.expanduser(word)
+        try:
+            if "/" not in path and not os.path.lexists(path):
+                continue
+            real = os.path.realpath(path)
+            target = real if real != posixpath.normpath(os.path.abspath(path)) and _under_protected(real) else None
+            if target is None and os.path.isfile(path) and os.stat(path).st_nlink > 1:
+                st = os.stat(path)
+                target = next((p for p, ps in _protected_inodes(home) if os.path.samestat(st, ps)), None)
+        except (OSError, ValueError):
+            continue
+        if target and target != path:
+            out.append(command.replace(word, _quote_word(target)))
+    return out
+
+
 def _cwd_variants(command: str) -> List[str]:
     """Relative operands resolved against a literal ``cd <dir> &&`` / ``git -C <dir>`` (#1101).
 
@@ -3587,46 +3832,94 @@ def _cwd_variants(command: str) -> List[str]:
     to a directory set earlier in the same command. The literal directory is
     applied to later words (until the next ``cd``); each word that then names a
     protected file is rewritten to its absolute path and the result re-scanned.
-    An unresolvable directory (``cd $d``, a ``$(…)``, a bare ``cd -``) is the
-    declared residual, as is a cwd known only from the session.
+    A directory that cannot be resolved is judged by ``unverifiable_target_verdict``.
     """
-    out: List[str] = []
-    if re.search(r"\b(?:cd|pushd)\b", command):
-        cwd: Optional[str] = None
-        matches = list(_CD_RE.finditer(command))
-        for k, m in enumerate(matches):
-            cwd = _join_dir(cwd, m.group("d").strip("'\""))
-            if not cwd:
+    return [
+        new
+        for cwd, rest in _cwd_scopes(command)[0]
+        for new in (_absolutize(rest, cwd),)
+        if new != rest
+    ]
+
+
+def _protected_dirs() -> List[str]:
+    """Directories that hold a concrete protected file (``~/.agentwire``, ``~/.claude/hooks``, ...)."""
+    dirs = {
+        posixpath.dirname(os.path.expanduser(p))
+        for p in PROTECTED_CONTROL_PLANE_PATHS
+        if not p.startswith("*")
+    }
+    return sorted(dirs)
+
+
+# Names that are control plane in ANY directory, or that no other program uses.
+# ``settings.json`` / ``config.yaml`` are protected where they sit under
+# ``~/.claude`` / ``~/.agentwire`` but are ordinary files everywhere else, so
+# a bare one after a ``cd`` the scanner cannot read is not evidence of anything.
+_GENERIC_BASENAMES = frozenset({"settings.json", "config.yaml"})
+_PROJECT_PLACEHOLDER = "/hypothetical-project"
+
+
+def _named_control_plane_files() -> List[Tuple[str, "frozenset[str]"]]:
+    """``(directory, distinctive basenames)`` a bare name after an unreadable ``cd`` could mean."""
+    by_dir: Dict[str, set] = {}
+    for p in PROTECTED_CONTROL_PLANE_PATHS:
+        if p.startswith("*"):
+            d, name = _PROJECT_PLACEHOLDER, p[1:]
+        elif is_glob_pattern(p):
+            continue
+        else:
+            expanded = os.path.expanduser(p)
+            d, name = posixpath.dirname(expanded), posixpath.basename(expanded)
+        if name not in _GENERIC_BASENAMES:
+            by_dir.setdefault(d, set()).add(name)
+    return [(d, frozenset(names)) for d, names in sorted(by_dir.items())]
+
+
+def unverifiable_target_verdict(
+    command: str, allowed_paths: List[Dict[str, Any]], depth: int = 0
+) -> Optional[str]:
+    """Why ``command`` needs a human, when what it writes to is unknowable and the control plane is in play.
+
+    A ``cd`` the scanner cannot resolve (``cd -``, ``popd``, ``cd $x``) leaves a
+    later bare ``damagecontrol.yml`` pointing at any directory. Each protected
+    directory is tried as that directory; when the text that follows would be a
+    refused write there, the answer is an ASK, never a block (the directory may
+    well be somewhere else). A ``patch`` / ``git apply`` / ``git am`` whose
+    directory is a protected one is the same question: the files it rewrites
+    are named only inside the diff. So is a brace expansion past the cap in a
+    command that names the control plane: it cannot be enumerated, so it cannot
+    be shown clean.
+    """
+    if depth < _RESCAN_DEPTH:
+        for inner in _wrapper_payload_commands(command) + _stdin_program_commands(command):
+            reason = unverifiable_target_verdict(inner, allowed_paths, depth + 1)
+            if reason:
+                return reason
+    if "{" in command and mentions_control_plane(command) and brace_variants(canonicalize_command(command)) is None:
+        return "a brace expansion past the cap cannot be enumerated"
+    known, unknown = _cwd_scopes(command)
+    for cwd, rest in known:
+        if cwd in _protected_dirs() or cwd == os.path.expanduser("~"):
+            if _APPLIES_DIFF.search(rest) and not _DIFF_READ_ONLY.search(rest):
+                return f"`patch` / `git apply` in {cwd} — the files it rewrites are named only in the diff"
+    for rest in unknown:
+        for d, names in _named_control_plane_files():
+            new = _absolutize(rest, d)
+            if new == rest or not names.intersection(map(posixpath.basename, _words(new))):
                 continue
-            end = matches[k + 1].start() if k + 1 < len(matches) else len(command)
-            rest = command[m.end() : end]
-            new = _absolutize(rest, cwd)
-            if new != rest:
-                out.append(new)
-    if re.search(r"\bgit\b[^\n]*(?:\s-C\b|--work-tree)", command):
-        for seg in re.split(r"[;&|\n]", command):
-            words = _words(seg)
-            dirs, rest, i = [], [], 0
-            while i < len(words):
-                w = words[i]
-                if w == "-C" and i + 1 < len(words):
-                    dirs.append(words[i + 1])
-                    i += 2
-                    continue
-                if w.startswith("--work-tree="):
-                    dirs.append(w.partition("=")[2])
-                elif w == "--work-tree" and i + 1 < len(words):
-                    dirs.append(words[i + 1])
-                    i += 1
-                else:
-                    rest.append(w)
-                i += 1
-            cwd = None
-            for d in dirs:
-                cwd = _join_dir(cwd, d)
-            if cwd and dirs:
-                out.append(_absolutize(" ".join(_quote_word(w) for w in rest), cwd))
-    return out
+            if _check_protected_command(new, allowed_paths, 1, [_RESCAN_BUDGET])[0]:
+                return (
+                    "a `cd` the scanner cannot resolve precedes a write to a protected "
+                    f"control-plane file name (it would be in {d} if the cd lands there)"
+                )
+    return None
+
+
+_DIFF_READ_ONLY = _rx(r"\s--(?:dry-run|check|stat|numstat|summary)\b")
+_APPLIES_DIFF = _rx(
+    r"(?:^|[\s;&|(])(?:patch|git\s+(?:(?:-C|-c)\s+\S+\s+|--?[\w-]+(?:=\S+)?\s+)*(?:apply|am))\b"
+)
 
 
 def _derived_commands(command: str) -> List[str]:
@@ -3639,13 +3932,15 @@ def _derived_commands(command: str) -> List[str]:
     # judged as the program it is.
     visible = _hide_heredoc_bodies(command, keep_programs=True) if "<<" in command else command
     derived = (
-        _heredoc_substitution_commands(command)
+        _wrapper_payload_commands(visible)
+        + _heredoc_substitution_commands(command)
         + _stdin_program_commands(command)
         + _redirect_variant(visible)
         + _normalized_path_variant(visible)
         + _brace_variants_of(visible)
         + _glob_variants(visible)
         + _cwd_variants(visible)
+        + _realpath_variants(visible)
     )
     return list(dict.fromkeys(derived))[:_RESCAN_FANOUT]
 
@@ -6957,6 +7252,20 @@ def _decide_command(
             "pattern": "protectedCommand",
             "command": command,
             "protected": True,
+        }
+
+    # A directory the scanner cannot see: same tier (exempt from the escape
+    # hatch and kill switch), but an ASK — the command may be harmless, and
+    # `unverifiable` keeps bypass from demoting it.
+    target_reason = unverifiable_target_verdict(command, allowed)
+    if target_reason:
+        return {
+            "decision": "ask",
+            "reason": f"Unverifiable control-plane target ({target_reason}) — a human must confirm it (not demoted by bypass)",
+            "pattern": "ambiguous:control-plane-target",
+            "command": command,
+            "id": "core.control-plane-target",
+            "unverifiable": True,
         }
 
     # Parser unavailable ⇒ no rules loaded ⇒ fail closed (block), before the

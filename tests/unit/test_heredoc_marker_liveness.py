@@ -55,7 +55,6 @@ NOT_A_HEREDOC = [
     "echo '<<EOF'",
     'echo "<<EOF"',
     "echo $'a\\'<<EOF'",
-    "cat <<-$\"EOF\"",
     "cat <<",
     # (( )) after any command-position word, not only as a segment's first word
     "for ((i=1<<EOF;i<5;i++)); do break; done",
@@ -139,6 +138,8 @@ REAL_HEREDOC = [
     "cat <<EOF",
     "cat <<-EOF",
     'cat <<"EOF"',
+    'cat <<$"EOF"',  # locale-quoted: quotes like "EOF" (#1132)
+    'cat <<-$"EOF"',
     "cat <<\\EOF",
     "cat <<'E'OF",
     "cat <<'EO'F",
