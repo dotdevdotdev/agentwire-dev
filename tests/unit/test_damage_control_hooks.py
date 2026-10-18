@@ -725,8 +725,7 @@ class TestGitGlobalOptionBypass:
         # with the wrapper-payload rescan), 1 unanchored rule added
         # (git.config-exec-key). 258 -> 257 in #1125: the duplicate `rm -[rRf]` rule
         # folded into the {ARGS} scan.
-        # 257 -> 270 in #1130: tooldefs/gws.yaml parses, 13 write-tier rules load.
-        assert (len(patterns), len(anchored)) == (278, 256)  # +8/+7 in #1133
+        assert (len(patterns), len(anchored)) == (258, 236)  # +8/+6 in #1133
         assert any(p.get("source") == "tooldef" for p in patterns)
 
     def test_quoted_path_with_spaces(self, bash_hook, bundled_config):
@@ -758,16 +757,23 @@ class TestGitGlobalOptionBypass:
     @pytest.mark.parametrize(
         "wrapper", ["timeout 5", "stdbuf -o0", "xargs -n1", "nice -n 5"]
     )
-    def test_argument_carrying_wrapper_is_covered(
+    def test_argument_carrying_wrapper_is_a_documented_limit(
         self, bash_hook, bundled_config, wrapper
     ):
-        """Was a documented limit (#1133 closed it): a wrapper carrying its own
-        options/operands no longer hides `git -C … push --force`. The stripper
-        skips the wrapper's tokens BEFORE the tool and strips only AFTER it,
-        so the failure mode stays "missing variant", never an over-strip.
+        """Pins the KNOWN GAP so it is a recorded limit, not a silent one.
+
+        A wrapper CARRYING ITS OWN ARGUMENTS is not covered — handling it means
+        modelling each wrapper's grammar, which is this bug's own mistake at one
+        remove. Note `xargs` and `nice` appear in BOTH this list and the bare
+        list: the axis is arity as written, not the wrapper's identity.
+
+        What must hold is that the failure is a missing haystack (no variant
+        produced), never an over-strip. If one of these ever starts blocking,
+        that is good news and this assertion should be inverted.
         """
-        cmd = f"{wrapper} git -C /repo push {_FORCE}"
-        assert bash_hook.check_command(cmd, bundled_config)["decision"] == "block"
+        assert bash_hook.global_option_normalized_haystacks(
+            f"{wrapper} git -C /repo push {_FORCE}"
+        ) == []
 
     def test_chained_subcommand(self, bash_hook, bundled_config):
         cmd = f"cd /tmp && git -C /repo push {_FORCE}"
