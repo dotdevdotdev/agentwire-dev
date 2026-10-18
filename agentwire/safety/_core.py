@@ -119,8 +119,8 @@ EMPTY_PATTERNS = [
     (r'\bcat\s+/dev/null\s*>\|?\s*\S*{path}', "delete"),
     (r'\bprintf\s+(?:\'\'|""|\x00)?\s*>\|?\s*\S*{path}', "delete"),
     (r'\becho\s+-n\s*(?:\'\'|""|\x00)?\s*>\|?\s*\S*{path}', "delete"),
-    (r'\btee\s+(?:-\S+\s+)*\S*{path}\S*\s+</dev/null', "delete"),
-    (r'</dev/null\s+tee\s+(?:-\S+\s+)*\S*{path}', "delete"),
+    (r'\btee\s+(?:-\S+\s+)*\S*{path}\S*\s+<\s*/dev/null', "delete"),
+    (r'<\s*/dev/null\s+tee\s+(?:-\S+\s+)*\S*{path}', "delete"),
     (r'(?:^|\s)(?:\'\'|""|\x00)\s*>\|?\s*\S*{path}', "delete"),
 ]
 

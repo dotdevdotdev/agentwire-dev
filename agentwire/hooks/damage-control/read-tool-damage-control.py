@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "d46f77383f9805554a42f1ae9e874415fe1e97ea554841a2d0d76026f9994553", "generated_at": "2026-10-18T19:26:07Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "725c1b39d8beeea37d6a9d620056b9ad38038115a993ffdf8ac2ea6383dd5281", "generated_at": "2026-10-18T23:14:13Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -160,8 +160,8 @@ EMPTY_PATTERNS = [
     (r'\bcat\s+/dev/null\s*>\|?\s*\S*{path}', "delete"),
     (r'\bprintf\s+(?:\'\'|""|\x00)?\s*>\|?\s*\S*{path}', "delete"),
     (r'\becho\s+-n\s*(?:\'\'|""|\x00)?\s*>\|?\s*\S*{path}', "delete"),
-    (r'\btee\s+(?:-\S+\s+)*\S*{path}\S*\s+</dev/null', "delete"),
-    (r'</dev/null\s+tee\s+(?:-\S+\s+)*\S*{path}', "delete"),
+    (r'\btee\s+(?:-\S+\s+)*\S*{path}\S*\s+<\s*/dev/null', "delete"),
+    (r'<\s*/dev/null\s+tee\s+(?:-\S+\s+)*\S*{path}', "delete"),
     (r'(?:^|\s)(?:\'\'|""|\x00)\s*>\|?\s*\S*{path}', "delete"),
 ]
 

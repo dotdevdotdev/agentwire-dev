@@ -217,6 +217,11 @@ MOVE_BLOCKED = [
     "printf '' > ~/.claude/CLAUDE.md",
     ": >| ~/.claude/CLAUDE.md",
     "tee ~/.claude/CLAUDE.md </dev/null",
+    "tee README.md </dev/null",
+    "tee README.md < /dev/null",
+    "tee -a ~/.claude/CLAUDE.md < /dev/null",
+    "< /dev/null tee README.md",
+    "tee ~/.agentwire/settings.json <  /dev/null",
     "mv -t /tmp/away ~/.claude/CLAUDE.md",
     # target-directory parsing: only a correct -t / --target-directory reads the SOURCE as a source
     "mv -t /tmp/away ~/.claude",
