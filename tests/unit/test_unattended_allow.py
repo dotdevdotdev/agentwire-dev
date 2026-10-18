@@ -36,8 +36,9 @@ BUNDLED_TOOLDEFS = REPO / "agentwire" / "tooldefs"
 # as a smaller, greener run.
 # 264 -> 257 in #924/#921: 8 remote.yaml ssh twins deleted (redundant with
 # the wrapper-payload rescan), 1 unanchored rule added (git.config-exec-key).
-EXPECTED_PATTERNS = 257
-EXPECTED_ANCHORED = 237
+# 257 -> 265 / 237 -> 244 in #1133 (kill, crontab, rsync, git config set-form).
+EXPECTED_PATTERNS = 265
+EXPECTED_ANCHORED = 244
 
 UV_IDS = {
     "tooldef.uv-run-a-script-in-project-environment",

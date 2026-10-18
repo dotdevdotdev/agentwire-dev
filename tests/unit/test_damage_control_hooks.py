@@ -724,8 +724,9 @@ class TestGitGlobalOptionBypass:
         # 264 -> 257 in #924/#921: 8 remote.yaml ssh-twins deleted (redundant
         # with the wrapper-payload rescan), 1 unanchored rule added
         # (git.config-exec-key). 258 -> 257 in #1125: the duplicate `rm -[rRf]` rule
-        # folded into the {ARGS} scan.
-        assert (len(patterns), len(anchored)) == (257, 237)
+        # folded into the {ARGS} scan. 257 -> 264 in #1133: kill/crontab/rsync/git-config
+        # rules (+8 net).
+        assert (len(patterns), len(anchored)) == (265, 244)
         assert any(p.get("source") == "tooldef" for p in patterns)
 
     def test_quoted_path_with_spaces(self, bash_hook, bundled_config):
