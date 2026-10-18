@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "da3934c235cedc607988e4e48d244e1265d3b37b65d037ad5d7e96bc7bb60e2c", "generated_at": "2026-10-18T23:30:43Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "61248fdce25f6a2723d6dc7d54f581edd0681a555c694cec10e1f31a47e1e346", "generated_at": "2026-10-18T23:46:07Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -4185,24 +4185,58 @@ _UNESCAPE_DQ = _rx(r"\\([$`])")
 _SHELL_C_FLAG = _rx(r"-[A-Za-z]*c[A-Za-z]*")
 
 
+# Options that take a SEPARATE value, per wrapper. An attached value (``-n5``,
+# ``--adjustment=5``, ``-uroot``) is one word and consumes nothing; a separate one
+# (``-n 5``) must not be mistaken for the command. A wrapper not listed has no
+# value-taking option here.
+_WRAPPER_VALUE_OPTS = {
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "env": {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"},
+    "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-r", "-t", "--user", "--group", "--host", "--prompt", "--chdir", "--role", "--type"},
+    "doas": {"-u", "-C"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "taskset": {"-c", "--cpu-list"},
+    "chrt": set(),
+    "xargs": {"-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a", "--max-args", "--replace", "--max-procs", "--delimiter", "--arg-file"},
+    "time": {"-f", "-o", "--format", "--output"},
+    "parallel": {"-j", "-n", "-N", "-S", "-a", "--jobs", "--sshlogin", "-I"},
+    "sshpass": {"-p", "-f", "-d", "-P"},
+}
+_POSITIONAL_ARG = _rx(r"\d+[smhd]?|0[xX][0-9a-fA-F]+")
+
+
 def _wrapped_command_index(words: List[str]) -> Optional[int]:
     """Index of the word that is the command, past prefix wrappers, their options and ``VAR=x``.
 
-    ``sudo -u root timeout 5 patch`` -> ``patch``. The one place that knows
-    which words keep the command position open (``_POSITION_WRAPPERS``).
+    ``sudo -u root timeout -s9 5 nice -n5 patch`` -> ``patch``. The one place
+    that knows which words keep the command position open
+    (``_POSITION_WRAPPERS`` + ``_PREFIX_WRAPPERS``) and which of their options
+    take a separate value (``_WRAPPER_VALUE_OPTS``).
     """
-    after_option = False
+    wrappers = _POSITION_WRAPPERS | _PREFIX_WRAPPERS
+    current = ""
+    skip_value = False
     for i, w in enumerate(words):
-        if (
-            os.path.basename(w) in _POSITION_WRAPPERS
-            or _ASSIGN_TOKEN_RE.match(w)
-            or re.fullmatch(r"\d+[smhd]?", w)
-        ):
-            after_option = False
+        if skip_value:
+            skip_value = False
+        elif os.path.basename(w) in wrappers:
+            current = os.path.basename(w)
+        elif _ASSIGN_TOKEN_RE.match(w) or _POSITIONAL_ARG.fullmatch(w):
+            continue
         elif w.startswith("-"):
-            after_option = True
-        elif after_option:
-            after_option = False
+            takes = _WRAPPER_VALUE_OPTS.get(current, ())
+            # ``-n`` / ``--adjustment`` exactly, or a short cluster ending in a
+            # value option (``env -iC dir``); ``-n5`` / ``--adjustment=5`` carry theirs
+            skip_value = w in takes
+            if not skip_value and len(w) > 2 and w[1] != "-":
+                # a cluster: the first value-taking letter ends it, and takes the
+                # NEXT word only when it is the last letter (``-iC dir``, not ``-uroot``)
+                for k, ch in enumerate(w[1:], 1):
+                    if "-" + ch in takes:
+                        skip_value = k == len(w) - 1
+                        break
         else:
             return i
     return None

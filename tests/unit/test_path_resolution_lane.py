@@ -450,3 +450,29 @@ def test_a_prefix_wrapper_does_not_hide_the_diff_applier(cfg):
 def test_cd_with_input_redirects_keeps_its_directory(cfg):
     spellings = [f"cd {AW} <&- && touch damagecontrol.yml", f"cd {AW} <&0 && touch damagecontrol.yml", f"cd {AW} </dev/null && touch damagecontrol.yml"]
     assert not _carried_wrongly(spellings, "refuse", cfg)
+
+
+WRAPPER_FORMS = [
+    "nice -n5", "nice -n 5", "nice --adjustment=5", "nice --adjustment 5",
+    "ionice -c2", "ionice -c 2", "ionice -c2 -n4", "ionice -c 2 -n 4",
+    "timeout -s9 5", "timeout -s 9 5", "timeout -k 3 5", "timeout -k3 5", "timeout --signal=KILL 5", "timeout --signal KILL 5",
+    "env -uVAR", "env -u VAR", "env -C /tmp", "env -S 'A=1'", "env -iu VAR",
+    "sudo -uroot", "sudo -u root", "sudo -E", "sudo -H", "sudo -E -u root -H",
+    "stdbuf -oL", "stdbuf -o L", "stdbuf -oL -eL",
+    "taskset -c0", "taskset -c 0", "taskset 0xff", "chrt -f 1", "chrt -r 10",
+    "xargs -n1", "xargs -n 1", "nohup", "command", "time -p",
+    "sudo -u root nice -n5 timeout -s9 5",
+]
+
+
+def test_wrapper_option_forms_do_not_hide_the_diff_applier(cfg):
+    bad = []
+    for verb in ("patch -p0 < x.diff", "git apply x.diff", "git -C . am x.mbox"):
+        top = _decide(f"cd {AW} && {verb}", cfg)
+        for form in WRAPPER_FORMS:
+            cmd = f"cd {AW} && {form} {verb}"
+            if _decide(cmd, cfg) != top:
+                bad.append((top, _decide(cmd, cfg), cmd))
+    assert not bad, bad
+    benign = [f"cd {AW} && {form} patch --dry-run -p0 < x.diff" for form in WRAPPER_FORMS]
+    assert not _wrongly(benign, "allow", cfg)
