@@ -3519,7 +3519,7 @@ _CMD_START = (
     r"(?:(?:time|nohup|command|builtin|env|exec|sudo|!|\w+=(?:\$\{[^}]*\}|\"[^\"]*\"|'[^']*'|[^\s\"'$;&|()]|\$)*)\s+(?:-\S+\s+)*)*"
 )
 # ``cd dir >/dev/null 2>&1 &&``: redirects between the target and the separator
-_CD_REDIRECTS = r"(?:\s+(?:\d*|&)(?:>>?|<|>&|>\|)\s*[^\s;&|()<>]+)*"
+_CD_REDIRECTS = r"(?:\s+(?:\d*|&)(?:>>?|<&?|>&|>\|)\s*[^\s;&|()<>]+)*"
 _CD_RE = _rx(
     _CMD_START
     + r"(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()<>]+)" + _CD_REDIRECTS + r"\s*(?=&&|;|\|\||\n)"
@@ -3657,6 +3657,29 @@ _UNESCAPE_DQ = _rx(r"\\([$`])")
 _SHELL_C_FLAG = _rx(r"-[A-Za-z]*c[A-Za-z]*")
 
 
+def _command_head(words: List[str]) -> Optional[int]:
+    """Index of the word that is the command, past prefix wrappers, their options and ``VAR=x``.
+
+    ``sudo -u root timeout 5 patch`` -> ``patch``. The one place that knows
+    which words keep the command position open (``_POSITION_WRAPPERS``).
+    """
+    after_option = False
+    for i, w in enumerate(words):
+        if (
+            os.path.basename(w) in _POSITION_WRAPPERS
+            or _ASSIGN_TOKEN_RE.match(w)
+            or re.fullmatch(r"\d+[smhd]?", w)
+        ):
+            after_option = False
+        elif w.startswith("-"):
+            after_option = True
+        elif after_option:
+            after_option = False
+        else:
+            return i
+    return None
+
+
 def _wrapper_payload_commands(command: str) -> List[str]:
     """Programs a command hands to a shell or ``ssh`` as one argument: ``sh -c '…'``, ``ssh host '…'``.
 
@@ -3679,26 +3702,15 @@ def _wrapper_payload_commands(command: str) -> List[str]:
             while remote.startswith("-") and " " in remote:
                 remote = remote.split(" ", 1)[1]
             out.append(remote)
-        after_option = False
-        for i, w in enumerate(words):
-            base = os.path.basename(w)
-            if base in _SHELL_NAMES:
-                for j in range(i + 1, len(words) - 1):
-                    if _SHELL_C_FLAG.fullmatch(words[j]):
-                        k = j + 1
-                        while k < len(words) - 1 and words[k] == "--":
-                            k += 1
-                        out.append(words[k])
-                        break
-                break
-            if base in _POSITION_WRAPPERS or _ASSIGN_TOKEN_RE.match(w) or re.fullmatch(r"\d+[smhd]?", w):
-                after_option = False
-            elif w.startswith("-"):
-                after_option = True
-            elif after_option:
-                after_option = False
-            else:
-                break
+        i = _command_head(words)
+        if i is not None and os.path.basename(words[i]) in _SHELL_NAMES:
+            for j in range(i + 1, len(words) - 1):
+                if _SHELL_C_FLAG.fullmatch(words[j]):
+                    k = j + 1
+                    while k < len(words) - 1 and words[k] == "--":
+                        k += 1
+                    out.append(words[k])
+                    break
     return [fixed for payload in out for fixed in (payload, _UNESCAPE_DQ.sub(r"\1", payload)) if fixed]
 
 
@@ -3950,10 +3962,8 @@ def _applies_diff(text: str) -> bool:
     """
     for seg in re.split(r"[;&|\n()]", text):
         words = _segment_words(seg)
-        i = 0
-        while i < len(words) and _ASSIGN_WORD.match(words[i]):
-            i += 1
-        if i >= len(words):
+        i = _command_head(words)
+        if i is None:
             continue
         head = os.path.basename(words[i])
         if head == "git":

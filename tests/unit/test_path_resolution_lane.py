@@ -427,3 +427,26 @@ def test_wrapper_payload_with_a_resolvable_directory_blocks_rather_than_asks(cfg
     ]
     not_blocked = [(_decide(c, cfg), c) for c in spellings if _decide(c, cfg) != "block"]
     assert not not_blocked, not_blocked
+
+
+def test_a_prefix_wrapper_does_not_hide_the_diff_applier(cfg):
+    verbs = ["patch -p0 < x.diff", "git apply x.diff", "git -C . am x.mbox", "/usr/bin/patch -p0 < x.diff"]
+    prefixes = ["", "sudo ", "sudo -u root ", "nohup ", "env ", "env A=1 ", "xargs ", "timeout 5 ", "command ", "nice -n 5 ", "sudo /usr/bin/", "time "]
+    bad = []
+    for verb in verbs:
+        for prefix in prefixes:
+            if prefix.endswith("/") and not verb.startswith(("patch", "git")):
+                continue
+            body = verb if not prefix.endswith("/") else prefix + verb
+            cmd = f"cd {AW} && {body if prefix.endswith('/') else prefix + body}"
+            base = f"cd {AW} && {verb}"
+            if _decide(cmd, cfg) != _decide(base, cfg):
+                bad.append((_decide(base, cfg), _decide(cmd, cfg), cmd))
+    assert not bad, bad
+    reads = [f"cd {AW} && sudo patch --dry-run -p0 < x.diff", f"cd {AW} && nohup git apply --check x.diff"]
+    assert not _wrongly(reads, "allow", cfg)
+
+
+def test_cd_with_input_redirects_keeps_its_directory(cfg):
+    spellings = [f"cd {AW} <&- && touch damagecontrol.yml", f"cd {AW} <&0 && touch damagecontrol.yml", f"cd {AW} </dev/null && touch damagecontrol.yml"]
+    assert not _carried_wrongly(spellings, "refuse", cfg)
