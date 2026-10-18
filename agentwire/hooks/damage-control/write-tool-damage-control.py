@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "8bf9112b830234e9b19678738b7e63cdf0f4bc3244870730ad7f44cdb996059a", "generated_at": "2026-10-18T23:23:09Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "da3934c235cedc607988e4e48d244e1265d3b37b65d037ad5d7e96bc7bb60e2c", "generated_at": "2026-10-18T23:30:43Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -4178,7 +4178,7 @@ _UNESCAPE_DQ = _rx(r"\\([$`])")
 _SHELL_C_FLAG = _rx(r"-[A-Za-z]*c[A-Za-z]*")
 
 
-def _command_head(words: List[str]) -> Optional[int]:
+def _wrapped_command_index(words: List[str]) -> Optional[int]:
     """Index of the word that is the command, past prefix wrappers, their options and ``VAR=x``.
 
     ``sudo -u root timeout 5 patch`` -> ``patch``. The one place that knows
@@ -4223,7 +4223,7 @@ def _wrapper_payload_commands(command: str) -> List[str]:
             while remote.startswith("-") and " " in remote:
                 remote = remote.split(" ", 1)[1]
             out.append(remote)
-        i = _command_head(words)
+        i = _wrapped_command_index(words)
         if i is not None and os.path.basename(words[i]) in _SHELL_NAMES:
             for j in range(i + 1, len(words) - 1):
                 if _SHELL_C_FLAG.fullmatch(words[j]):
@@ -4483,7 +4483,7 @@ def _applies_diff(text: str) -> bool:
     """
     for seg in re.split(r"[;&|\n()]", text):
         words = _segment_words(seg)
-        i = _command_head(words)
+        i = _wrapped_command_index(words)
         if i is None:
             continue
         head = os.path.basename(words[i])
