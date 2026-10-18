@@ -34,7 +34,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "a4139895efc156867c1ac6d1360e2489480c9e8d879dd06f464386c47710a2e1", "generated_at": "2026-10-18T19:10:42Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "fd04935b8418ea8ec7ffe82accb12e76629f71684611064221d724fe9e62948e", "generated_at": "2026-10-18T19:24:18Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3557,9 +3557,11 @@ _CMD_START = (
     r"(?:^\s*|(?:\b(?:then|do|else|elif|if|while|until|time|coproc)\b|[;&|\n(){!])\s*)"
     r"(?:(?:time|nohup|command|builtin|env|exec|sudo|!|\w+=(?:\$\{[^}]*\}|\"[^\"]*\"|'[^']*'|[^\s\"'$;&|()]|\$)*)\s+(?:-\S+\s+)*)*"
 )
+# ``cd dir >/dev/null 2>&1 &&``: redirects between the target and the separator
+_CD_REDIRECTS = r"(?:\s+(?:\d*|&)(?:>>?|<|>&|>\|)\s*[^\s;&|()<>]+)*"
 _CD_RE = _rx(
     _CMD_START
-    + r"(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()]+)\s*(?=&&|;|\|\||\n)"
+    + r"(?:cd|pushd)\s+(?:--\s+)?(?P<d>\"[^\"]*\"|'[^']*'|[^\s;&|()<>]+)" + _CD_REDIRECTS + r"\s*(?=&&|;|\|\||\n)"
 )
 # ``popd`` returns to a directory the command cannot see: an unresolvable cwd.
 _POPD_RE = _rx(_CMD_START + r"popd\b[^\n;&|()]*\s*(?=&&|;|\|\||\n)")
@@ -3672,10 +3674,11 @@ _CHDIR_OPTIONS = {
     "patch": (("-d",), ("--directory",), False),
 }
 _CHDIR_HINT = _rx(
-    r"\bgit\b[^\n]*(?:\s-C\b|--work-tree)|\benv\b[^\n]*(?:\s-C|--chdir)|\bpatch\b[^\n]*(?:\s-d|--directory)"
+    r"\bgit\b[^\n]*(?:\s-C\b|--work-tree)|\benv\b[^\n]*(?:\s-[A-Za-z]*C|--chdir)|\bpatch\b[^\n]*(?:\s-d|--directory)"
 )
 
 
+_ENV_CLUSTER = _rx(r"-[A-Za-z]+C")
 _GROUP_WORDS = frozenset({"{", "}", "!", "then", "do", "else", "elif", "if", "while", "until", "time", "fi", "done"})
 
 
@@ -3689,6 +3692,7 @@ def _segment_words(seg: str) -> List[str]:
     return words
 
 
+_UNESCAPE_DQ = _rx(r"\\([$`])")
 _SHELL_C_FLAG = _rx(r"-[A-Za-z]*c[A-Za-z]*")
 
 
@@ -3711,18 +3715,30 @@ def _wrapper_payload_commands(command: str) -> List[str]:
         words = [w for w in words if w not in _GROUP_WORDS]
         remote = _ssh_remote_payload(words)
         if remote:
+            while remote.startswith("-") and " " in remote:
+                remote = remote.split(" ", 1)[1]
             out.append(remote)
+        after_option = False
         for i, w in enumerate(words):
             base = os.path.basename(w)
-            if base in _POSITION_WRAPPERS or _ASSIGN_TOKEN_RE.match(w) or w.startswith("-"):
-                continue
             if base in _SHELL_NAMES:
                 for j in range(i + 1, len(words) - 1):
                     if _SHELL_C_FLAG.fullmatch(words[j]):
-                        out.append(words[j + 1])
+                        k = j + 1
+                        while k < len(words) - 1 and words[k] == "--":
+                            k += 1
+                        out.append(words[k])
                         break
-            break
-    return out
+                break
+            if base in _POSITION_WRAPPERS or _ASSIGN_TOKEN_RE.match(w) or re.fullmatch(r"\d+[smhd]?", w):
+                after_option = False
+            elif w.startswith("-"):
+                after_option = True
+            elif after_option:
+                after_option = False
+            else:
+                break
+    return [fixed for payload in out for fixed in (payload, _UNESCAPE_DQ.sub(r"\1", payload)) if fixed]
 
 
 def _chdir_option_split(words: List[str]) -> Tuple[List[str], List[str]]:
@@ -3739,7 +3755,7 @@ def _chdir_option_split(words: List[str]) -> Tuple[List[str], List[str]]:
     i = 0
     while i < len(words):
         w = words[i]
-        if i > start and w in short and i + 1 < len(words):
+        if i > start and (w in short or (kind == "env" and _ENV_CLUSTER.fullmatch(w))) and i + 1 < len(words):
             dirs.append(words[i + 1])
             i += 2
             continue
@@ -3752,7 +3768,7 @@ def _chdir_option_split(words: List[str]) -> Tuple[List[str], List[str]]:
             i += 1
         else:
             if stop_at_operand and i > start and not w.startswith("-") and not _ASSIGN_WORD.match(w):
-                rest.extend(words[i:])
+                rest = list(words[i:])
                 break
             rest.append(w)
         i += 1
@@ -3787,13 +3803,21 @@ def _cwd_scopes(command: str) -> Tuple[List[Tuple[str, str]], List[str]]:
             cwd = _join_dir(cwd, target)
             if cwd:
                 known.append((cwd, rest))
+            else:
+                unknown.append(rest)
     if _CHDIR_HINT.search(command):
         for seg in re.split(r"[;&|\n()]", command):
-            dirs, rest = _chdir_option_split(_segment_words(seg))
             cwd = None
-            for d in dirs:
-                cwd = _join_dir(cwd, d)
-            if cwd and dirs:
+            rest = _segment_words(seg)
+            for _ in range(4):  # ``env -C a env -C b cmd`` nests
+                dirs, rest = _chdir_option_split(rest)
+                if not dirs:
+                    break
+                for d in dirs:
+                    cwd = _join_dir(cwd, d)
+                if cwd is None:
+                    break
+            if cwd:
                 known.append((cwd, " ".join(_quote_word(w) for w in rest)))
     return known, unknown
 
@@ -3939,7 +3963,7 @@ def unverifiable_target_verdict(
     known, unknown = _cwd_scopes(command)
     for cwd, rest in known:
         if cwd in _protected_dirs() or cwd == os.path.expanduser("~"):
-            if _APPLIES_DIFF.search(rest) and not _DIFF_READ_ONLY.search(rest):
+            if _applies_diff(rest):
                 return f"`patch` / `git apply` in {cwd} — the files it rewrites are named only in the diff"
     for rest in unknown:
         for d, names in _named_control_plane_files():
@@ -3954,10 +3978,33 @@ def unverifiable_target_verdict(
     return None
 
 
-_DIFF_READ_ONLY = _rx(r"\s--(?:dry-run|check|stat|numstat|summary)\b")
-_APPLIES_DIFF = _rx(
-    r"(?:^|[\s;&|(])(?:patch|git\s+(?:(?:-C|-c)\s+\S+\s+|--?[\w-]+(?:=\S+)?\s+)*(?:apply|am))\b"
-)
+_DIFF_READ_ONLY = frozenset({"--dry-run", "--check", "--stat", "--numstat", "--summary"})
+
+
+def _applies_diff(text: str) -> bool:
+    """True when some command in ``text`` applies a diff for real (``patch``, ``git apply|am``).
+
+    Judged per simple command: a ``--dry-run`` in one command does not excuse
+    the next, and the verb is matched by basename (``/usr/bin/patch``).
+    """
+    for seg in re.split(r"[;&|\n()]", text):
+        words = _segment_words(seg)
+        i = 0
+        while i < len(words) and _ASSIGN_WORD.match(words[i]):
+            i += 1
+        if i >= len(words):
+            continue
+        head = os.path.basename(words[i])
+        if head == "git":
+            j = i + 1
+            while j < len(words) and words[j].startswith("-"):
+                j += 2 if words[j] in ("-C", "-c") else 1
+            applies = j < len(words) and words[j] in ("apply", "am")
+        else:
+            applies = head == "patch"
+        if applies and not _DIFF_READ_ONLY.intersection(words[i:]):
+            return True
+    return False
 
 
 def _derived_commands(command: str) -> List[str]:
@@ -7295,7 +7342,7 @@ def _decide_command(
     # A directory the scanner cannot see: same tier (exempt from the escape
     # hatch and kill switch), but an ASK — the command may be harmless, and
     # `unverifiable` keeps bypass from demoting it.
-    target_reason = unverifiable_target_verdict(command, allowed)
+    target_reason = unverifiable_target_verdict(command, control_plane_allowlist(allowed))
     if target_reason:
         return {
             "decision": "ask",

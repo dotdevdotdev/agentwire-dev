@@ -338,7 +338,16 @@ re-scanned as a command, so the verb still decides (reads stay allowed):
   (`A=${x:-\n} cd <dir> && …`, `A="a b" cd <dir>`). A command inside
   `sh -c '…'` / `ssh host '…'` is re-scanned as a command in its own right
   (`_wrapper_payload_commands`), so the same resolution applies inside the
-  wrapper — the decision equals the top-level one.
+  wrapper — the decision equals the top-level one (payload found through
+  `timeout 5`, `sudo -u x`, `env -C d`, `--`, `ssh host -t`, and `\$` inside a
+  double-quoted payload). Redirects on the `cd` (`cd d >/dev/null 2>&1 &&`) do
+  not hide the directory; `env -iC` clusters and nested `env -C a env -C b`
+  resolve; a relative `cd` with no known base (`cd ..`) is unresolved. The
+  unresolvable-`cd` ask is evaluated against the control-plane allowlist, so a
+  default `/tmp/*` allowance cannot waive it. The `patch`/`git apply` read-only
+  flags excuse only the command they sit in, and the verb is matched by basename.
+  Not covered: a symlink alias reached through a `cd` directory the hook's own
+  cwd cannot see (`cd <work> && touch dirlink/…`), and a bare `cd`.
 - **A `cd` the scanner cannot resolve** (`cd -`, `popd`, `cd $x` with `x` not a
   literal assignment) followed by a distinctive protected NAME that the rest of
   the command would write (`cd - && touch damagecontrol.yml`) is an ASK that

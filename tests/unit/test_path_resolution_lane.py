@@ -328,3 +328,102 @@ def test_glob_word_scan_does_not_retry_from_every_offset_of_a_long_run():
         if took > 0.5:  # the old scan took seconds on each; this takes milliseconds
             slow.append((run[:6], round(took, 2)))
     assert not slow, slow
+
+
+# ---- review round 1: allowance, redirects, per-segment diffs, wrapper gaps ----
+
+CARRIERS = [
+    lambda c: c,
+    lambda c: f"bash -c {shlex.quote(c)}",
+    lambda c: f"({c})",
+    lambda c: f"{{ {c}; }}",
+    lambda c: f"ssh host {shlex.quote(c)}",
+    lambda c: f"timeout 5 bash -c {shlex.quote(c)}",
+]
+
+
+def _carried_wrongly(spellings, want, cfg):
+    bad = []
+    for spelling in spellings:
+        for carry in CARRIERS:
+            cmd = carry(spelling)
+            d = _decide(cmd, cfg)
+            if (d in ("block", "ask")) != (want == "refuse"):
+                bad.append((d, cmd))
+    return bad
+
+
+def test_a_home_under_a_default_allowance_does_not_waive_the_ask(tmp_path, monkeypatch, cfg):
+    home = tmp_path / "h"  # pytest tmp dirs sit under /tmp or /private/var: both are default allowances
+    (home / ".agentwire").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    for allowed in ("/tmp/*", f"{home}/*", f"{tmp_path}/*"):
+        local = dict(cfg, allowedPaths=[{"path": allowed, "allow": "all"}])
+        asks = ["cd - && touch damagecontrol.yml", "cd $x && touch damagecontrol.yml", f"cd {home}/.agentwire && patch -p0 < x.diff"]
+        assert not _wrongly(asks, "refuse", local), allowed
+
+
+def test_a_redirect_on_the_cd_does_not_hide_the_directory(cfg):
+    spellings = [
+        f"cd {AW} >/dev/null && touch damagecontrol.yml",
+        f"cd {AW} 2>/dev/null && touch damagecontrol.yml",
+        f"cd {AW} > /dev/null 2>&1 && touch damagecontrol.yml",
+        f"cd {AW} &>/dev/null && touch damagecontrol.yml",
+        f"d={AW}; cd $d 2>/dev/null && touch damagecontrol.yml",
+        f"pushd {AW} >/dev/null; touch damagecontrol.yml",
+        "cd $x 2>/dev/null && touch damagecontrol.yml",
+        "cd - >/dev/null && touch damagecontrol.yml",
+        "cd .. && touch damagecontrol.yml",
+    ]
+    controls = ["cd /tmp >/dev/null && touch damagecontrol.yml", "cd $x 2>/dev/null && touch notes.txt"]
+    assert not _carried_wrongly(spellings, "refuse", cfg)
+    assert not _wrongly(controls, "allow", cfg)
+
+
+def test_a_read_only_flag_excuses_only_its_own_command(cfg):
+    applies = [
+        f"cd {AW} && git apply --stat x.diff; git apply x.diff",
+        f"cd {AW} && patch --dry-run a; patch b",
+        f"cd {AW} && patch -p0 < x.diff # --dry-run",
+        f"cd {AW} && patch -p0 < x.diff | tee f --stat",
+        f'cd {AW} && git apply "x --check .diff"',
+        f"cd {AW} && /usr/bin/patch -p0 < x.diff",
+        f"cd {AW} && /usr/bin/git apply x.diff",
+    ]
+    reads = [f"cd {AW} && patch --dry-run -p0 < x.diff", f"cd {AW} && git apply --check x.diff", f"cd {AW} && git apply --stat x.diff"]
+    assert not _carried_wrongly(applies, "refuse", cfg)
+    assert not _wrongly(reads, "allow", cfg)
+
+
+def test_wrapper_payloads_are_found_through_options_and_double_quote_escapes(cfg):
+    inner = f"d={AW}; cd $d && touch damagecontrol.yml"
+    spellings = [
+        'bash -c "d=%s; cd \\$d && touch damagecontrol.yml"' % AW,
+        f"bash -c -- {shlex.quote(inner)}",
+        f"ssh host -t {shlex.quote(inner)}",
+        f"timeout 5 bash -c {shlex.quote(inner)}",
+        f"env -C /tmp sh -c {shlex.quote(inner)}",
+        f"sudo -u root bash -lc {shlex.quote(inner)}",
+    ]
+    assert not _wrongly(spellings, "refuse", cfg)
+
+
+def test_env_clusters_and_nesting_resolve_the_directory(cfg):
+    spellings = [
+        f"env -iC {AW} touch damagecontrol.yml",
+        f"env -C /tmp env -C {AW} touch damagecontrol.yml",
+        "env -C / env -C home/cptest/.agentwire touch damagecontrol.yml",
+    ]
+    controls = [f"env -C {AW} env -C /tmp touch damagecontrol.yml", "env -iC /tmp touch damagecontrol.yml"]
+    assert not _wrongly(spellings, "refuse", cfg)
+    assert not _wrongly(controls, "allow", cfg)
+
+
+def test_wrapper_payload_with_a_resolvable_directory_blocks_rather_than_asks(cfg):
+    """A resolved directory is a BLOCK; falling back to the unresolvable-cd ask means the payload was mis-read."""
+    spellings = [
+        'bash -c "d=%s; cd \\$d && touch damagecontrol.yml"' % AW,
+        f"ssh host -t {shlex.quote(f'cd {AW} && touch damagecontrol.yml')}",
+    ]
+    not_blocked = [(_decide(c, cfg), c) for c in spellings if _decide(c, cfg) != "block"]
+    assert not not_blocked, not_blocked
