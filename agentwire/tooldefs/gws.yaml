@@ -20,7 +20,7 @@ install: npm install -g @googleworkspace/cli
 
 commands:
   # Auth
-  - cmd: "gws-auth ~/.config/gws-<name>"
+  - cmd: "gws-auth <config-dir>"
     access: write
     description: Authenticate a new Google account with standard agentwire scopes (helper script)
 
@@ -35,7 +35,7 @@ commands:
 
   - cmd: "gws gmail users messages get --params '{\"userId\":\"me\",\"id\":\"<id>\",\"format\":\"full\"}'"
     access: read
-    description: Get a specific message (format: full|metadata|minimal)
+    description: "Get a specific message (format: full, metadata, or minimal)"
 
   - cmd: "gws gmail users messages attachments get --params '{\"userId\":\"me\",\"messageId\":\"<id>\",\"id\":\"<attachmentId>\"}' --output <file>"
     access: read

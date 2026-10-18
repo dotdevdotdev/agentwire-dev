@@ -215,6 +215,7 @@ def get_safety_status() -> Dict[str, Any]:
         # `unattended_allow` ambiguous, and is the only visible symptom of a
         # half-applied rule sync (#916).
         "duplicate_rule_ids": list(patterns.get("_duplicate_rule_ids") or []),
+        "parse_failures": list(patterns.get("_parse_failures") or []),
         "pattern_counts": {
             "bash_patterns": len(patterns.get("bashToolPatterns", [])),
             "zero_access_paths": len(patterns.get("zeroAccessPaths", [])),
