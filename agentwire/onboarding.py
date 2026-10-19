@@ -475,7 +475,7 @@ services:
     # ─────────────────────────────────────────────────────────────
     # tmux Configuration
     # ─────────────────────────────────────────────────────────────
-    print_header("4. tmux Configuration")
+    print_header("5. tmux Configuration")
 
     tmux_conf_path = Path.home() / ".tmux.conf"
     bundled_conf = Path(__file__).parent / "templates" / "tmux.conf"

@@ -73,11 +73,18 @@ def disabled_group_of(rule_id: str) -> Optional[str]:
     from .groups import REGISTRY
 
     state = packs.effective_state(DAMAGECONTROL_FILE, RULES_DIR, TOOLDEFS_DIR)
-    stem = rule_id.split(".", 1)[0]
+    # Rule ids (and ids pinned in a tooldef, e.g. ``gh.pr-create``) are
+    # ``<file-stem>.<slug>``; unpinned tooldef ids are
+    # ``tooldef.<tooldef-file-stem>-<slug>``, so the owner is read off the stem
+    # that prefixes the slug, not off the first dotted segment.
+    head, _, rest = rule_id.partition(".")
     for e in REGISTRY.values():
         if packs.entry_active(e, state):
             continue
-        if any(Path(f).stem == stem for f in (*e.rules, *e.tooldefs)):
+        if head == "tooldef":
+            if any(rest.startswith(Path(f).stem + "-") for f in e.tooldefs):
+                return e.name
+        elif any(Path(f).stem == head for f in (*e.rules, *e.tooldefs)):  # pinned ids too
             return e.name
     return None
 

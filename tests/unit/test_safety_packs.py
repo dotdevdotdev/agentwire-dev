@@ -230,3 +230,31 @@ def test_disabled_git_group_is_reported_as_disabled_not_a_typo(home):
     unknown, by_group = split_missing_ids(["git.commit", "gh.pr-create", "git.no-such-typo-xyz".replace("git.", "nosuch.")])
     assert by_group == {"git.commit": "git", "gh.pr-create": "git"}
     assert unknown == ["nosuch.no-such-typo-xyz"]
+
+
+def test_tooldef_grant_ids_are_attributed_to_their_owning_group(home):
+    from agentwire.safety.lint import disabled_group_of
+    safety_commands.heal_damage_control(quiet=True)
+    safety_packs_cli.cmd_groups_disable(SimpleNamespace(name="git"))
+    cases = {
+        "tooldef.git-create-a-commit": "git",
+        "tooldef.gh-open-a-pull-request": "git",
+        "git.commit": "git",
+        "tooldef.uv-run-a-script-in-project-environment": None,  # uv has its own group
+        "tooldef.nosuch-thing": None,
+    }
+    wrong = {i: disabled_group_of(i) for i, g in cases.items() if disabled_group_of(i) != g}
+    assert not wrong, wrong
+
+
+def test_opting_out_of_git_keeps_uv_tooldef_installed(home):
+    safety_commands.heal_damage_control(quiet=True)
+    safety_packs_cli.cmd_groups_disable(SimpleNamespace(name="git"))
+    assert "uv.yaml" in installed("tooldefs")
+    assert not {"git.yaml", "gh.yaml"} & installed("tooldefs")
+
+
+def test_migration_runner_users_are_offered_the_databases_pack(home, monkeypatch):
+    monkeypatch.setattr(safety_packs_cli.shutil, "which", lambda b: "/bin/x" if b == "prisma" else None)
+    rows = {r["name"]: r for r in safety_packs_cli.overview()}
+    assert rows["databases"]["suggest_enable"]
