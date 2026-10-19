@@ -139,6 +139,8 @@ def test_benign_payloads_add_nothing_to_the_carrier(bash_hook, cfg):
     for payload in BENIGN_PAYLOADS:
         assert _decide(bash_hook, cfg, payload) == "allow", payload
         for template in CARRIERS:
+            if "config" in template and "core." in template:
+                continue  # set-form exec-key config asks by rule (#1133) for any non-trivial value
             baseline = _decide(bash_hook, cfg, _carrier(template, "true"))
             command = _carrier(template, payload)
             wrapped = _decide(bash_hook, cfg, command)
