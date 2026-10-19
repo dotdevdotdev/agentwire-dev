@@ -3961,6 +3961,25 @@ def _sftp_batch_commands(text: str, consumer_words: List[str]) -> List[str]:
     return out
 
 
+def _producer_commands(producer: str) -> List[List[str]]:
+    """Word lists of the commands a pipe stage's text may end in, past openers and prefix wrappers.
+
+    ``if t; then sudo cat <<< X`` feeds the pipe from ``cat``: each tail after a segment break
+    is stripped of compound openers, then of ``sudo``/``env``/``nohup``/``timeout N``.
+    """
+    words = _words(producer)
+    tails = [words] + [words[i + 1 :] for i, w in enumerate(words) if w in ("&&", "||", "&") or w.endswith(";")]
+    out: List[List[str]] = []
+    for tail in tails:
+        tail = strip_command_opener_words(tail)
+        k = _wrapped_command_index(tail) if tail else None
+        if k is not None:
+            tail = tail[k:]
+        if tail:
+            out.append(tail)
+    return out
+
+
 def _stdin_program_commands(command: str, rules: bool = False) -> List[str]:
     """Text that a stdin-reading runner will execute as commands (#1099).
 
@@ -3997,14 +4016,14 @@ def _stdin_program_commands(command: str, rules: bool = False) -> List[str]:
             consumer_words = _feed_words(consumer)
             if op != "|":
                 continue
-            words = strip_command_opener_words(_words(producer))
-            if words and os.path.basename(words[0]) in ("echo", "printf"):
-                text = " ".join(w for w in words[1:] if not re.fullmatch(r"-[neE]+", w))
-                emit(text, consumer_words)
-                if os.path.basename(words[0]) == "printf" and len(words) > 2 and "%" in words[1]:
-                    emit(" ".join(words[2:]), consumer_words)  # ``printf '%s' X``: X is the text
-            elif words and os.path.basename(words[0]) == "cat" and "<<<" in words[1:-1]:
-                emit(words[words.index("<<<") + 1], consumer_words)  # ``cat <<< X | sh``
+            for words in _producer_commands(producer):
+                if os.path.basename(words[0]) in ("echo", "printf"):
+                    text = " ".join(w for w in words[1:] if not re.fullmatch(r"-[neE]+", w))
+                    emit(text, consumer_words)
+                    if os.path.basename(words[0]) == "printf" and len(words) > 2 and "%" in words[1]:
+                        emit(" ".join(words[2:]), consumer_words)  # ``printf '%s' X``: X is the text
+                elif os.path.basename(words[0]) == "cat" and "<<<" in words[1:-1]:
+                    emit(words[words.index("<<<") + 1], consumer_words)  # ``cat <<< X | sh``
     return out
 
 

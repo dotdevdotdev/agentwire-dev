@@ -33,6 +33,7 @@ OPENERS = [
     "echo a; {c}",
 ]
 WRAPPERS = ["sudo", "env", "nohup", "timeout 5", "env A=1", "nice -n 5", "command"]
+PIPE_PRODUCERS_PAYLOADS = [("rm -rf xx", "block"), ("echo hi", "allow")]
 PAYLOADS = [("rm -rf xx", "block"), ("echo hi", "allow")]
 
 
@@ -80,4 +81,19 @@ def test_wrapped_heredoc_in_dash_c(decide):
         cmd = f"{w} bash -c 'sh <<EOF\nrm -rf xx\nEOF\n'".strip()
         if decide(cmd) != "block":
             bad.append(cmd)
+    assert not bad, bad
+
+
+PIPE_PRODUCERS = ["cat <<< '{p}' | sh", "echo '{p}' | sh", "printf '%s' '{p}' | bash"]
+
+
+def test_producer_pipe_to_shell_behind_openers_and_wrappers(decide):
+    bad = []
+    for payload, expected in PIPE_PRODUCERS_PAYLOADS:
+        for form in PIPE_PRODUCERS:
+            inner = form.format(p=payload)
+            assert decide(inner) == expected, ("top level", inner)
+            cmds = [o.format(c=inner) for o in OPENERS]
+            cmds += [o.format(c=f"{w} {inner}") for w in WRAPPERS for o in OPENERS[:3]]
+            bad += [(c, expected) for c in cmds if decide(c) != expected]
     assert not bad, bad
