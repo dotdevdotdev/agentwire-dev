@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "4479f53fa809b9712d7bffd05e64fad9769f04a074d92a16fbc997a01e9607cb", "generated_at": "2026-10-19T12:48:01Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "4efdfb84c3068181ab5144688ddbf6f2684795f620f1f44766e919895dfae4ac", "generated_at": "2026-10-19T13:03:51Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -5643,25 +5643,49 @@ def _realpath_variants(command: str) -> List[str]:
     """
     out: List[str] = []
     seen = set()
-    home = os.path.expanduser("~")
     for m in itertools.islice(_PATH_WORD.finditer(command), _REALPATH_WORD_CAP):
         word = m.group(0)
         if word in seen or len(word) < 2:
             continue
         seen.add(word)
-        path = os.path.expanduser(word)
-        try:
-            if "/" not in path and not os.path.lexists(path):
-                continue
-            real = os.path.realpath(path)
-            target = real if real != posixpath.normpath(os.path.abspath(path)) and _under_protected(real) else None
-            if target is None and os.path.isfile(path) and os.stat(path).st_nlink > 1:
-                st = os.stat(path)
-                target = next((p for p, ps in _protected_inodes(home) if os.path.samestat(st, ps)), None)
-        except (OSError, ValueError):
-            continue
-        if target and target != path:
+        target = _alias_target(os.path.expanduser(word))
+        if target and target != os.path.expanduser(word):
             out.append(command.replace(word, _quote_word(target)))
+    return out
+
+
+def _alias_target(path: str) -> Optional[str]:
+    """Where ``path`` really lands, when that is a protected file or directory it is only an alias of; else None."""
+    try:
+        if "/" not in path and not os.path.lexists(path):
+            return None
+        real = os.path.realpath(path)
+        if real != posixpath.normpath(os.path.abspath(path)) and _under_protected(real):
+            return real
+        if os.path.isfile(path) and os.stat(path).st_nlink > 1:
+            st = os.stat(path)
+            return next((p for p, ps in _protected_inodes(os.path.expanduser("~")) if os.path.samestat(st, ps)), None)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _cwd_realpath_variants(command: str) -> List[str]:
+    """``_realpath_variants`` for a relative word after a literal ``cd <dir> &&`` (#1065).
+
+    ``cd /tmp/d && echo x > lnk`` names no path until the cwd is applied, and
+    ``_cwd_variants`` only rewrites words that are lexically protected. The
+    aliased word is resolved against the same cwd and judged as what it is.
+    """
+    out: List[str] = []
+    for cwd, rest in _cwd_scopes(command)[0]:
+        for m in itertools.islice(_PATH_WORD.finditer(rest), _REALPATH_WORD_CAP):
+            word = m.group(0)
+            if word.startswith(("/", "~", "-")) or len(word) < 2:
+                continue
+            target = _alias_target(posixpath.normpath(posixpath.join(cwd, word)))
+            if target:
+                out.append(rest.replace(word, _quote_word(target)))
     return out
 
 
@@ -5716,6 +5740,298 @@ def _named_control_plane_files() -> List[Tuple[str, "frozenset[str]"]]:
     return [(d, frozenset(names)) for d, names in sorted(by_dir.items())]
 
 
+_INLINE_FLAG_RE = _rx(r'-[A-Za-z]*[ceE]|-r')  # ``-r`` is php's inline flag (ruby's is a require: see _inline_programs)
+_INTERPRETER_START_RE = _rx(r'\b' + _INTERPRETERS + r'\b')
+_INTERPRETER_NAME_RE = _rx(r'(?:' + _INTERPRETERS + r')')
+# Words the program text uses for a control-plane directory or file, even when the
+# path itself is assembled at run time (``'damage'+'control.yml'``, ``join(h, '.claude')``).
+_CONTROL_PLANE_WORDS = (".agentwire", ".claude", "damagecontrol", "settings.json")
+# Directories under those names that agents write by design — matched on a whole path segment.
+_BENIGN_PATH_RE = _rx(r'(?:^|/)\.claude/projects/[^/]+/memory(?:/|$)|(?:^|/)\.agentwire/(?:wiki|artifacts)(?:/|$)')
+# The ONE expression shape the exemption covers: a single string literal, optionally
+# the sole argument of ``expanduser`` / ``Path``. Anything else (a variable, a join, ``+``,
+# ``os.pardir``, a call) is not a path the scan can read, so it is not exempt.
+_STATIC_PATH_RES = (
+    _rx(r'''\s*['"]([^'"\\$@#]*)['"]\s*'''),
+    _rx(r'''\s*(?:os\.path\.)?expanduser\(\s*['"]([^'"\\$@#]*)['"]\s*\)\s*'''),
+    _rx(r'''\s*(?:pathlib\.)?Path\(\s*['"]([^'"\\$@#]*)['"]\s*\)\s*'''),
+)
+_CHDIR_RE = _rx(r'\bchdir\s*\(')
+_CALL_RE = _rx(r'([A-Za-z_]\w*)\s*\(')
+# one plain string (a double-quoted one with ``$``/``@``/``#{`` interpolates: not literal)
+_LITERAL_ARG_RE = _rx(r'''\s*(?:'[^']*'|"[^"$@#\\]*")\s*''')
+_PLAIN_RECEIVER_RE = _rx(r'''[\w.$:]*''')
+# A call whose FIRST argument is the path (or the command line, for the runners).
+_PATH_FIRST_SINKS = frozenset({
+    "system", "popen", "popen2", "popen3", "Popen", "run", "call", "check_call", "check_output",
+    "unlink", "unlinkSync", "remove", "rmtree", "rmSync", "chmod", "chown", "truncate",
+    "writeFile", "writeFileSync", "appendFile", "appendFileSync", "file_put_contents", "createWriteStream",
+    "exec", "execv", "execve", "execl", "execlp", "execvp", "spawn", "spawnSync", "execSync", "execFile",
+})
+# A call whose EVERY argument is a path (two ends).
+_PATH_ALL_SINKS = frozenset({
+    "copy", "copy2", "copyfile", "copytree", "copyFile", "copyFileSync", "move", "rename", "renameSync",
+    "replace", "symlink", "symlinkSync", "link", "linkSync",
+})
+# A method whose path is its RECEIVER (``Path(...).write_text``); the arguments are data.
+_RECEIVER_SINKS = frozenset({
+    "write_text", "write_bytes", "touch", "unlink", "symlink_to", "hardlink_to", "rename", "replace", "chmod",
+})
+_FILE_CLASSES = frozenset({"File", "IO", "fs", "Files", "FileUtils"})
+# Calls that open a path and write only in a write mode / flag (path first, mode second).
+_OPEN_NAMES = frozenset({"open", "fopen", "openSync", "new"})
+# Archive extraction: the destination is an argument, whatever the receiver (``tar.extractall(d)``).
+_EXTRACT_SINKS = frozenset({"extractall", "extract", "unpack_archive"})
+# ``var.replace(a, b)`` / ``items.remove(x)`` are string and list methods: a path-taking name
+# called on a plain identifier counts only when that identifier is a module (``os.replace``).
+_SINK_MODULES = frozenset({
+    "os", "shutil", "subprocess", "fs", "promises", "child_process", "cp", "FileUtils", "File", "IO",
+    "Kernel", "Open3", "posix", "Files", "pathlib", "commands", "io", "codecs", "gzip", "bz2", "lzma",
+    "tarfile", "zipfile", "builtins",
+})
+_INDIRECT_RE = _rx(r'\b(?:getattr|__import__|importlib|eval|exec)\s*\(')
+
+
+def _match_close(text: str, i: int) -> int:
+    """Index of the bracket closing ``text[i]``, quotes respected; -1 when unbalanced."""
+    depth, quote, j = 0, "", i
+    while j < len(text):
+        ch = text[j]
+        if quote:
+            if ch == "\\":
+                j += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return -1
+
+
+def _split_args(inner: str) -> List[str]:
+    args, cur, depth, quote, j = [], [], 0, "", 0
+    while j < len(inner):
+        ch = inner[j]
+        if quote:
+            cur.append(ch)
+            if ch == "\\" and j + 1 < len(inner):
+                j += 1
+                cur.append(inner[j])
+            elif ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+            cur.append(ch)
+        elif ch in "([{":
+            depth += 1
+            cur.append(ch)
+        elif ch in ")]}":
+            depth -= 1
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            args.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        j += 1
+    args.append("".join(cur))
+    return [a for a in args if a.strip()]
+
+
+def _receiver_before(text: str, dot: int) -> str:
+    """The expression a ``.method(`` is called on: ``(Path.home()/'x')``, ``Path('x')``, ``os.path``."""
+    pos = dot
+    for _ in range(8):
+        k = pos
+        while k > 0 and text[k - 1].isspace():
+            k -= 1
+        if k > 0 and text[k - 1] in ")]":
+            depth, m = 0, k - 1
+            while m >= 0:
+                if text[m] in ")]}":
+                    depth += 1
+                elif text[m] in "([{":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                m -= 1
+            if m < 0:
+                break
+            while m > 0 and (text[m - 1].isalnum() or text[m - 1] in "_.$"):
+                m -= 1
+            pos = m
+            continue
+        while k > 0 and (text[k - 1].isalnum() or text[k - 1] in "_.$"):
+            k -= 1
+        pos = k
+        break
+    return text[max(pos, dot - 400):dot]
+
+
+def _names_control_plane(expr: str) -> bool:
+    """``expr`` names a control-plane word, unless it is ONE static path inside an agent-owned directory.
+
+    The exemption is all-or-nothing: only a single string literal (optionally
+    inside ``expanduser`` / ``Path``) whose normalized form lies inside
+    ``.claude/projects/*/memory`` or ``.agentwire/wiki|artifacts`` and names no
+    other control-plane word. A non-literal piece anywhere (a variable segment,
+    ``os.path.join``, ``+``, ``os.pardir``, a call) means the scan cannot say
+    where the path lands, so there is no exemption. A symlink INSIDE those
+    directories is a declared residual.
+    """
+    static = next((m.group(1) for r in _STATIC_PATH_RES for m in (r.fullmatch(expr),) if m), None)
+    if static is not None:
+        norm = posixpath.normpath(static)
+        hit = _BENIGN_PATH_RE.search(norm)
+        if hit:
+            expr = norm[: hit.start()] + norm[hit.end():]
+    return any(w in expr.casefold() for w in _CONTROL_PLANE_WORDS)
+
+
+def _string_mask(program: str) -> List[bool]:
+    """``mask[i]`` is True when ``program[i]`` is inside a string literal (``'``, ``"``, triple-quoted)."""
+    mask = [False] * len(program)
+    i, n = 0, len(program)
+    while i < n:
+        ch = program[i]
+        if ch in "'\"":
+            q = program[i : i + 3] if program[i : i + 3] in ("'''", '"""') else ch
+            j = i + len(q)
+            while j < n and program[j : j + len(q)] != q:
+                j += 2 if program[j] == "\\" else 1
+            for k in range(i, min(j + len(q), n)):
+                mask[k] = True
+            i = j + len(q)
+        else:
+            i += 1
+    return mask
+
+
+def _open_writes(args: List[str], mode_index: int) -> bool:
+    """``open(path, mode)`` writes unless its mode is a literal read mode (no mode = read)."""
+    for a in args:
+        m = re.match(r"\s*mode\s*=\s*(.*)", a, re.S)
+        if m:
+            return _mode_writes(m.group(1))
+    return mode_index < len(args) and _mode_writes(args[mode_index])
+
+
+def _mode_writes(mode: str) -> bool:
+    lit = _LITERAL_ARG_RE.fullmatch(mode)
+    if re.search(r"O_RDONLY", mode) and not re.search(r"O_(?:WRONLY|RDWR|CREAT|APPEND|TRUNC)", mode):
+        return False
+    return not lit or bool(re.search(r"[wax+>]", mode))
+
+
+def _program_opaque_write(program: str) -> bool:
+    """A program that hands a write/exec sink a run-time path expression that itself names the control plane."""
+    if not _names_control_plane(program):
+        return False
+    if _INDIRECT_RE.search(program):  # getattr(__import__('os'), 'system')(...) hides which sink runs
+        return True
+    in_string = _string_mask(program)
+    # ``os.chdir(M); os.chdir('..'); open('hooks/x', 'w')``: the working directory moves, so any
+    # write whose path is not an absolute literal could land anywhere.
+    moved = any(not in_string[m.start()] for m in _CHDIR_RE.finditer(program))
+    for m in _CALL_RE.finditer(program):
+        if in_string[m.start()]:  # ``open(p, 'w')`` quoted as DATA (a fixture, a message) is not a call
+            continue
+        name = m.group(1)
+        open_at = m.end() - 1
+        close = _match_close(program, open_at)
+        args = _split_args(program[open_at + 1 : close if close > 0 else len(program)])
+        dot = m.start() - 1
+        method = dot >= 0 and program[dot] == "."
+        receiver = _receiver_before(program, dot) if method else ""
+        plain = bool(_PLAIN_RECEIVER_RE.fullmatch(receiver))
+        exprs: List[str] = []
+        if name in _OPEN_NAMES and (name != "new" or receiver.split(".")[-1] == "File"):
+            if method and not (plain and receiver.split(".")[-1] in _SINK_MODULES | _FILE_CLASSES):
+                # Path(...).open(mode): the receiver is the path
+                if plain or not _open_writes(args, 0):
+                    continue
+                exprs = [receiver]
+            else:  # open(path, mode), File.open / io.open / os.open / fs.openSync, fopen
+                perl = len(args) > 1 and args[1].lstrip(" '\"").startswith((">", "+<", "+>"))
+                if not (perl or _open_writes(args, 1)):
+                    continue
+                exprs = args[1:2] if perl else args[:1]
+        elif name in ("write", "binwrite") and receiver.split(".")[-1] in _FILE_CLASSES:
+            exprs = args[:1]
+        elif (name in _PATH_FIRST_SINKS or name in _PATH_ALL_SINKS) and not (
+            method and plain and receiver.split(".")[-1] not in _SINK_MODULES
+        ) and not (not method and name == "replace"):
+            exprs = args[:1] if name in _PATH_FIRST_SINKS else args
+        elif name in _EXTRACT_SINKS:
+            exprs = args
+        elif name in _RECEIVER_SINKS and method and not plain:
+            exprs = [receiver] + (args if name in ("rename", "replace", "symlink_to", "hardlink_to") else [])
+        else:
+            continue
+        if method and not plain and name not in _RECEIVER_SINKS and name not in _OPEN_NAMES:
+            exprs.append(receiver)
+        for e in exprs:
+            if not _LITERAL_ARG_RE.fullmatch(e) and _names_control_plane(e):
+                return True
+            if moved and not re.fullmatch(r'''\s*['"](?:/|~)[^'"]*['"]\s*''', e):
+                return True
+    return False
+
+
+def _inline_programs(command: str) -> List[str]:
+    """The program text of every inline interpreter in ``command``: its ``-c`` / ``-e`` argument, or its heredoc body."""
+    out: List[str] = []
+    if "<<" in command:
+        for body, _quoted, line in _heredoc_bodies(command):
+            if any(_INTERPRETER_NAME_RE.fullmatch(os.path.basename(w)) for w in _feed_words(line)):
+                out.append(body)
+        command = _hide_heredoc_bodies(command, keep_programs=False)
+    for m in _INTERPRETER_START_RE.finditer(command):
+        try:
+            toks = shlex.split(command[m.start():], posix=True)
+        except ValueError:
+            continue
+        for i, tok in enumerate(toks[1:], 1):
+            if tok in (";", "|", "||", "&&", "&"):
+                break
+            if tok == "-r" and os.path.basename(toks[0]) != "php":
+                continue
+            if _INLINE_FLAG_RE.fullmatch(tok) and i + 1 < len(toks):
+                out.append(toks[i + 1])
+                break
+    return out
+
+
+def _opaque_inline_write(command: str) -> Optional[str]:
+    """Why an inline interpreter program needs a human: it writes to a path it computes, and names the control plane (#1065).
+
+    ``python3 -c "open(os.path.join(h, '.agentwire', 'damage'+'control.yml'), 'w')"``
+    assembles its target at run time — no text match can read it, and no spelling
+    list ever will. The unknowable SHAPE is what is refused: in the program text
+    ONLY (the ``-c`` / ``-e`` argument or a heredoc fed to the interpreter, never
+    the rest of the command line), a write/exec sink whose path expression is not
+    one plain literal AND itself names a control-plane directory or file. A
+    literal path is the verb rules' business; a control word elsewhere in the
+    program (a comment, a printed string, data written), a read-only use, and the
+    agent-owned ``.claude/projects/*/memory`` / ``.agentwire/wiki|artifacts`` stay
+    untouched. A control word split across a variable assigned elsewhere in the
+    program is a declared residual.
+    """
+    if any(_program_opaque_write(p) for p in _inline_programs(command)):
+        return (
+            "an inline interpreter program writes to a path it computes at run time "
+            "and names the control plane"
+        )
+    return None
+
+
 def unverifiable_target_verdict(
     command: str, allowed_paths: List[Dict[str, Any]], depth: int = 0
 ) -> Optional[str]:
@@ -5738,6 +6054,9 @@ def unverifiable_target_verdict(
                 return reason
     if "{" in command and mentions_control_plane(command) and brace_variants(canonicalize_command(command)) is None:
         return "a brace expansion past the cap cannot be enumerated"
+    opaque = _opaque_inline_write(command)
+    if opaque:
+        return opaque
     known, unknown = _cwd_scopes(command)
     for cwd, rest in known:
         if cwd in _protected_dirs() or cwd == os.path.expanduser("~"):
@@ -5802,6 +6121,7 @@ def _derived_commands(command: str) -> List[str]:
         + _glob_variants(visible)
         + _cwd_variants(visible)
         + _realpath_variants(visible)
+        + _cwd_realpath_variants(visible)
     )
     return list(dict.fromkeys(derived))[:_RESCAN_FANOUT]
 
@@ -9152,11 +9472,41 @@ def hard_exit(code: int) -> None:
     os._exit(code)
 
 
-def run_hook_guarded(main: Any) -> None:
-    """Run a hook ``main``; any unexpected exception becomes a blocking exit 2."""
+HOOK_WATCHDOG_SECONDS = 20  # past every scan deadline, well inside HOOK_TIMEOUT_SECONDS
+
+
+def _watchdog_fire() -> None:
+    """The hook outlived its budget: block. Runs on the watchdog thread, so it exits the PROCESS."""
+    hard_exit(_block_exit(f"the hook exceeded its {HOOK_WATCHDOG_SECONDS}s budget"))
+
+
+def run_hook_guarded(main: Any, deadline_seconds: Optional[float] = None) -> None:
+    """Run a hook ``main``; any unexpected exception becomes a blocking exit 2.
+
+    The harness runs a hook that outlives its timeout as NO DECISION, so a hook
+    must answer inside it. Two bounds, independent of each other:
+
+    * ``deadline_seconds`` — the SIGALRM scan deadline (:func:`scan_deadline`)
+      around all of ``main``, for the hooks that do not carry their own per-scan
+      deadline (edit/write/read/mcp; the bash hook's ``check_command`` does).
+      The signal reaches a pattern stuck inside the regex engine, which checks
+      for signals; it needs POSIX and the main thread.
+    * a watchdog thread that exits the process with a block at
+      ``HOOK_WATCHDOG_SECONDS``. It needs neither SIGALRM nor the main thread, so
+      it covers Windows and any wait that releases the GIL (a hung ``stat`` /
+      ``realpath`` on a network mount). It cannot fire while one C call holds the
+      GIL for good (a runaway regex) — that is what the SIGALRM bound is for.
+    """
+    watchdog = threading.Timer(HOOK_WATCHDOG_SECONDS, _watchdog_fire)
+    watchdog.daemon = True
+    watchdog.start()
     code = 0
     try:
-        main()
+        if deadline_seconds is None:
+            main()
+        else:
+            with scan_deadline(deadline_seconds):
+                main()
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else (0 if e.code is None else 2)
     except HookInputError as e:
@@ -9167,6 +9517,7 @@ def run_hook_guarded(main: Any) -> None:
         code = _block_exit("input nested too deeply to analyze safely")
     except BaseException as e:  # KeyboardInterrupt included: never exit 1
         code = _block_exit(f"the hook failed ({type(e).__name__}: {e})")
+    watchdog.cancel()
     hard_exit(code)
 
 

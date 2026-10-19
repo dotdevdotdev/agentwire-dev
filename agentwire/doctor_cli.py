@@ -673,7 +673,19 @@ def _render_damage_control_section() -> int:
         else:
             print("  [ok] Built-in unattended grants all resolve to live rules")
 
+    _render_residuals_you_own()
     return issues
+
+
+def _render_residuals_you_own() -> None:
+    """Informational, never scored: what the text hook cannot decide and the control that closes each (#1065)."""
+    from .safety.residuals import USER_OWNED_RESIDUALS
+
+    print("  [..] Residuals you own — a text hook cannot decide these; the control is yours to set:")
+    for residual, why, control in USER_OWNED_RESIDUALS:
+        print(f"       - {residual}")
+        print(f"         why: {why}")
+        print(f"         close it: {control}")
 
 
 def _render_voice_loop_section(config, ctx) -> int:
