@@ -92,7 +92,7 @@ def test_locale_quoted_heredoc_delimiter_is_a_quoted_heredoc(cfg):
 
 
 def test_glob_with_a_character_class_is_not_a_literal_name(cfg):
-    harmless = ["echo [a-z]*; echo hi | sh", "echo [0-9]*; echo hi | sh", "ls [a-f]?? | sh"]
+    harmless = ["echo [a-z]*; echo hi | sh", "echo [0-9]*; echo hi | sh", "ls [a-f]??; echo ls | sh"]
     names_it = [
         f"cd {AW} && rm d*ntrol.yml",
         f"cd {AW} && rm dam[a]gecontrol.yml",
