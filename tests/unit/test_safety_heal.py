@@ -146,7 +146,7 @@ class TestDoctorDamageControlSection:
         # load_safety_config (#466). Write it directly in the fake home.
         safety_commands.DAMAGECONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
         safety_commands.DAMAGECONTROL_FILE.write_text(
-            f"enabled: {str(bool(enabled)).lower()}\n"
+            f"enabled: {str(bool(enabled)).lower()}\npacks: []\n"
         )
 
     def test_clean_when_healed_and_enabled(self, monkeypatch, capsys):

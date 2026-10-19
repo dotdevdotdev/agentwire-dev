@@ -594,7 +594,7 @@ class TestDoctorDirection:
     @pytest.fixture(autouse=True)
     def _enabled(self, machine, baselines):
         _heal_with_cloud_hosting()
-        safety_commands.DAMAGECONTROL_FILE.write_text("enabled: true\n")
+        safety_commands.DAMAGECONTROL_FILE.write_text("enabled: true\npacks: [cloud-hosting]\n")
 
     def test_clean_machine_is_clean(self, capsys):
         issues = _render_doctor()

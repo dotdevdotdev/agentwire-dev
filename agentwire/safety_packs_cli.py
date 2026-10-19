@@ -59,6 +59,13 @@ def _gate(action: str) -> bool:
     return False
 
 
+def _broken_refusal(state) -> bool:
+    if state.get("broken"):
+        print(f"Refusing to write: {state['broken']}. Fix the file by hand first.", file=sys.stderr)
+        return True
+    return False
+
+
 def _heal_after_change() -> int:
     summary = safety_commands.heal_damage_control(quiet=False)
     if summary.get("refused"):
@@ -117,6 +124,8 @@ def _set_pack(name: str, on: bool) -> int:
     if e is None or not _gate(f"packs {'enable' if on else 'disable'}"):
         return 1
     state = safety_commands.migrate_pack_state()
+    if _broken_refusal(state):
+        return 1
     current = set(state[pack_state.PACKS_KEY] or [])
     current = current | {name} if on else current - {name}
     pack_state.write_state(safety_commands.DAMAGECONTROL_FILE, packs=sorted(current))
@@ -141,6 +150,8 @@ def _set_group(name: str, on: bool) -> int:
               file=sys.stderr)
         return 1
     state = pack_state.read_state(safety_commands.DAMAGECONTROL_FILE)
+    if _broken_refusal(state):
+        return 1
     current = set(state[pack_state.GROUPS_KEY])
     current = current - {name} if on else current | {name}
     pack_state.write_state(safety_commands.DAMAGECONTROL_FILE, disabled_groups=sorted(current))

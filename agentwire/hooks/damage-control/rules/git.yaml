@@ -95,3 +95,11 @@ bashToolPatterns:
     reason: Deletes remote branch (old syntax)
     ask: true
     anchored: true
+
+  # ---------------------------------------------------------------------------
+  # GITHUB CLI DESTRUCTIVE OPERATIONS (default-on: moved out of the cloud-hosting
+  # pack so a fresh install keeps it, #1141)
+  # ---------------------------------------------------------------------------
+  - pattern: '\bgh\s+repo\s+delete\b'
+    reason: gh repo delete (deletes repository)
+    anchored: true

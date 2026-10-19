@@ -1221,7 +1221,9 @@ def migrate_pack_state() -> Dict[str, Any]:
 
     state = packs.read_state(DAMAGECONTROL_FILE)
     migrated: List[str] = []
-    if state[packs.PACKS_KEY] is None:
+    if state["broken"]:
+        pass  # unparseable: protective read, never written over (doctor reports it)
+    elif state[packs.PACKS_KEY] is None:
         installed = {
             "rules": {p.name for p in RULES_DIR.glob("*.yaml")},
             "tooldefs": {p.name for p in TOOLDEFS_DIR.glob("*.yaml")},

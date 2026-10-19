@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from agentwire.safety.groups import REGISTRY, Entry
 
@@ -27,20 +27,30 @@ PACKS_KEY = "packs"
 GROUPS_KEY = "disabled_groups"
 
 
-def read_state(path: Path) -> Dict[str, Optional[List[str]]]:
-    """``{"packs": [...] | None, "disabled_groups": [...]}`` — None = undecided."""
-    data = {}
+def read_state(path: Path) -> Dict[str, Any]:
+    """``{"packs": [...] | None, "disabled_groups": [...], "broken": str}``.
+
+    ``packs`` None = undecided. ``broken`` is a non-empty message when the file
+    exists but does not parse: that is read as the MOST PROTECTIVE state
+    (everything on, nothing removed) and is never migrated over or written to,
+    so a typo can neither switch protections off nor get overwritten.
+    """
+    data: Any = {}
+    broken = ""
     try:
         data = yaml.safe_load(path.read_text()) or {}
-    except (OSError, ValueError, AttributeError):
+    except FileNotFoundError:
         data = {}
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        data, broken = {}, f"{path.name} does not parse ({type(e).__name__}); packs/groups treated as all on"
     if not isinstance(data, dict):
-        data = {}
+        data, broken = {}, broken or f"{path.name} is not a mapping; packs/groups treated as all on"
     packs = data.get(PACKS_KEY)
     groups = data.get(GROUPS_KEY)
     return {
         PACKS_KEY: [str(p) for p in packs] if isinstance(packs, list) else None,
         GROUPS_KEY: [str(g) for g in groups] if isinstance(groups, list) else [],
+        "broken": broken,
     }
 
 
@@ -88,14 +98,16 @@ def write_state(path: Path, packs: Optional[List[str]] = None,
     tmp.replace(path)
 
 
-def entry_active(entry: Entry, state: Dict[str, Optional[List[str]]]) -> bool:
+def entry_active(entry: Entry, state: Dict[str, Any]) -> bool:
     """Whether the entry's files belong on this machine."""
+    if state.get("broken"):
+        return True
     if entry.kind == "pack":
         return entry.name in (state[PACKS_KEY] or [])
     return entry.kernel or entry.name not in state[GROUPS_KEY]
 
 
-def wanted_files(section: str, state: Dict[str, Optional[List[str]]]) -> Set[str]:
+def wanted_files(section: str, state: Dict[str, Any]) -> Set[str]:
     """File names of ``section`` ("rules"/"tooldefs") that should be installed."""
     return {
         f for e in REGISTRY.values() if entry_active(e, state)
@@ -103,37 +115,36 @@ def wanted_files(section: str, state: Dict[str, Optional[List[str]]]) -> Set[str
     }
 
 
-def unwanted_files(section: str, state: Dict[str, Optional[List[str]]]) -> Set[str]:
+def unwanted_files(section: str, state: Dict[str, Any]) -> Set[str]:
     return {
         f for e in REGISTRY.values() if not entry_active(e, state)
         for f in getattr(e, section)
     }
 
 
-def migrate_packs(state: Dict[str, Optional[List[str]]], installed: Dict[str, Set[str]]) -> List[str]:
+def migrate_packs(state: Dict[str, Any], installed: Dict[str, Set[str]]) -> List[str]:
     """Packs to record as enabled for a pre-packs install, or ``[]``.
 
-    Only meaningful while ``state["packs"]`` is None. A pack counts as in use
-    when ANY of its files is installed, pristine or hand-edited — an edited
-    file still loads, so upgrading must not silently stop describing it.
+    Only while ``state["packs"]`` is None and something is already installed
+    (an existing machine; a fresh one starts with every pack off). On such a
+    machine EVERY pack is enabled, not just those with files present: before
+    packs, heal reinstalled any missing bundled file, so a partial install
+    (a deleted rules file, a pack with no tooldef) must come out of an upgrade
+    with the whole pack, never silently without it.
     """
-    if state[PACKS_KEY] is not None:
+    if state[PACKS_KEY] is not None or state.get("broken"):
         return []
-    return sorted(
-        e.name for e in REGISTRY.values()
-        if e.kind == "pack" and any(
-            f in installed.get(section, set())
-            for section in ("rules", "tooldefs") for f in getattr(e, section)
-        )
-    )
+    if not any(installed.get(section) for section in ("rules", "tooldefs")):
+        return []
+    return sorted(e.name for e in REGISTRY.values() if e.kind == "pack")
 
 
-def effective_state(path: Path, rules_dir: Path, tooldefs_dir: Path) -> Dict[str, Optional[List[str]]]:
+def effective_state(path: Path, rules_dir: Path, tooldefs_dir: Path) -> Dict[str, Any]:
     """Read-only view of the state: an undecided (pre-packs) file reads as what
     the next heal will record, so no reader sees a pack as off while its files
     are still live."""
     state = read_state(path)
-    if state[PACKS_KEY] is None:
+    if state[PACKS_KEY] is None and not state["broken"]:
         state[PACKS_KEY] = migrate_packs(state, {
             "rules": {p.name for p in rules_dir.glob("*.yaml")},
             "tooldefs": {p.name for p in tooldefs_dir.glob("*.yaml")},

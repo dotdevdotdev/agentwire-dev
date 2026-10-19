@@ -22,6 +22,10 @@ PROBES = {
     "infrastructure": "terraform destroy -auto-approve",
 }
 
+# Destructive generic ops that used to live in a pack: a fresh install (every
+# pack off) must still refuse them.
+DEFAULT_PROTECTED = ["gh repo delete o/r", "npm unpublish left-pad"]
+
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
@@ -83,6 +87,9 @@ def test_fresh_install_has_groups_not_packs(home):
     assert not wrong, wrong
     assert packs.read_state(safety_commands.DAMAGECONTROL_FILE)["packs"] == []
     assert set(decisions().values()) == {"allow"}
+    weak = [c for c in DEFAULT_PROTECTED
+            if safety_commands.check_command_safety(c)["decision"] != "block"]
+    assert not weak, weak
 
 
 def test_upgrade_of_old_install_changes_no_decision(home):
@@ -177,7 +184,7 @@ def test_write_state_preserves_comments_and_other_keys(tmp_path):
     text = f.read_text()
     assert "# keep me" in text and "- git.push" in text and "allowed_paths: []" in text
     state = packs.read_state(f)
-    assert state == {"packs": ["aws", "gcp"], "disabled_groups": ["remote"]}
+    assert (state["packs"], state["disabled_groups"]) == (["aws", "gcp"], ["remote"])
 
 
 def test_overview_suggests_only_when_vendor_cli_present(home, monkeypatch):
@@ -185,3 +192,41 @@ def test_overview_suggests_only_when_vendor_cli_present(home, monkeypatch):
     rows = {r["name"]: r for r in safety_packs_cli.overview()}
     suggested = sorted(n for n, r in rows.items() if r["suggest_enable"])
     assert suggested == ["containers"]
+
+
+def test_partial_old_install_comes_out_of_upgrade_whole(home):
+    """A pack with a file deleted (or no tooldef) must not lose the pack: before
+    packs, heal reinstalled any missing bundled file."""
+    install_old_layout()
+    (safety_commands.RULES_DIR / "databases.yaml").unlink()
+    (safety_commands.RULES_DIR / "aws.yaml").unlink()
+    (safety_commands.TOOLDEFS_DIR / "aws.yaml").unlink()
+    safety_commands.heal_damage_control(quiet=True)
+    assert {"databases.yaml", "aws.yaml"} <= installed("rules")
+    assert "aws.yaml" in installed("tooldefs")
+    assert decisions()["databases"] != "allow" and decisions()["aws"] != "allow"
+
+
+def test_malformed_policy_file_is_read_protectively_and_never_written(home, capsys):
+    install_old_layout()
+    bad = "packs: [aws\nenabled: true\n"
+    safety_commands.DAMAGECONTROL_FILE.write_text(bad)
+    summary = safety_commands.heal_damage_control(quiet=True)
+    assert safety_commands.DAMAGECONTROL_FILE.read_text() == bad
+    assert not summary["rules_removed"] and not summary["tooldefs_removed"]
+    assert installed("rules") >= bundled_files(PKG)["rules"]
+    assert safety_commands.rules_drift()  # drift/doctor paths do not raise
+    assert safety_packs_cli.cmd_packs_enable(SimpleNamespace(name="gcp")) == 1
+    assert safety_commands.DAMAGECONTROL_FILE.read_text() == bad
+    from agentwire.doctor_cli import _render_damage_control_section
+    _render_damage_control_section()
+    assert "does not parse" in capsys.readouterr().out
+
+
+def test_disabled_git_group_is_reported_as_disabled_not_a_typo(home):
+    from agentwire.safety.lint import split_missing_ids
+    safety_commands.heal_damage_control(quiet=True)
+    safety_packs_cli.cmd_groups_disable(SimpleNamespace(name="git"))
+    unknown, by_group = split_missing_ids(["git.commit", "gh.pr-create", "git.no-such-typo-xyz".replace("git.", "nosuch.")])
+    assert by_group == {"git.commit": "git", "gh.pr-create": "git"}
+    assert unknown == ["nosuch.no-such-typo-xyz"]

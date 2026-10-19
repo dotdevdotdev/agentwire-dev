@@ -57,9 +57,41 @@ class PostureReport:
     findings: list[PostureFinding] = field(default_factory=list)
     grant_errors: list[str] = field(default_factory=list)
     unknown_grants: list[str] = field(default_factory=list)
+    # id -> disabled group that owns it: inert by the owner's choice, not a typo.
+    group_disabled_grants: dict = field(default_factory=dict)
 
     def __bool__(self) -> bool:
-        return bool(self.findings or self.grant_errors or self.unknown_grants)
+        return bool(self.findings or self.grant_errors or self.unknown_grants
+                    or self.group_disabled_grants)
+
+
+def disabled_group_of(rule_id: str) -> Optional[str]:
+    """The opted-out default group whose files mint ``rule_id`` (ids are
+    ``<file-stem>.<slug>``), or None."""
+    from ..safety_commands import DAMAGECONTROL_FILE, RULES_DIR, TOOLDEFS_DIR
+    from . import packs
+    from .groups import REGISTRY
+
+    state = packs.effective_state(DAMAGECONTROL_FILE, RULES_DIR, TOOLDEFS_DIR)
+    stem = rule_id.split(".", 1)[0]
+    for e in REGISTRY.values():
+        if packs.entry_active(e, state):
+            continue
+        if any(Path(f).stem == stem for f in (*e.rules, *e.tooldefs)):
+            return e.name
+    return None
+
+
+def split_missing_ids(ids: list[str]) -> tuple[list[str], dict]:
+    """``(really_unknown, {id: disabled_group})`` for ids that name no live rule."""
+    unknown, by_group = [], {}
+    for rid in ids:
+        group = disabled_group_of(rid) if rid else None
+        if group:
+            by_group[rid] = group
+        else:
+            unknown.append(rid)
+    return unknown, by_group
 
 
 # Commands worth extracting from prose. Deliberately a small, high-signal list:
@@ -154,8 +186,8 @@ def lint_task_posture(
         for p in config.get(key, [])
         if isinstance(p, dict)
     }
-    report.unknown_grants = sorted(
-        rid for rid in task_grants if rid and rid not in known_ids
+    report.unknown_grants, report.group_disabled_grants = split_missing_ids(
+        sorted(rid for rid in task_grants if rid and rid not in known_ids)
     )
 
     if grants is None:
@@ -241,6 +273,9 @@ def render_report(report: PostureReport, label: str) -> list[str]:
         lines.append("unattended_allow names rule ids that do not exist in the loaded rules:")
         lines.extend(f"  - {rid}" for rid in report.unknown_grants)
         lines.append("  (a grant naming no rule is inert — check for tooldef/rule drift, #916)")
+    if report.group_disabled_grants:
+        lines.append("unattended_allow names rules from a DISABLED group (inert by your choice, not a typo):")
+        lines.extend(f"  - {rid} (group '{g}' disabled)" for rid, g in sorted(report.group_disabled_grants.items()))
     if report.findings:
         exact = [f for f in report.findings if f.exact]
         fuzzy = [f for f in report.findings if not f.exact]

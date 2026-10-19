@@ -550,8 +550,13 @@ def _render_damage_control_section() -> int:
     # Rule groups and packs (#1141): informational only, never scored — a
     # disabled pack is a choice, not drift.
     try:
+        from agentwire.safety import packs as _packs
         from agentwire.safety_packs_cli import overview
-
+        broken = _packs.read_state(safety_commands.DAMAGECONTROL_FILE)["broken"]
+        if broken:
+            print(f"  [!!] {broken}")
+            print("       Fix: repair ~/.agentwire/damagecontrol.yml (nothing is migrated or removed meanwhile)")
+            issues += 1
         rows = overview()
         on = [r["name"] for r in rows if r["kind"] == "pack" and r["enabled"]]
         off = [r["name"] for r in rows if r["kind"] == "pack" and not r["enabled"]]
@@ -644,13 +649,20 @@ def _render_damage_control_section() -> int:
     # It surfaces as scheduled tasks blocked on `git commit`, reported as a
     # timeout. Rules drift is already reported above; tooldefs were not.
     try:
-        from .safety.lint import load_effective_config, unattended_defaults_missing
+        from .safety.lint import (
+            load_effective_config,
+            split_missing_ids,
+            unattended_defaults_missing,
+        )
         cfg, label = load_effective_config()
-        inert = unattended_defaults_missing(cfg)
+        inert, by_group = split_missing_ids(unattended_defaults_missing(cfg))
     except Exception as e:
         print(f"  [..] Could not evaluate unattended default grants: {e}")
-        inert = []
+        inert, by_group = [], {}
     else:
+        if by_group:
+            print("  [..] Built-in unattended grants unavailable because their group is disabled: "
+                  + ", ".join(f"{r} (group '{g}')" for r, g in sorted(by_group.items())))
         if inert:
             print(f"  [!!] Built-in unattended grants naming NO live rule: {', '.join(inert)}")
             print(f"       Loaded: {label}")

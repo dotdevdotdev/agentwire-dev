@@ -28,7 +28,8 @@ _ENTRIES = (
     # --- default groups -----------------------------------------------------
     Entry("control-plane", "group", "Protected damage-control/agent config paths", ("control-plane.yaml",), kernel=True),
     Entry("core", "group", "Filesystem, process and history destruction", ("core.yaml",), kernel=True),
-    Entry("git", "group", "Destructive git operations + git/gh/uv tooldefs", ("git.yaml",), ("git.yaml", "gh.yaml", "uv.yaml")),
+    Entry("git", "group", "Destructive git operations, gh repo delete + git/gh/uv tooldefs", ("git.yaml",), ("git.yaml", "gh.yaml", "uv.yaml")),
+    Entry("registry", "group", "npm unpublish + npm publish ask-tier", ("registry.yaml",), ("npm.yaml",)),
     Entry("agentwire", "group", "AgentWire state and session destruction", ("agentwire.yaml",)),
     Entry("payloads", "group", "Rules scanning payloads wrapped in other commands", ("payloads.yaml",)),
     Entry("remote", "group", "ssh-only remote hazards (reboot, service stop)", ("remote.yaml",)),
@@ -38,11 +39,11 @@ _ENTRIES = (
     Entry("aws", "pack", "AWS CLI", ("aws.yaml",), ("aws.yaml",), binaries=("aws",)),
     Entry("gcp", "pack", "gcloud", ("gcp.yaml",), ("gcp.yaml",), binaries=("gcloud",)),
     Entry("firebase", "pack", "Firebase CLI", ("firebase.yaml",), binaries=("firebase",)),
-    Entry("cloud-hosting", "pack", "Vercel, Netlify, Cloudflare, Heroku, Fly, DO, Supabase (+ gh repo delete)", ("cloud-hosting.yaml",), binaries=("vercel", "netlify", "wrangler", "heroku", "flyctl", "doctl", "supabase")),
+    Entry("cloud-hosting", "pack", "Vercel, Netlify, Cloudflare, Heroku, Fly, DO, Supabase", ("cloud-hosting.yaml",), binaries=("vercel", "netlify", "wrangler", "heroku", "flyctl", "doctl", "supabase")),
     Entry("databases", "pack", "Database CLIs and SQL", ("databases.yaml",), binaries=("psql", "mysql", "mongosh", "redis-cli")),
     Entry("containers", "pack", "Docker and Kubernetes", ("containers.yaml",), ("docker.yaml", "kubectl.yaml"), binaries=("docker", "kubectl")),
     Entry("infrastructure", "pack", "Terraform, Pulumi, Serverless, SAM", ("infrastructure.yaml",), ("terraform.yaml",), binaries=("terraform", "pulumi", "serverless", "sam")),
-    Entry("publish", "pack", "Package registry publish + npm", ("publish.yaml",), ("npm.yaml",), binaries=("npm", "twine")),
+    Entry("publish", "pack", "cargo/poetry/twine/pnpm/yarn/gem/mvn publish", ("publish.yaml",), binaries=("cargo", "poetry", "twine", "pnpm", "yarn", "gem", "mvn")),
 )
 
 REGISTRY: Dict[str, Entry] = {e.name: e for e in _ENTRIES}
