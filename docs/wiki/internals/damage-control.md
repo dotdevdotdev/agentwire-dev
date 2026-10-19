@@ -1290,10 +1290,8 @@ a data consumer that can itself run a command line, except `sed` and `git` above
 `git config <exec-key> <value>` set-form asks since #1133 and its value is rescanned (#1136); `git rebase -x` and
 `GIT_SEQUENCE_EDITOR` ask via the git.rebase rule); any tool not in the
 tables asks; Makefile/justfile recipe text from a plain file is undecidable);
-a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}
-x`), `alias a=eval; a x`, `$1 x` outside a `-c` payload, `e${x}val`, a name
-assigned in another command, program text from a producer other than
-`echo`/`printf`/heredoc/here-string (`cat file | sh`, `curl … | sh`),
+a name assigned in another command (a bare `$X` that this command does not
+define is an environment name and passes — see *Indirect verbs* below),
 `parallel '{eval} {}'`, and a call
 inside `$(…)`, which the substitution path judges. Command-position use is
 *always* unverifiable; a literal operand is not re-scanned as a command. With
@@ -1924,6 +1922,59 @@ exact-shape pins for the stripper.
 **Declared residuals:** a substitution in a
 case pattern is ask-tier, never allowed.
 
+### Indirect verbs and unreadable producers (batch 4)
+
+A verb the shell computes cannot be read, so it is **resolved** from what the
+same command defines and the result is judged by the same engine
+(`_indirect_verbs` feeds `_hidden_commands`; `_decide_command` recurses, so a
+resolved verb is decided exactly as typed — also inside `sh -c`/`ssh` payloads,
+which are walked too). Resolved: literal scalars and `export`s (multi-valued if
+assigned twice), literal arrays (`${a[0]}`, `${a[@]}`, any index), `for`/`select`
+lists (brace-expanded), `alias n=v`, and functions — a call substitutes its
+arguments for `$1…`, `"$@"`, `$#` in the body and rescans it. Concatenation
+resolves too: `x=ev;y=al; $x$y '…'` is the builtin.
+
+What cannot be resolved asks (`core.indirect-verb`, `unverifiable`: never
+granted, never demoted by bypass, a block unattended) in exactly three cases:
+the variable is filled by the command itself from a substitution / `read` /
+`mapfile` / a glob or `$(…)` loop list; the head glues expansions or literals
+around one (`e${x}val`, `$a$b`); or the command names a control-plane path and
+the head is any expansion it does not define. A bare environment name
+(`$CC -o x`, `$EDITOR f`, `$VENV/bin/python`, `${HOME}/bin/t`, `"$@"` in a
+function that is only defined) is how scripts run programs and passes.
+
+**Measurement** (replay of `~/.agentwire/logs/damage-control`, 6,563 distinct
+Bash commands over 9 days, bundled rules, fake HOME — one fleet's own
+damage-control work dominates it, so read it as a floor on benign shapes, not a
+census): a `$VAR` in command position occurs in ~230 commands, 222 of them a
+same-command literal (`P=<path>/python; $P …`, `M=./mutate.sh; $M`), which
+resolution now judges instead of passing unread; 8 are truly unresolved
+(loop/substitution-filled). `$CC` / `$EDITOR` / `"$@"` as the verb: **0**, so
+the "bare environment name passes" carve-out costs nothing measurable and an
+ask there would be a silent loop for an unattended run. `alias` used as a verb:
+1; a function called in-command: ~490 rows, one repeated mutation-test script.
+`curl|wget … | sh`: 0 executions (3 rows are prose inside an issue/prompt body);
+`cat … | sh`: 0 executions. **Replay before/after: 2 diffs in 6,563, both
+`ask → ask`** (a command that already asked via `core.ambiguous-command`, whose
+verb is a `PY=$(…)`-filled variable, now asks unverifiably instead of
+bypass-demotably); 0 allow→ask, 0 →block.
+
+**Unreadable producers.** `echo`/`printf`/heredoc/here-string feeds are read and
+judged (above). Any other producer piped into a program-reading shell or
+interpreter (`bash`, `sh`, `python3 -`, `sudo bash -s`; not `-c`, not a script
+operand): a **download** (`curl|wget|fetch|aria2c|http|xh` anywhere in the
+pipeline) is a **block** (`core.fetched-program-pipe` — the classic remote-code
+run; the fix is to download, read, run the file, which no rule touches, and
+the measured use is zero); a file or another command's output is an
+`unverifiable` ask (`cat setup.sh | bash` → `bash setup.sh`). `curl … | jq`,
+`| python3 -c '…'`, `| sh -c 'wc'` and `curl -o f u && sh f` are unaffected.
+
+Declared residuals: a function or alias defined in a *previous* command, a
+variable set in another command, `declare -n` namerefs, and arithmetic /
+`${x:-y}` / `${!x}` heads (treated as environment names, so they pass unless
+the command names a control-plane path). Test:
+`tests/unit/test_damage_control_indirect_verbs.py`.
+
 ### Hidden commands are judged as commands (#1136)
 
 Text another program RUNS is a command in its own right, whatever carries it:
@@ -1961,7 +2012,7 @@ still asks, by the docker write-tier rule.
 
 **Declared residuals (undecidable statically, or text a program produces):**
 `sed e` with no operand and `awk system($0)` run input data; `awk -f prog` /
-`sed -f script` are files; `cat x.sh | sh` and other non-`echo` producers; an
+`sed -f script` are files; an
 interpreter's stdin on a LOCAL run (`echo 'os.execute(…)' | lua`, `lua <<< …`,
 `… | python3`, `python3 - <<EOF`) is judged by the protected-path net only, not
 the general verb rules (a prose literal in a heredoc script would otherwise

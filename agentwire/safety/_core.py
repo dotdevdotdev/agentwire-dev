@@ -4422,8 +4422,382 @@ def _hidden_commands(command: str, rules: bool = False) -> List[str]:
     reading an interpreter's stdin as shell text too, as it always has (fail-closed net).
     """
     return list(dict.fromkeys(
-        _stdin_program_commands(command, rules) + _procsub_bodies(command) + _exec_payload_commands(command, rules)
+        _stdin_program_commands(command, rules)
+        + _procsub_bodies(command)
+        + _exec_payload_commands(command, rules)
+        + _indirect_verbs(command)[0]
     ))[:_RESCAN_FANOUT]
+
+
+#
+# INDIRECT VERBS (batch 4 of the DC residuals)
+#
+# A verb the shell computes is a verb nothing here can read: ``${cmds[0]} x``,
+# ``alias a=touch; a x``, ``f() { $1 x; }; f touch``, ``x=ev;y=al; $x$y '…'``,
+# ``for c in touch rm; do $c x; done``. Two answers, in this order:
+#
+#   1. RESOLVE what the same command defines — literal scalars, literal arrays,
+#      for-lists, aliases, function bodies — and judge each resolved command by
+#      the SAME engine (``_decide_command`` recurses through ``_hidden_commands``),
+#      so a resolved verb is decided exactly as it would be typed.
+#   2. What cannot be resolved ASKS (``unverifiable``, never granted, never
+#      demoted by bypass) — but only where the shape says the verb is truly
+#      unknown: a variable the command itself fills from a substitution / read /
+#      glob, a verb spelled by gluing expansions (``e${x}val``), or ANY
+#      unresolved verb in a command that names a guarded path. A plain
+#      environment name (``$CC -o x``, ``$EDITOR f``, ``$VENV/bin/python``,
+#      ``"$@"``) is how scripts run programs, and asking on it would be the
+#      silent loop of an unattended run — it passes.
+#
+# Piped programs from a producer the scanner cannot read (``cat x.sh | sh``,
+# ``curl u | sh``) are the same class: fetched-then-run is BLOCKED, file-fed
+# is an ask.
+
+_IND_VALUE = r"""'[^']*'|"[^"]*"|\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`|[^\s;|&()<>]*"""
+_IND_ASSIGN_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:(?:export|readonly|local|declare(?:\s+-[A-Za-z]+)*|typeset)\s+)?"
+    r"([A-Za-z_]\w*)=(" + _IND_VALUE + ")"
+)
+_IND_ARRAY_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:(?:declare|local|typeset)\s+(?:-[A-Za-z]+\s+)*)?([A-Za-z_]\w*)=\(([^()]*)\)")
+_IND_FOR_RE = re.compile(r"\b(?:for|select)\s+([A-Za-z_]\w*)\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b")
+_IND_DYNAMIC_RE = re.compile(r"\b(?:read|mapfile|readarray)\b([^;&|\n]*)|\bprintf\s+-v\s+([A-Za-z_]\w*)")
+_IND_ALIAS_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*alias\s+([\w.@+-]+)=(" + _IND_VALUE + ")")
+_IND_FUNC_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:function\s+)?([A-Za-z_][\w.-]*)\s*(?:\(\s*\))?\s*\{")
+_IND_EXPANSION_RE = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?:\[([^\]]*)\])?\}|([A-Za-z_]\w*))")
+_IND_PURE_HEAD_RE = re.compile(r"""^["']?\$(?:\{[^}]*\}|\w+|[@*#?!$-])["']?(?:/.*)?$""")
+_IND_POSITIONAL_RE = re.compile(r"(\")?\$(?:\{(\d+|[@*#])\}|(\d|[@*#]))(?(1)\")")
+_IND_REDIRECT_TOKEN_RE = re.compile(r"^(?:\d*[<>]+&?\d*-?|&>>?)$")
+_IND_SAFE_WORD_RE = re.compile(r"^[\w@%+=:,./~$*?\[\]{}^-]+$")
+_IND_CANDIDATE_CAP = 16
+# the shell does not alias-expand or function-call these; resolving them would invent verbs
+_IND_NOT_VERBS = frozenset({"alias", "unalias", "function", "export", "local", "declare", "readonly", "typeset", "unset"})
+
+
+def _ind_quote(word: str, raw: bool) -> str:
+    return word if raw or _IND_SAFE_WORD_RE.match(word) else shlex.quote(word)
+
+
+def _ind_literal(value: str) -> Optional[str]:
+    """The text of a quoted/unquoted assignment value, or None when it holds a substitution."""
+    if value[:1] == "'" and value[-1:] == "'" and len(value) >= 2:
+        return value[1:-1]
+    if "$(" in value or "`" in value:
+        return None
+    if value[:1] == '"' and value[-1:] == '"' and len(value) >= 2:
+        value = value[1:-1]
+    return value
+
+
+class _IndirectEnv:
+    """What one command defines for itself: scalars and for-lists (multi-valued), arrays, aliases, functions."""
+
+    def __init__(self, command: str) -> None:
+        self.scalars: Dict[str, List[str]] = {}
+        self.arrays: Dict[str, List[str]] = {}
+        self.dynamic: Dict[str, str] = {}
+        self.aliases: Dict[str, str] = {}
+        self.functions: Dict[str, str] = {}
+        self.body_free = command
+        self._collect_functions(command)
+        text = self.body_free
+        for m in _IND_ARRAY_RE.finditer(text):
+            if "$" in m.group(2) or "`" in m.group(2):
+                self.dynamic[m.group(1)] = "an array filled from an expansion"
+                continue
+            try:
+                self.arrays[m.group(1)] = shlex.split(m.group(2))
+            except ValueError:
+                self.dynamic[m.group(1)] = "an unparsable array"
+        for m in _IND_ASSIGN_RE.finditer(text):
+            name, value = m.group(1), _ind_literal(m.group(2))
+            if value is not None and "$" in value:
+                resolved = self.expand(value)
+                value = resolved[0] if resolved else None
+            if value is None:
+                self.dynamic[name] = "a variable the command fills from a substitution"
+            else:
+                self.scalars.setdefault(name, []).append(value)
+        for m in _IND_FOR_RE.finditer(text):
+            name, items = m.group(1), m.group(2)
+            try:
+                words = shlex.split(items)
+            except ValueError:
+                words = None
+            if words is None or any(re.search(r"[$`*?\[]", w) for w in words):
+                self.dynamic[name] = "a loop variable over a list the shell computes"
+            else:
+                expanded: List[str] = []
+                for w in words:
+                    expanded.extend(_eval_brace_expand(w) if "{" in w else [w])
+                self.scalars.setdefault(name, []).extend(expanded)
+        for m in _IND_DYNAMIC_RE.finditer(text):
+            names = [w for w in (m.group(1) or m.group(2) or "").split() if re.fullmatch(r"[A-Za-z_]\w*", w)]
+            for name in names or ["REPLY"]:
+                self.dynamic[name] = "a variable filled by read"
+        for m in _IND_ALIAS_RE.finditer(text):
+            value = _ind_literal(m.group(2))
+            if value is None:
+                self.dynamic["alias:" + m.group(1)] = "an alias defined from a substitution"
+            else:
+                self.aliases[m.group(1)] = value
+
+    def _collect_functions(self, command: str) -> None:
+        """Function bodies by brace matching; ``body_free`` is the command with each definition blanked."""
+        out, pos = [], 0
+        for m in _IND_FUNC_RE.finditer(command):
+            if m.start() < pos or m.group(1) in _IND_NOT_VERBS or m.group(1) in ("if", "while", "until", "for", "case", "select", "then", "do", "else"):
+                continue
+            has_parens = "(" in command[m.start(1) + len(m.group(1)) : m.end()]
+            if not has_parens and "function" not in command[m.start() : m.start(1)]:
+                continue
+            depth, i, quote = 1, m.end(), ""
+            while i < len(command) and depth:
+                c = command[i]
+                if quote:
+                    if c == "\\" and quote == '"':
+                        i += 1
+                    elif c == quote:
+                        quote = ""
+                elif c in "'\"":
+                    quote = c
+                elif c == "\\":
+                    i += 1
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                i += 1
+            if depth:
+                self.dynamic["function:" + m.group(1)] = "an unterminated function body"
+                continue
+            self.functions[m.group(1)] = command[m.end() : i - 1]
+            out.append(command[pos : m.end(1)] + " :")
+            pos = i
+        out.append(command[pos:])
+        if self.functions:
+            self.body_free = "".join(out) if len(out) > 1 else command
+
+    def expand(self, word: str) -> Optional[List[str]]:
+        """Every literal value ``word`` can take, or None when an expansion in it is not defined here."""
+        results = [word]
+        for m in _IND_EXPANSION_RE.finditer(word):
+            name, index, bare = m.group(1) or m.group(3), m.group(2), m.group(3) is not None
+            if name in self.dynamic:
+                return None
+            if name in self.arrays and not bare:
+                items = self.arrays[name]
+                if index in ("@", "*"):
+                    choices = [" ".join(items)]
+                elif index is not None and index.isdigit():
+                    choices = items[int(index) : int(index) + 1] or [""]
+                else:
+                    choices = items or [""]
+            elif name in self.scalars and (index is None or index == "0"):
+                choices = self.scalars[name]
+            elif name in self.arrays:
+                choices = self.arrays[name][:1] or [""]
+            else:
+                continue  # an environment name: stays in the text for the head classification
+            results = [r.replace(m.group(0), c) for r in results for c in choices][:_IND_CANDIDATE_CAP]
+        return results
+
+    def assignments(self) -> str:
+        """The scalar definitions, replayed ahead of a rebuilt command so its operands still resolve."""
+        return "\n".join(f"{n}={shlex.quote(v[0])}" for n, v in self.scalars.items()) + "\n" if self.scalars else ""
+
+
+def _ind_segments(command: str) -> List[List[Tuple[str, bool, bool]]]:
+    masked, mask_err = _mask_command_substitutions(inert_view(command))
+    return [strip_command_openers(t) for t in _scan_masked_tokens(_strip_heredoc_bodies(command if mask_err else masked))]
+
+
+def _ind_head(toks: List[Tuple[str, bool, bool]]) -> Optional[int]:
+    """Index of the token that names the program: past assignments, redirects and launcher chains."""
+    i, n, prev_option = 0, len(toks), False
+    while i < n:
+        text, fq, _ex = toks[i]
+        if not fq and (_ASSIGN_TOKEN_RE.match(text) or _IND_REDIRECT_TOKEN_RE.match(text)):
+            i += 2 if _IND_REDIRECT_TOKEN_RE.match(text) else 1
+            continue
+        base = text.rsplit("/", 1)[-1]
+        if base in _POSITION_WRAPPERS:
+            prev_option = False
+        elif text.startswith("-") and not fq:
+            prev_option = True
+        elif prev_option or text[:1].isdigit():
+            prev_option = False
+        else:
+            return i
+        i += 1
+    return None
+
+
+def _ind_rebuild(toks: List[Tuple[str, bool, bool]], head: int, replacement: List[str]) -> str:
+    words = [_ind_quote(t, not fq and (bool(_IND_REDIRECT_TOKEN_RE.match(t)) or "$" in t)) for t, fq, _ex in toks[:head]]
+    words += [_ind_quote(w, False) for w in replacement]
+    words += [_ind_quote(t, not fq and (bool(_IND_REDIRECT_TOKEN_RE.match(t)) or "$" in t)) for t, fq, _ex in toks[head + 1 :]]
+    return " ".join(words)
+
+
+def _ind_function_call(body: str, args: List[str]) -> str:
+    """A function body with its positional parameters replaced by the call's arguments."""
+    quoted = [_ind_quote(a, False) for a in args]
+
+    def sub(m: "re.Match[str]") -> str:
+        key = m.group(2) or m.group(3)
+        if key in ("@", "*"):
+            return " ".join(quoted)
+        if key == "#":
+            return str(len(args))
+        idx = int(key)
+        return quoted[idx - 1] if 0 < idx <= len(quoted) else ""
+
+    return _IND_POSITIONAL_RE.sub(sub, body)
+
+
+def _indirect_verbs(command: str, guarded: bool = False, _depth: int = 0) -> Tuple[List[str], Optional[str]]:
+    """``(resolved commands, unresolved reason)`` for every computed verb in ``command``."""
+    if _depth > _RESCAN_DEPTH or (
+        "$" not in command and "alias" not in command and "()" not in command and "function" not in command
+    ):
+        return [], None
+    env = _IndirectEnv(command)
+    resolved: List[str] = []
+    unresolved: Optional[str] = None
+    for toks in _ind_segments(env.body_free):
+        head = _ind_head(toks)
+        if head is None:
+            continue
+        text, _fq, ex = toks[head]
+        if ex or text in _IND_NOT_VERBS or _CMD_SUBST_SENTINEL in text:
+            continue  # a substitution in the verb slot is the concealment path's, not this one's
+        args = [t for t, _f, _e in toks[head + 1 :]]
+        if text in env.functions:
+            resolved.append(env.assignments() + _ind_function_call(env.functions[text], args))
+            continue
+        if text in env.aliases:
+            try:
+                replacement = shlex.split(env.aliases[text])
+            except ValueError:
+                replacement = []
+            if replacement:
+                resolved.append(env.assignments() + _ind_rebuild(toks, head, replacement))
+            continue
+        if "alias:" + text in env.dynamic:
+            unresolved = unresolved or env.dynamic["alias:" + text]
+            continue
+        if "$" not in text:
+            continue
+        names = [m.group(1) or m.group(3) for m in _IND_EXPANSION_RE.finditer(text)]
+        why = next((env.dynamic[n] for n in names if n in env.dynamic), None)
+        values = env.expand(text) if why is None else None
+        for value in values or []:
+            if "$" not in value:
+                try:
+                    replacement = shlex.split(value)
+                except ValueError:
+                    replacement = [value]
+                if replacement and replacement != [text]:
+                    resolved.append(env.assignments() + _ind_rebuild(toks, head, replacement))
+            elif why is None and not _IND_PURE_HEAD_RE.match(value):
+                why = "a verb spelled by joining expansions"
+            elif why is None and guarded:
+                why = "an expansion the command does not define, in a command that names a guarded path"
+        if why is not None and unresolved is None:
+            unresolved = why
+    for payload in _shell_payloads(command):
+        inner, why = _indirect_verbs(payload, guarded, _depth + 1)
+        resolved += inner
+        unresolved = unresolved or why
+    return resolved[:_RESCAN_FANOUT], unresolved
+
+
+def _shell_payloads(command: str) -> List[str]:
+    """The ``-c`` text of a shell and the remote command of an ssh in ``command``."""
+    out: List[str] = []
+    for words in _segment_raw_words(command):
+        k = next((j for j, w in enumerate(words) if not _ASSIGN_TOKEN_RE.match(w)), None)
+        head = words[k].rsplit("/", 1)[-1] if k is not None else ""
+        if head in _SHELL_NAMES and head != "su":
+            inner, _rest = _eval_shell_invocation(words[k + 1 :], False)
+            if inner:
+                out.append(inner)
+        elif head in ("ssh", "timeout", "env", "sudo", "nohup", "time"):
+            base, args = _exec_tool(words)
+            if base == "ssh":
+                remote = " ".join(w for w in _ssh_remote_command(args) if w != "--")
+                if remote:
+                    out.append(remote)
+            else:
+                for j, w in enumerate(words[k + 1 :], k + 1):
+                    if w.rsplit("/", 1)[-1] in _SHELL_NAMES and w != "su":
+                        inner, _rest = _eval_shell_invocation(words[j + 1 :], False)
+                        if inner:
+                            out.append(inner)
+                        break
+    return out
+
+
+def _is_fetch_head(stage: str) -> bool:
+    words = strip_command_opener_words(_words(stage))
+    while words and (words[0] in ("sudo", "doas", "command", "exec", "env", "time", "nohup") or _ASSIGN_WORD.match(words[0])):
+        words = words[1:]
+    return bool(words) and os.path.basename(words[0]) in _FETCH_PROGRAMS
+
+
+_FETCH_PROGRAMS = frozenset({"curl", "wget", "fetch", "aria2c", "http", "https", "xh", "lwp-request", "ftp"})
+_PRODUCER_READABLE = frozenset({"echo", "printf"})
+_STDIN_INTERPRETERS = frozenset({"python", "python2", "python3", "perl", "ruby", "node", "php", "deno", "bun"})
+
+
+def _stdin_program_consumer(stage: str) -> bool:
+    """A shell (or interpreter) at the head of ``stage`` with no program of its own: it runs its stdin."""
+    words = [w for w in strip_command_opener_words(_words(stage)) if w not in ("(", ")", "{", "}")]
+    while words and (_ASSIGN_WORD.match(words[0]) or words[0] in ("sudo", "doas", "exec", "env", "command", "time", "nohup", "-E", "-H")):
+        words = words[1:]
+    if not words:
+        return False
+    head, args = os.path.basename(words[0]), words[1:]
+    if head in _SHELL_NAMES - {"su"}:
+        if any(re.fullmatch(r"-[A-Za-z]*c|--command(?:=.*)?", a) for a in args):
+            return False
+        operands = [a for a in args if not a.startswith("-")]
+        return not operands or "-s" in args or any(re.fullmatch(r"-[A-Za-z]*s", a) for a in args)
+    if head in _STDIN_INTERPRETERS:
+        return all(a == "-" for a in args)
+    return False
+
+
+def fed_program_verdict(command: str) -> Optional[Tuple[str, str]]:
+    """``("block"|"ask", why)`` for a pipe whose reader runs a program a producer the scanner cannot read writes.
+
+    ``echo`` / ``printf`` / heredoc / here-string feeds are READ (``_eval_fed_programs``) and judged
+    as commands; anything else is text nothing here can see. A download piped to a shell is the
+    classic remote-code-run, blocked; a file or another command's output is a confirm.
+    """
+    if "|" not in command:
+        return None
+    stages = _pipe_stages(_hide_heredoc_bodies(command, keep_programs=False))
+    verdict: Optional[Tuple[str, str]] = None
+    for k, (op, stage) in enumerate(stages):
+        if op != "|" or not _stdin_program_consumer(stage):
+            continue
+        chain = []
+        j = k - 1
+        while j >= 0:
+            chain.append(stages[j][1])
+            if stages[j][0] != "|":
+                break
+            j -= 1
+        if not chain:
+            continue
+        first = strip_command_opener_words(_words(chain[-1]))
+        if _HERE_STRING_RE.search(chain[-1]) or "<<" in chain[-1] or (first and os.path.basename(first[0]) in _PRODUCER_READABLE):
+            continue
+        if any(_is_fetch_head(s) for s in chain):
+            return "block", "a downloaded program is piped straight into a shell/interpreter"
+        verdict = verdict or ("ask", "a program is piped into a shell from a producer nothing can read")
+    return verdict
 
 
 _REDIRECT_SPELLINGS = (
@@ -8524,8 +8898,34 @@ def _decide_command(
         ):
             verdict = dict(inner, command=command)
             if verdict["decision"] == "block":
-                break
-    return verdict
+                return verdict
+    return _unresolvable_verdict(command, verdict)
+
+
+def _unresolvable_verdict(command: str, verdict: Dict[str, Any]) -> Dict[str, Any]:
+    """Raise ``verdict`` to the strictest of: a computed verb nothing can read, a program piped from an unreadable producer."""
+    fed = fed_program_verdict(command)
+    if fed and fed[0] == "block":
+        return {
+            "decision": "block",
+            "reason": f"Fetched program run unread ({fed[1]}) — download it, read it, then run the file",
+            "pattern": "fetchedProgramPipe",
+            "command": command,
+            "id": "core.fetched-program-pipe",
+        }
+    if verdict["decision"] == "block" or verdict.get("unverifiable"):
+        return verdict
+    why = fed[1] if fed else _indirect_verbs(command, mentions_control_plane(command))[1]
+    if not why:
+        return verdict
+    return {
+        "decision": "ask",
+        "reason": f"Unverifiable command ({why}) — nothing can analyze what this runs, so a human must confirm it (not demoted by bypass)",
+        "pattern": f"ambiguous:{why}",
+        "command": command,
+        "id": "core.indirect-verb",
+        "unverifiable": True,
+    }
 
 
 def _decide_rules(
