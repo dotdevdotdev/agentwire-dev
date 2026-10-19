@@ -8,8 +8,8 @@ import pytest
 
 from agentwire import safety_commands, safety_packs_cli
 from agentwire.safety import packs
-from agentwire.safety.groups import REGISTRY, bundled_files
 from agentwire.safety._core import check_protected_bash_command
+from agentwire.safety.groups import REGISTRY, bundled_files
 
 PKG = Path(safety_commands.__file__).parent
 
