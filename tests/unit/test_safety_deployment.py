@@ -494,8 +494,8 @@ class TestRuleIdUniqueness:
         cfg = load_config(BUNDLED_RULES, BUNDLED_TOOLDEFS)
         patterns = cfg["bashToolPatterns"]
         # 264 -> 257 in #924/#921 (8 remote.yaml ssh twins deleted, 1 rule added)
-        assert len(patterns) == 250
-        assert sum(1 for p in patterns if p.get("anchored")) == 230
+        assert len(patterns) == 258  # +8 in #1133
+        assert sum(1 for p in patterns if p.get("anchored")) == 236
         assert cfg.get("_duplicate_rule_ids") is None
 
     def test_pinned_id_collision_is_detected_by_id(self, tmp_path):

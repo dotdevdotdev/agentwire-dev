@@ -46,6 +46,10 @@ bashToolPatterns:
     bypassable: true
     anchored: true
 
+  - pattern: '\bfind\b.*-(?:exec|execdir|ok|okdir)\s+(?:\S*/)?chmod\s+(?:-[^\s;&|]*\s+)*(?:--\s+)?0?777\b'
+    reason: find -exec chmod 777 (world writable)
+    anchored: true
+
   - pattern: '\bfind\b.*-exec\s+rm\b'
     reason: find -exec rm (deletion via find - use git clean or manual cleanup)
     bypassable: true
@@ -54,11 +58,15 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # PERMISSION CHANGES
   # ---------------------------------------------------------------------------
-  - pattern: '\bchmod\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?0?777\b'
-    pattern_src: '\bchmod\s+{ARGS}0?777\b'
+  # The mode is the first non-flag operand: in `chmod u+x 777` the 777 is a
+  # FILE (#1133). Only option tokens (`-R`, `-v`, `--reference=…`) may precede it.
+  - pattern: '\bchmod\s+(?:-[^\s;&|]*\s+)*(?:--\s+)?0?777\b'
     reason: chmod 777 (world writable)
     anchored: true
 
+  # Recursive stays wide on purpose: with `-R`, an unreadable mode token
+  # (`chmod -R ${m:-x} 777 /`) must not hide a world-writable tree, so 777
+  # ANYWHERE refuses. Price: `chmod -R u+x 777` (a file named 777) still blocks.
   - pattern: '\bchmod\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$).*777'
     pattern_src: '\bchmod\s+{ARGS}(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$).*777'
     reason: recursive chmod 777
@@ -83,8 +91,45 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # PROCESS DESTRUCTION
   # ---------------------------------------------------------------------------
-  - pattern: '\bkill\s+-9\s+-1\b'
+  # `-1` is the all-processes TARGET (pid -1), not SIGHUP, whenever a signal
+  # option accompanies it, in either order (`kill -1 -9`, `kill -s KILL -1`,
+  # `kill -TERM -- -1`). `kill -1 123` (HUP to one pid) stays allowed (#1133).
+  # `-1` anywhere but the FIRST operand is a pid: bash parses options only up
+  # front, so `kill --signal TERM -1`, `kill -s KILL 1 -1`, `kill 123 -1` all
+  # signal every process. (As the first operand it is SIGHUP: `kill -1 123`.)
+  - pattern: '\bkill\s+(?:[^\s;&|]+\s+)+-1(?=[\s;&|)`]|$)'
     reason: kill all processes
+    anchored: true
+
+  # `kill -1 -9`: -1 first, then another option.
+  - pattern: '\bkill\s+-1(?=\s)[^;&|]*?\s-[A-Za-z0-9]'
+    reason: kill all processes
+    anchored: true
+
+  # SIGKILL cannot be handled or cleaned up after; rephrase to a plain `kill`
+  # (SIGTERM) first. Ask, not block: it is a legitimate last resort.
+  - id: core.kill-sigkill
+    pattern: '\bkill\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?:9|KILL|SIGKILL)|-s\s*(?:9|KILL|SIGKILL)|-n\s+9|--signal[=\s]\s*(?:9|KILL|SIGKILL))(?=[\s;&|)`]|$)'
+    pattern_src: '\bkill\s+{ARGS}(?:-(?:9|KILL|SIGKILL)|-s\s*(?:9|KILL|SIGKILL)|-n\s+9|--signal[=\s]\s*(?:9|KILL|SIGKILL))(?=[\s;&|)`]|$)'
+    reason: kill -9 (SIGKILL, no cleanup; use a plain kill first)
+    ask: true
+    anchored: true
+
+  # Deferred execution: the crontab body runs later, unobserved, and a file or
+  # stdin payload is unreadable here. Only listing (`-l`, `-lu me`, `--list`) and `-V` are read-only.
+  - id: core.crontab-install
+    pattern: '(?<![\w.-])(?<!\./)crontab(?=[\s;&|)`]|$)(?![^;&|]*\s(?:-[A-Za-z]*l[A-Za-z]*|--list|-V|--version)(?=[\s;&|)`]|$))'
+    reason: crontab installs or edits scheduled commands
+    ask: true
+    anchored: true
+
+  # `--delete*` removes destination files; `--remove-source-files` removes the
+  # SOURCE after transfer. `--no-delete` and `--max-delete` do not match.
+  - id: core.rsync-delete
+    pattern: '\brsync\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--(?:del|delete[a-z-]*|remove-(?:source|sent)-files)(?=[\s=;&|)`]|$)'
+    pattern_src: '\brsync\s+{ARGS}--(?:del|delete[a-z-]*|remove-(?:source|sent)-files)(?=[\s=;&|)`]|$)'
+    reason: rsync deletes files (--delete*, --remove-source-files)
+    ask: true
     anchored: true
 
   - pattern: '\bkillall\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-9\b'
