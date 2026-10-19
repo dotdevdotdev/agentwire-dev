@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "dfd26d6da44441566c101a5c8abc2e2767eb2d03188e93a749eacb60d9978fca", "generated_at": "2026-10-19T11:35:13Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "18df4b0f1a3326405ab63f431e04ab7600c7c4a32442b3c044bdc9b6a3c75698", "generated_at": "2026-10-19T11:55:42Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -5287,6 +5287,11 @@ PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = [
         r'\bagentwire\s+tasks\s+promote\b',
         "agentwire tasks promote writes the protected .agentwire.tasks.yml — "
         "host-only, run it from your own terminal (not through an agent).",
+    ),
+    (
+        r'\bagentwire\s+safety\s+(?:packs|groups)\s+(?:enable|disable)\b',
+        "agentwire safety packs/groups enable|disable changes damage-control "
+        "policy — host-only, run it from your own terminal (not through an agent).",
     ),
 ]
 
