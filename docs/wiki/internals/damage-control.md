@@ -1942,9 +1942,13 @@ interpreter's stdin on a LOCAL run (`echo 'os.execute(…)' | lua`, `lua <<< …
 `… | python3`, `python3 - <<EOF`) is judged by the protected-path net only, not
 the general verb rules (a prose literal in a heredoc script would otherwise
 block, as `python3 -c` does); a remote interpreter's stdin IS judged.
-Also declared: a here-string after a compound keyword on the SAME line
-(`if true; then sh <<< 'rm -rf xx'; fi`, `for …; do bash <<< …; done`), and a
-wrapper + `-c` + nested here-string (`sudo|env|nohup|timeout N bash -c 'sh <<< "rm -rf xx"'`).
+A here-string behind a same-line compound keyword (`if true; then sh <<< X; fi`,
+`for …; do bash <<< X; done`) and behind wrapper + `-c` (`sudo|env|nohup|timeout N
+bash -c 'sh <<< X'`, also heredoc) are judged like the bare form (#1144): the feed line
+is cut at its last segment break before its opener words are stripped, and the
+`-c` payload scan steps past prefix wrappers. Pinned by
+`test_damage_control_hidden_input_positions.py` (every hidden-input form x every
+opener/wrapper == the top-level decision).
 
 ### A `)` / `;` inside a word's data does not hide the verb (#1119)
 

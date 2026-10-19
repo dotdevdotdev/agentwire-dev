@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "33f11ebb4e4472aedb37164dcb4c5d1010c5472bc516028d9aaa2c12070bdebc", "generated_at": "2026-10-19T00:29:08Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "fb4c8f18001de6ed3705cef671f5e6402f26ec9463d2f4bee9d80d4cbab50ade", "generated_at": "2026-10-19T11:20:32Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -4023,7 +4023,8 @@ def _stdin_program_commands(command: str, rules: bool = False) -> List[str]:
         visible = _hide_heredoc_bodies(command, keep_programs=True)
         for m in _here_strings(visible):  # ``'lua <<< x'`` in a message body is text
             line = visible[visible.rfind("\n", 0, m.start()) + 1 : m.start()]
-            words = _feed_words(line)
+            cut = [b.end() for b in _SEGMENT_BREAK.finditer(line)]  # ``then sh <<< X``: the command after the last break
+            words = _feed_words(line[cut[-1] :] if cut else line)
             emit(" ".join(_words(m.group(1))), words)
     if "|" in command:
         stages = _pipe_stages(_hide_heredoc_bodies(command, keep_programs=False))
@@ -4415,6 +4416,9 @@ def _exec_payload_commands(command: str, rules: bool = False, _depth: int = 0) -
         # A shell's ``-c`` text and an ssh remote command are judged by their own
         # rules where they sit; a hidden command INSIDE them is still hidden.
         k = next((j for j, w in enumerate(words) if not _ASSIGN_TOKEN_RE.match(w)), None)
+        if k is not None:  # ``sudo|env|nohup|timeout N bash -c '…'``: the wrapped shell's payload is hidden too
+            w = _wrapped_command_index(words[k:])
+            k = k + w if w is not None else k
         head = words[k].rsplit("/", 1)[-1] if k is not None else ""
         if head in _SHELL_NAMES and head != "su":
             inner, _rest = _eval_shell_invocation(words[k + 1 :], False)

@@ -3988,7 +3988,8 @@ def _stdin_program_commands(command: str, rules: bool = False) -> List[str]:
         visible = _hide_heredoc_bodies(command, keep_programs=True)
         for m in _here_strings(visible):  # ``'lua <<< x'`` in a message body is text
             line = visible[visible.rfind("\n", 0, m.start()) + 1 : m.start()]
-            words = _feed_words(line)
+            cut = [b.end() for b in _SEGMENT_BREAK.finditer(line)]  # ``then sh <<< X``: the command after the last break
+            words = _feed_words(line[cut[-1] :] if cut else line)
             emit(" ".join(_words(m.group(1))), words)
     if "|" in command:
         stages = _pipe_stages(_hide_heredoc_bodies(command, keep_programs=False))
@@ -4380,6 +4381,9 @@ def _exec_payload_commands(command: str, rules: bool = False, _depth: int = 0) -
         # A shell's ``-c`` text and an ssh remote command are judged by their own
         # rules where they sit; a hidden command INSIDE them is still hidden.
         k = next((j for j, w in enumerate(words) if not _ASSIGN_TOKEN_RE.match(w)), None)
+        if k is not None:  # ``sudo|env|nohup|timeout N bash -c '…'``: the wrapped shell's payload is hidden too
+            w = _wrapped_command_index(words[k:])
+            k = k + w if w is not None else k
         head = words[k].rsplit("/", 1)[-1] if k is not None else ""
         if head in _SHELL_NAMES and head != "su":
             inner, _rest = _eval_shell_invocation(words[k + 1 :], False)
