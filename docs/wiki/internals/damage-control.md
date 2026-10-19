@@ -205,8 +205,14 @@ it would unwrapped:
   `bun`) behind `sudo`/`exec`/`nohup`/`busybox`/`env`/`command`/`--`/`-s`;
   `sudo -s`/`-i` count only as sudo's *own* options (`sudo ls -i` does not).
   With a real remote program (`ssh host cat`, `sudo tee`) stdin is data and is
-  left alone. Other interpreters (`lua`, `tclsh`, …) are not in the list, the
-  same stance the unwrapped inline-interpreter net takes.
+  left alone. The embedded-language interpreters (`lua`, `luajit`, `tclsh`,
+  `wish`, `R`, `Rscript`, `julia`, `groovy`, `osascript`, `expect`) are in the
+  inline-interpreter net too, but read stdin as a program only when handed none
+  of their own (`lua -e '…'` and `lua script.lua` take stdin as data).
+  `mosh` is `ssh` for this purpose. Text piped or heredoc'd to a *remote*
+  interpreter (`… | ssh host python3`, `… | mosh host lua`) is Python/Lua, not
+  shell: it is re-scanned as that interpreter's inline program
+  (`python3 -c '<text>'`), so the same nets and rules apply as when typed.
 - **Heredoc bodies are data for the rewriting passes** (cd / `git -C`
   resolution, glob, brace, redirect and path normalization), quoted delimiter or
   not: a commit body that *describes* `cd <dir> && touch <file>` is not that
@@ -336,15 +342,12 @@ Declared residuals (not statically knowable): paths assembled at runtime
 component that is only `$var`), stdin text produced by anything but
 `echo`/`printf`/a heredoc (`cat file | ssh host`, `bash -c "$(cat x)"` names no
 path until it runs), text that a stdin reader receives through a stage the
-scanner does not model (`… | tee x | ssh host`, `… | mosh host`,
-`… | ssh host xargs -0 sh`), interpreter source piped to a remote interpreter
-(`echo "open('<path>','w')" | ssh host python3` — the text is re-scanned as
-shell, not as python), a `patch` / `git apply` (including `git -C <dir> apply`)
-whose target is named only inside the diff, `sftp get`, `ssh host lua` (and
-other interpreters outside the list), a `cd` written inside interpreter source
-(`perl -e 'system("cd <dir> && touch <file>")'`), a body piped into a
-`sh -c '{}'` placeholder (`cat <<'EOF' | xargs -I{} sh -c '{}'` with the literal
-path in the body), `cd <dir> && rsync -a <file> host:x` (the absolute spelling
+scanner does not model (`… | tee x | ssh host`, `… | ssh host xargs -0 sh`), a
+`patch` / `git apply` (including `git -C <dir> apply`)
+whose target is named only inside the diff, a `cd` written inside interpreter source
+(`perl -e 'system("cd <dir> && touch <file>")'`), an sftp batch read from a
+file (`sftp -b file`; stdin batches' `get` / `!` lines ARE judged),
+`cd <dir> && rsync -a <file> host:x` (the absolute spelling
 is refused too — rsync's source is not distinguished from its destination), a
 `<<$"EOF"` (not recognised as a heredoc, so a body line that is itself
 `cd <dir> && touch <file>` blocks; #1106), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
@@ -1226,18 +1229,15 @@ and known launchers.
   allows).
 
 Residuals, stated plainly. Wrongful asks we accept as the price of the
-direction: an unknown launcher followed by the bare word (`parallel -j4 grep
-eval ::: f`, `flock /tmp/l grep eval f`, `poetry run`, `docker run … grep eval`),
+direction: an unknown launcher followed by the bare word (`chroot / grep eval f`),
 a quoted `'>f'` used as a command name, and a shell invoked with a payload
 that merely mentions the variable (`p=eval; sh -c 'echo $p'`). **Not detected:**
 a data consumer that can itself run a command line, except `sed` and `git` above
-(also: `read c < <(echo …)` — `read c <<< word` and `read c <<'EOF'; eval "$c"` ask via `ambiguous:eval`; `npm exec -c='…'`/`-c…`, `git difftool -x|--extcmd`, `git fetch
---upload-pack` (`git config <exec-key> <value>` set-form asks since #1133; `git rebase -x` and
+(also: `read c < <(echo …)` — `read c <<< word` and `read c <<'EOF'; eval "$c"` ask via `ambiguous:eval`;
+`git config <exec-key> <value>` set-form asks since #1133 and its value is rescanned (#1136); `git rebase -x` and
 `GIT_SEQUENCE_EDITOR` ask via the git.rebase rule); any tool not in the
-tables asks; Makefile/justfile recipe text from a plain file is undecidable)
-(`awk system()`, `python -c os.system`, `perl system`, `vim -c '!…'`, `tar
---to-command`, `rsync -e` — refused **only when the payload names a control-plane
-path** (a text match on the path, not a judgment of the exec shape); a payload guarded by verb rules alone still allows); a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}
+tables asks; Makefile/justfile recipe text from a plain file is undecidable);
+a verb built from pieces (`x=ev; y=al; $x$y z`), an array element (`${cmds[0]}
 x`), `alias a=eval; a x`, `$1 x` outside a `-c` payload, `e${x}val`, a name
 assigned in another command, program text from a producer other than
 `echo`/`printf`/heredoc/here-string (`cat file | sh`, `curl … | sh`),
@@ -1843,8 +1843,53 @@ exact-shape pins for the stripper.
 **Declared residuals:** a glob like `[a-z]*` in the same command as a pipe into a
 shell can expand onto a control-plane name (`echo [a-z]*; echo hi | sh` blocks at
 top level too; false-block direction, not wrapper-specific). A substitution in a
-case pattern is ask-tier, never allowed. `<(rm -rf x)`, `sh <<< 'rm -rf /x'` and a
-heredoc into bash allow for non-control-plane verbs on main too (pre-existing).
+case pattern is ask-tier, never allowed.
+
+### Hidden commands are judged as commands (#1136)
+
+Text another program RUNS is a command in its own right, whatever carries it:
+`<(…)` / `>(…)` bodies (the shell runs them whatever consumes the pipe), a
+heredoc / here-string / `echo`-`printf` pipe into a shell (or into `xargs -I{}
+sh -c '{}'`), and the value of an option or the program of an embedded language:
+
+| carrier | hidden command |
+|---|---|
+| `sed` | the `e command` command (any address form), the replacement of `s/x/<cmd>/e` |
+| `awk`/`gawk`/`mawk` | every string literal (and their concatenation) of a program that uses `system(`, `getline`, or a `|` pipe |
+| `tar` | `--to-command`, `--checkpoint-action=exec=`, `-I`/`--use-compress-program`, `-F`/`--info-script`/`--new-volume-script`, `--rsh-command`, `--rmt-command` |
+| `git` | `difftool -x/--extcmd`, `rebase -x/--exec`, `--upload-pack`/`--receive-pack`/`--exec` (fetch/pull/push/clone/ls-remote/archive), `clone -u`/`-c <exec-key>=`, `grep -O`, `filter-branch --*-filter`, `submodule foreach`, `bisect run`, set-form `config <exec-key> <value>` |
+| `npm exec` / `npx` | `-c`/`--call` |
+| `ssh`/`scp`/`sftp` | `-o ProxyCommand=`/`LocalCommand=`; scp/sftp `-S program` |
+| `sh -c '…'`, `ssh host '…'` | a hidden command *inside* the payload |
+
+`_hidden_commands` collects them; `_decide_command` judges each with the same
+engine that judges it top-level and keeps the strictest verdict, and
+`_derived_commands` feeds the same list to the protected-path scan. So a
+payload's decision inside a carrier equals its decision alone — by
+construction, with no per-rule twin. The outer escape hatch / kill switch ends
+the walk (the hidden command is part of what the user waved through); an inner
+one can never lower the outer verdict. For the general rules an interpreter's
+stdin is NOT shell text (`python3 - <<< 'eval'` runs no eval); only the
+protected-path scan keeps reading it as shell, as before.
+
+`parallel … :::`, `flock LOCK cmd` / `flock LOCK -c 'cmd'` and `docker|podman|nerdctl
+run|exec IMAGE cmd` (also `docker container exec`, `docker compose|docker-compose exec|run`, `kubectl exec POD -- cmd`; `--entrypoint` joins the command; a quoted `parallel 'cmd {}' :::` line is scanned whole) are hidden-command
+carriers for the verb rules too: the launched command is judged as if typed
+(`flock /tmp/l rm -rf /x` blocks like `rm -rf /x`). The eval check models the same
+grammars, so only the eval word's wrongful ask is gone — `docker run alpine ls`
+still asks, by the docker write-tier rule.
+`tests/unit/test_damage_control_hidden_commands.py` is the differential.
+
+**Declared residuals (undecidable statically, or text a program produces):**
+`sed e` with no operand and `awk system($0)` run input data; `awk -f prog` /
+`sed -f script` are files; `cat x.sh | sh` and other non-`echo` producers; an
+interpreter's stdin on a LOCAL run (`echo 'os.execute(…)' | lua`, `lua <<< …`,
+`… | python3`, `python3 - <<EOF`) is judged by the protected-path net only, not
+the general verb rules (a prose literal in a heredoc script would otherwise
+block, as `python3 -c` does); a remote interpreter's stdin IS judged.
+Also declared: a here-string after a compound keyword on the SAME line
+(`if true; then sh <<< 'rm -rf xx'; fi`, `for …; do bash <<< …; done`), and a
+wrapper + `-c` + nested here-string (`sudo|env|nohup|timeout N bash -c 'sh <<< "rm -rf xx"'`).
 
 ### A `)` / `;` inside a word's data does not hide the verb (#1119)
 
