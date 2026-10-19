@@ -151,6 +151,10 @@ def register_safety_parser(subparsers) -> None:
     )
     safety_install.set_defaults(func=cmd_safety_install)
 
+    # safety packs / groups (#1141)
+    from .safety_packs_cli import register_packs_parsers
+    register_packs_parsers(safety_subparsers)
+
     # safety tooldefs
     safety_tooldefs = safety_subparsers.add_parser(
         "tooldefs", help="Browse tool definitions"

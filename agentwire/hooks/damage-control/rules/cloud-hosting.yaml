@@ -92,20 +92,6 @@ bashToolPatterns:
     anchored: true
 
   # ---------------------------------------------------------------------------
-  # GITHUB CLI DESTRUCTIVE OPERATIONS
-  # ---------------------------------------------------------------------------
-  - pattern: '\bgh\s+repo\s+delete\b'
-    reason: gh repo delete (deletes repository)
-    anchored: true
-
-  # ---------------------------------------------------------------------------
-  # PACKAGE REGISTRY DESTRUCTIVE OPERATIONS
-  # ---------------------------------------------------------------------------
-  - pattern: '\bnpm\s+unpublish\b'
-    reason: npm unpublish (removes package from registry)
-    anchored: true
-
-  # ---------------------------------------------------------------------------
   # DEPLOYS (ask: true — outward-facing, caught in unattended sessions)
   # ---------------------------------------------------------------------------
   # A deploy ships code to production. The matching `remove`/`destroy` verbs are

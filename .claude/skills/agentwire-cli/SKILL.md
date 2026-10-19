@@ -286,6 +286,9 @@ agentwire fetch <url> --limit 4000    # cap chars (default 8000, 0 = no limit)
 agentwire safety check "cmd"    # test if command would be blocked
 agentwire safety status         # show pattern counts and recent blocks
 agentwire safety logs           # query audit logs
+agentwire safety packs list|status [--json]   # vendor rule packs (aws, databases, ...): off by default
+agentwire safety packs enable|disable <name>   # HUMAN-ONLY (tty + protected); agents suggest, never run
+agentwire safety groups list|status|enable|disable <g>  # default groups; kernel can't be disabled
 agentwire safety install        # install damage control hooks
 agentwire hooks install         # install permission hook (Claude Code only)
 agentwire hooks uninstall       # remove permission hook (Claude Code only)

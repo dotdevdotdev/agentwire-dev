@@ -34,6 +34,16 @@ BUNDLED_RULES = Path(safety_commands.__file__).parent / "hooks" / "damage-contro
 BUNDLED_TOOLDEFS = Path(safety_commands.__file__).parent / "tooldefs"
 RUNNING_PKG = Path(safety_commands.__file__).parent
 
+
+def _heal_with_cloud_hosting(all_packs=False):
+    """Heal, then enable the cloud-hosting pack (or every pack): the tests use its file as the vehicle."""
+    from agentwire.safety import packs
+    from agentwire.safety.groups import REGISTRY
+    safety_commands.heal_damage_control(quiet=True)
+    on = [n for n, e in REGISTRY.items() if e.kind == "pack"] if all_packs else ["cloud-hosting"]
+    packs.write_state(safety_commands.DAMAGECONTROL_FILE, packs=on)
+    safety_commands.heal_damage_control(quiet=True)
+
 #: Captured before any fixture pins it, so the resolver's own test can assert
 #: against the real implementation rather than the fixture's stub.
 _REAL_CANONICAL = prov.canonical_package_dir
@@ -583,8 +593,8 @@ def _render_doctor():
 class TestDoctorDirection:
     @pytest.fixture(autouse=True)
     def _enabled(self, machine, baselines):
-        safety_commands.heal_damage_control(quiet=True)
-        safety_commands.DAMAGECONTROL_FILE.write_text("enabled: true\n")
+        _heal_with_cloud_hosting()
+        safety_commands.DAMAGECONTROL_FILE.write_text("enabled: true\npacks: [cloud-hosting]\n")
 
     def test_clean_machine_is_clean(self, capsys):
         issues = _render_doctor()
@@ -726,7 +736,7 @@ class TestInstalledPathBehaviour:
         4. the SAME installed file now blocks, by the expected rule id, read out
            of the audit record that hook itself wrote.
         """
-        safety_commands.heal_damage_control(quiet=True)
+        _heal_with_cloud_hosting(all_packs=True)
 
         bundled = (BUNDLED_RULES / "cloud-hosting.yaml").read_text()
         stale = bundled.replace(
@@ -765,7 +775,7 @@ class TestInstalledPathBehaviour:
 
     def test_installed_hook_bytes_match_the_package(self, machine):
         """A deployment claim names the path that EXECUTES."""
-        safety_commands.heal_damage_control(quiet=True)
+        _heal_with_cloud_hosting()
         installed = safety_commands.HOOKS_DIR / HOOK
         packaged = BUNDLED_RULES.parent / HOOK
         assert installed.read_bytes() == packaged.read_bytes()
@@ -792,7 +802,7 @@ class TestInstalledPathBehaviour:
         The rules acceptance above proves rule DEPLOYMENT. This proves HOOK
         SCRIPT deployment, which is the half that actually went backwards.
         """
-        safety_commands.heal_damage_control(quiet=True)
+        _heal_with_cloud_hosting()
         target = safety_commands.HOOKS_DIR / HOOK
 
         # A hook that predates the guard: allows everything, stamped older.
@@ -816,7 +826,7 @@ class TestInstalledPathBehaviour:
         replace it with one that allows. If the refusal were cosmetic, the
         protection would be gone after the heal.
         """
-        safety_commands.heal_damage_control(quiet=True)
+        _heal_with_cloud_hosting()
         target = safety_commands.HOOKS_DIR / HOOK
         good = target.read_text()
 

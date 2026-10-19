@@ -77,6 +77,10 @@ When you discover something noteworthy during your work — a technology gotcha,
 
 **Before researching**: call the `wiki_query` MCP tool (`wiki_query("<topic>")`) to see what's already recorded — it returns the top pages with paths + snippets; read them and use existing knowledge first. (From a shell, the same search is `agentwire wiki query "<topic>"`.) When you discover something new, scaffold the page with `agentwire wiki new <category> <name>` and write it in-context.
 
+## Damage-control packs
+
+Core protection is always on; vendor rule packs (aws, gcp, firebase, cloud-hosting, databases, containers, infrastructure, publish) are opt-in and a few default groups can be opted out. When the user's work touches a vendor whose pack is off (`safety_packs_list` shows it), **suggest** `agentwire safety packs enable <name>` and let them run it. Never run `packs|groups enable|disable` yourself — it is human-only and blocked for agents.
+
 ## Notifications
 
 | Tool | What it does |

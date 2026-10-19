@@ -547,6 +547,32 @@ def _render_damage_control_section() -> int:
         if not (missing or outdated or unknown):
             print(f"  [ok] Damage-control {label} installed and match bundled")
 
+    # Rule groups and packs (#1141): informational only, never scored — a
+    # disabled pack is a choice, not drift.
+    try:
+        from agentwire.safety import packs as _packs
+        from agentwire.safety_packs_cli import overview
+        broken = _packs.read_state(safety_commands.DAMAGECONTROL_FILE)["broken"]
+        if broken:
+            print(f"  [!!] {broken}")
+            print("       Fix: repair ~/.agentwire/damagecontrol.yml (nothing is migrated or removed meanwhile)")
+            issues += 1
+        rows = overview()
+        on = [r["name"] for r in rows if r["kind"] == "pack" and r["enabled"]]
+        off = [r["name"] for r in rows if r["kind"] == "pack" and not r["enabled"]]
+        out = [r["name"] for r in rows if r["kind"] == "group" and not r["enabled"]]
+        print(f"  [..] Damage-control packs enabled: {', '.join(on) or '(none)'}")
+        print(f"  [..] Packs available: {', '.join(off) or '(none)'}  "
+              f"(agentwire safety packs enable <name>)")
+        for r in rows:
+            if r["suggest_enable"]:
+                print(f"  [..] {', '.join(r['binaries_found'])} found here — "
+                      f"pack '{r['name']}' is off")
+        if out:
+            print(f"  [..] Opted-out default groups: {', '.join(out)}")
+    except Exception as e:
+        print(f"  [..] Could not read pack state: {e}")
+
     # Files the bundle used to ship and no longer does. Informational: heal
     # never deletes them, and an edited one is the user's own (#1137).
     for section, files in safety_commands.retired_installed().items():
@@ -623,13 +649,20 @@ def _render_damage_control_section() -> int:
     # It surfaces as scheduled tasks blocked on `git commit`, reported as a
     # timeout. Rules drift is already reported above; tooldefs were not.
     try:
-        from .safety.lint import load_effective_config, unattended_defaults_missing
+        from .safety.lint import (
+            load_effective_config,
+            split_missing_ids,
+            unattended_defaults_missing,
+        )
         cfg, label = load_effective_config()
-        inert = unattended_defaults_missing(cfg)
+        inert, by_group = split_missing_ids(unattended_defaults_missing(cfg))
     except Exception as e:
         print(f"  [..] Could not evaluate unattended default grants: {e}")
-        inert = []
+        inert, by_group = [], {}
     else:
+        if by_group:
+            print("  [..] Built-in unattended grants unavailable because their group is disabled: "
+                  + ", ".join(f"{r} (group '{g}')" for r, g in sorted(by_group.items())))
         if inert:
             print(f"  [!!] Built-in unattended grants naming NO live rule: {', '.join(inert)}")
             print(f"       Loaded: {label}")

@@ -1,0 +1,10 @@
+# Package registry damage control (default-on group `registry`, #1141)
+#
+# Vendor-neutral registry operations that must stay protected on a fresh install,
+# independent of whether the `publish` pack is enabled. `npm publish` itself is
+# ask-tier through the npm tooldef, which belongs to this same group.
+
+bashToolPatterns:
+  - pattern: '\bnpm\s+unpublish\b'
+    reason: npm unpublish (removes package from registry)
+    anchored: true

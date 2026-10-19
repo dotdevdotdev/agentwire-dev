@@ -45,10 +45,13 @@ class TestHealIdempotency:
         assert summary["hooks_installed"]          # all DC hook scripts
         assert summary["rules_installed"]          # all bundled rules
         assert summary["matchers_added"] == len(safety_commands.DAMAGE_CONTROL_MATCHERS)
-        # Every bundled rule landed.
+        # Every bundled rule of a default group landed (packs are opt-in, #1141).
+        from agentwire.safety.groups import REGISTRY
         installed = {p.name for p in safety_commands.RULES_DIR.glob("*.yaml")}
         bundled = {p.name for p in safety_commands.get_damage_control_source().glob("*.yaml")}
-        assert bundled <= installed
+        pack_rules = {f for e in REGISTRY.values() if e.kind == "pack" for f in e.rules}
+        assert bundled - pack_rules <= installed
+        assert not pack_rules & installed
 
     def test_second_heal_is_noop(self, fake_env):
         safety_commands.heal_damage_control(quiet=True)
@@ -143,7 +146,7 @@ class TestDoctorDamageControlSection:
         # load_safety_config (#466). Write it directly in the fake home.
         safety_commands.DAMAGECONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
         safety_commands.DAMAGECONTROL_FILE.write_text(
-            f"enabled: {str(bool(enabled)).lower()}\n"
+            f"enabled: {str(bool(enabled)).lower()}\npacks: []\n"
         )
 
     def test_clean_when_healed_and_enabled(self, monkeypatch, capsys):
