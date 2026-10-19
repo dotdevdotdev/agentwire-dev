@@ -275,12 +275,12 @@ it would unwrapped:
   terminator is scanned as commands (a rephrase). So is one whose `$(…)`/backtick span closes before the newline (bash
   runs the next line). A partly quoted delimiter is one word, so `<<'EO'F` ends
   at `EOF` like `<<'E'OF`, and its literal body is data like any quoted
-  heredoc. Declared residuals, all scanned rather than hidden (a rephrase, not a
-  bypass): `<<$"EOF"` / `<<-$"EOF"` (locale-quoted delimiter) is not
-  recognised, so its body is read as commands; a `case … esac` pattern `)`
+  heredoc. `<<$"EOF"` / `<<-$"EOF"` is a locale-quoted delimiter: it quotes like
+  `<<"EOF"`, so its body is data (#1132). Declared residuals, all scanned rather
+  than hidden (a rephrase, not a
+  bypass): a `case … esac` pattern `)`
   inside `$(…)` can end that span early; `<<` inside a nested `$(…)` within
-  `$((…))` is not walked; a single very long line is quadratic in the rule
-  path on main and here (tracked in #1108, not part of this change); `cat <<\EOF | xargs sh -c` (a heredoc body fed to a
+  `$((…))` is not walked; `cat <<\EOF | xargs sh -c` (a heredoc body fed to a
   data-fed program) is allowed, as it already was for the other quote spellings. `tests/unit/test_heredoc_marker_liveness.py` pins both
   halves (non-heredoc contexts × dangerous tails must block; real heredocs'
   prose bodies must keep their decision) and each guard has a mutation that
@@ -310,7 +310,10 @@ re-scanned as a command, so the verb still decides (reads stay allowed):
 - **Redirect operators** `>|`, `>&`, `&>`, `&>>`, `<>` are the same write as `>`
   (the subcommand splitter otherwise reads `>|` as a pipe).
 - **Brace expansion** (`damagecontrol.y{m,x}l`) is exact — every expansion is
-  scanned (a group count past the cap is not expanded: residual).
+  scanned. A group count past the cap (256 variants) cannot be enumerated, so a
+  command that names the control plane AND outgrows the cap is an unbypassable
+  ASK (`core.control-plane-target`, #1132); without a control-plane name it is
+  left to the zero-access fail-closed block it already hit.
 - **Globs and partial expansions** (`damage*.yml`, `damagecontrol.y?l`,
   `damage$x`): the word is matched with shell-glob semantics against the
   concrete protected paths and the real directory listing, and each hit is
@@ -332,6 +335,54 @@ re-scanned as a command, so the verb still decides (reads stay allowed):
   files in that directory (`rm *.yml` there is refused, `cat d*ntrol.yml` is not).
   `~` and `$HOME` are directories for `git -C` / `--work-tree` as well
   (`git -C ~ checkout .agentwire/damagecontrol.yml`).
+- **Path resolution / cwd lane (#1132).** The directory a relative name is
+  read against is resolved from everything the command itself says:
+  `d=~/.agentwire; cd $d && touch damagecontrol.yml` (a literal assignment
+  earlier in the same command, last one wins, a `$(…)` value makes it unknown),
+  `env -C <dir>` / `env --chdir=<dir>` and `patch -d <dir>`, next to `cd` and
+  `git -C`. The `cd` chain regex accepts whitespace inside a prefix assignment
+  (`A=${x:-\n} cd <dir> && …`, `A="a b" cd <dir>`). A command inside
+  `sh -c '…'` / `ssh host '…'` is re-scanned as a command in its own right
+  (`_wrapper_payload_commands`), so the same resolution applies inside the
+  wrapper — the decision equals the top-level one (payload found through
+  `timeout 5`, `sudo -u x`, `env -C d`, `--`, `ssh host -t`, and `\$` inside a
+  double-quoted payload). Redirects on the `cd` (`cd d >/dev/null 2>&1 &&`) do
+  not hide the directory; `env -iC` clusters and nested `env -C a env -C b`
+  resolve; a relative `cd` with no known base (`cd ..`) is unresolved. The
+  unresolvable-`cd` ask is evaluated against the control-plane allowlist, so a
+  default `/tmp/*` allowance cannot waive it. The `patch`/`git apply` read-only
+  flags excuse only the command they sit in, and the verb is matched by basename.
+  Not covered: a symlink alias reached through a `cd` directory the hook's own
+  cwd cannot see (`cd <work> && touch dirlink/…`), and a bare `cd`.
+- **A `cd` the scanner cannot resolve** (`cd -`, `popd`, `cd $x` with `x` not a
+  literal assignment) followed by a distinctive protected NAME that the rest of
+  the command would write (`cd - && touch damagecontrol.yml`) is an ASK that
+  bypass does not demote (`core.control-plane-target`, `unverifiable`;
+  unattended: a block unless the id is granted). Each directory that holds the
+  name is tried as the unknown directory and the text after the `cd` is judged
+  as the refused write it would be there. `settings.json` and `config.yaml`
+  are not "distinctive" (ordinary files everywhere else): `cd $x && sed -i …
+  settings.json` stays allowed. Reads stay allowed.
+- **`patch` / `git apply` / `git am` run in a protected directory** (`cd
+  ~/.agentwire && patch -p0 < x.diff`, `git -C ~/.claude apply x.diff`, `patch
+  -d <dir>`; also `~` itself, where a diff names `.agentwire/…`) ask: the files
+  they rewrite are named only inside the diff. `--dry-run`, `--check`,
+  `--stat`, `--numstat` and `--summary` are reads and stay allowed. Only a
+  literal directory counts: the session cwd and a project's `.damagecontrol.yml`
+  directory are not enumerable.
+- **`rsync` writes its destination only** — the last operand, options may trail
+  it. `rsync -a ~/.agentwire/damagecontrol.yml host:x` reads the file and is
+  allowed; `rsync -a src ~/.agentwire/damagecontrol.yml` is refused.
+- **Aliases.** `ln` / `link` naming a protected file or one of its directories
+  on EITHER side is refused (a symlink or hardlink is how a later
+  `echo x > /tmp/l` reaches the file outside the scan's view); a link to a
+  directory that holds no protected file (`ln -s ~/.agentwire/sessions /tmp/d`)
+  is allowed. At hook time every path word is resolved against the filesystem
+  (`_realpath_variants`: a symlink anywhere in the word, a symlinked directory,
+  or a hardlink to a concrete protected file) and a word that really lands on the
+  control plane is scanned as that file, so an alias made by an earlier command
+  or turn is judged by where it goes (reads stay allowed). At most 64 words
+  per command are resolved.
 - `xargs -I{}` / `parallel` substitute into an interpreter literal
   (`… | xargs -I{} python3 -c 'open("{}","w")'`); because the interpreter net is
   fail-closed for any inline program naming the path, an inline *read* of it is
@@ -342,18 +393,20 @@ Declared residuals (not statically knowable): paths assembled at runtime
 component that is only `$var`), stdin text produced by anything but
 `echo`/`printf`/a heredoc (`cat file | ssh host`, `bash -c "$(cat x)"` names no
 path until it runs), text that a stdin reader receives through a stage the
-scanner does not model (`… | tee x | ssh host`, `… | ssh host xargs -0 sh`), a
-`patch` / `git apply` (including `git -C <dir> apply`)
-whose target is named only inside the diff, a `cd` written inside interpreter source
+scanner does not model (`… | tee x | ssh host`, `… | mosh host`,
+`… | ssh host xargs -0 sh`), interpreter source piped to a remote interpreter
+(`echo "open('<path>','w')" | ssh host python3` — the text is re-scanned as
+shell, not as python), `sftp get`, `ssh host lua` (and
+other interpreters outside the list), a `cd` written inside interpreter source
 (`perl -e 'system("cd <dir> && touch <file>")'`), an sftp batch read from a
-file (`sftp -b file`; stdin batches' `get` / `!` lines ARE judged),
-`cd <dir> && rsync -a <file> host:x` (the absolute spelling
-is refused too — rsync's source is not distinguished from its destination), a
-`<<$"EOF"` (not recognised as a heredoc, so a body line that is itself
-`cd <dir> && touch <file>` blocks; #1106), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
-resolved), a cwd known only from the session or set by `cd $dir` / `cd -` / a
-subshell the command cannot see, `make -C`/`env -C`-style directory options,
-writes through a symlink or hardlink alias, a brace expansion past the cap, a
+file (`sftp -b file`; stdin batches' `get` / `!` lines ARE judged), a body piped into a
+`sh -c '{}'` placeholder (`cat <<'EOF' | xargs -I{} sh -c '{}'` with the literal
+path in the body), a directory taken from `$(pwd)` after a `cd` (ask-tier, not
+resolved), a cwd known only from the session or set inside a subshell the
+command cannot see (an unresolvable `cd` followed by a distinctive protected
+name asks instead — above), `make -C`-style directory options of other tools
+(`make -C <dir> clean` runs a Makefile nobody can read), a symlink or hardlink
+alias created AND written through by the same command from a computed name, a
 derived-command budget exhausted by a pathological command, and the TOCTOU
 window. Directory-extraction spellings `/.`, `//`, `/sub/..`,
 `--one-top-level=` and `bsdtar` are normalized. Pins:
@@ -1782,9 +1835,13 @@ whether `SENTINEL` exists. A control hook that exits 2 at once must block.
 Speed: the protected/zero-access path patterns are prefiltered on the path's
 required literal and `_PATH_ODDITY` is anchored at token starts. This makes
 long UNQUOTED tokens linear (10 k chars: 9.8 s -> 0.2 s) and plain quoted
-strings linear (30 k chars: 0.2 s). Quoted strings full of path-like text are
-still super-linear (30 K of `a/b/` takes ~2 s, a quoted `../` run ~8.5 s); those,
-and runs of `\` or `{a,`, are bounded by the clock budget rather than fixed.
+strings linear (30 k chars: 0.2 s). The glob-word scan (`_glob_tokens`, #1132)
+is one pass over the word runs: the single regex it replaced retried from every
+offset of a long run holding no glob mark, which was the whole cost of a 7 000-
+fold `../` run (4.9 s), a 20 000-fold `\` run (2.1 s) and a 7 000-fold `{a,` run
+(1.8 s) — now 0.6 / 0.3 / 0.5 s, and doubling the input doubles the time for
+quoted and unquoted `../`, `a/b/`, `\` and `{a,` runs alike. The clock budget
+stays the backstop for a shape not yet found, not the mechanism for these.
 A writer verb next to a protected path stays blocked with a long quoted string
 before it, after it, or holding the path, balanced or not (pinned; a differential
 against main over that slice found no decision differences). Known allow, same
@@ -1840,9 +1897,7 @@ sweep, decision equal to top level, in all four kill-switch x unattended states)
 in `tests/unit/test_compound_command_positions.py`, plus must-allow controls and
 exact-shape pins for the stripper.
 
-**Declared residuals:** a glob like `[a-z]*` in the same command as a pipe into a
-shell can expand onto a control-plane name (`echo [a-z]*; echo hi | sh` blocks at
-top level too; false-block direction, not wrapper-specific). A substitution in a
+**Declared residuals:** a substitution in a
 case pattern is ask-tier, never allowed.
 
 ### Hidden commands are judged as commands (#1136)
@@ -1925,13 +1980,7 @@ Pinned by a differential in `tests/unit/test_damage_control_word_spans.py`
 decision, plus the kill-switch-off / unattended states), with must-allow
 controls and scanner-shape pins.
 
-**Declared residuals:** `rm foo -rf /x` (any operand BEFORE the flags) is
-allowed at top level too — the `rm` rules require the flags directly after `rm`
-(core.yaml), so no construct is needed to hide it; that is a rule-regex gap, not
-a tokenizer one. The `cd <dir> && …` chain regex (`\w+=\S*` prefix) misses an
-assignment prefix whose value or subscript contains whitespace/newline
-(`A=${x:-\n} cd ~/.agentwire && touch …`); it lives in the protected-path
-resolution lane (#1121). `normalize_subcommands` / `_scope_segments` still split
+**Declared residuals:** `normalize_subcommands` / `_scope_segments` still split
 with shlex punctuation (their consumers are the raw/unanchored haystacks, which
 see the verb regardless).
 

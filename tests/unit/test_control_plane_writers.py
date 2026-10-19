@@ -69,6 +69,9 @@ def test_bundled_rules_all_loaded(cfg):
 MUST_BLOCK = [
     # plain writers with no flags: the path is just an operand
     "ln -sf /tmp/x @P",
+    # the path as the SOURCE is an alias for it (#1132): a later write reaches the file through the link
+    "ln -s @P /tmp/link",
+    "ln @P /tmp/hardlink",
     "ln /tmp/x @P",
     "cd /tmp && ln -sfn /tmp/x @P",
     "curl -o @P http://e.com/x",
@@ -339,7 +342,6 @@ MUST_ALLOW = [
     "gzip -c @P > /tmp/x.gz",
     "gzip -dc @P.gz",
     "zstd -t @P.zst",
-    "ln -s @P /tmp/link",
     "tar czf /tmp/bak.tgz @P",
     "tar tzf /tmp/a.tgz",
     # xargs / loops / shells whose verb only reads
