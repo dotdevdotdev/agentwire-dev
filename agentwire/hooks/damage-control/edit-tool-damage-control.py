@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "e9a830d328e01bdf4d23489125f62b3420803f8d9d401e9d8204620da50d9f98", "generated_at": "2026-10-19T13:03:51Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "92fb080f8c2b4b33876e7071a3e18d09952d33cdb805cd0a7f5f92af3e415d3e", "generated_at": "2026-10-19T13:03:51Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -5721,24 +5721,209 @@ def _named_control_plane_files() -> List[Tuple[str, "frozenset[str]"]]:
     return [(d, frozenset(names)) for d, names in sorted(by_dir.items())]
 
 
-_INLINE_INTERPRETER_RE = _rx(r'\b' + _INTERPRETERS + r'\b[^\n|;&]*?\s-[A-Za-z]*[ceE]\b')
+_INLINE_FLAG_RE = _rx(r'-[A-Za-z]*[ceE]')
+_INTERPRETER_START_RE = _rx(r'\b' + _INTERPRETERS + r'\b')
+_INTERPRETER_NAME_RE = _rx(r'(?:' + _INTERPRETERS + r')')
 # Words the program text uses for a control-plane directory or file, even when the
 # path itself is assembled at run time (``'damage'+'control.yml'``, ``join(h, '.claude')``).
 _CONTROL_PLANE_WORDS = (".agentwire", ".claude", "damagecontrol", "settings.json")
-# A call that writes, deletes, or runs something, whatever it is handed…
-_INLINE_SINK_RE = _rx(
-    r'\b(?:system|popen|subprocess|Popen|check_call|check_output|exec\w*|spawn\w*|write\w*'
-    r'|append\w*|unlink|rmtree|rename|replace|copy\w*|move|chmod|remove)\b'
-)
-# …and ``open``, which only writes in a write mode.
-_INLINE_OPEN_RE = _rx(r'\b(?:open|Path|File|IO)\s*[.(]')
-_INLINE_WRITE_MODE_RE = _rx(r'''['"](?:[wax][bt+]*|r\+[bt]*|\s*\+?>{1,2}[^'"]*)['"]''')
-# The first argument of a sink that is not one plain string literal: a run-time path.
-_INLINE_NONLITERAL_ARG_RE = _rx(
-    r'''\b(?:open|Path|write\w*|append\w*|system|popen|unlink|remove|rmtree|rename|replace|copy\w*|move'''
-    r'''|chmod|exec\w*|spawn\w*|run|call|check_call|check_output|Popen|join)\s*\(\s*'''
-    r'''(?!(['"])[^'"]*\1\s*[,)])'''
-)
+# Directories under those names that agents write by design.
+_BENIGN_CONTROL_RE = _rx(r'''\.claude/projects/[^'"\s]*?memory[^'"\s]*|\.agentwire/(?:wiki|artifacts)\b[^'"\s]*''')
+_CALL_RE = _rx(r'([A-Za-z_]\w*)\s*\(')
+# one plain string (a double-quoted one with ``$``/``@``/``#{`` interpolates: not literal)
+_LITERAL_ARG_RE = _rx(r'''\s*(?:'[^']*'|"[^"$@#\\]*")\s*''')
+_PLAIN_RECEIVER_RE = _rx(r'''[\w.$:]*''')
+# A call whose FIRST argument is the path (or the command line, for the runners).
+_PATH_FIRST_SINKS = frozenset({
+    "system", "popen", "popen2", "popen3", "Popen", "run", "call", "check_call", "check_output",
+    "unlink", "unlinkSync", "remove", "rmtree", "rmSync", "chmod", "chown", "truncate",
+    "writeFile", "writeFileSync", "appendFile", "appendFileSync", "file_put_contents",
+    "exec", "execv", "execve", "execl", "execlp", "execvp", "spawn", "spawnSync", "execSync", "execFile",
+})
+# A call whose EVERY argument is a path (two ends).
+_PATH_ALL_SINKS = frozenset({
+    "copy", "copy2", "copyfile", "copytree", "copyFile", "copyFileSync", "move", "rename", "renameSync",
+    "replace", "symlink", "symlinkSync", "link", "linkSync",
+})
+# A method whose path is its RECEIVER (``Path(...).write_text``); the arguments are data.
+_RECEIVER_SINKS = frozenset({
+    "write_text", "write_bytes", "touch", "unlink", "symlink_to", "hardlink_to", "rename", "replace", "chmod",
+})
+_FILE_CLASSES = frozenset({"File", "IO", "fs", "Files", "FileUtils"})
+# ``var.replace(a, b)`` / ``items.remove(x)`` are string and list methods: a path-taking name
+# called on a plain identifier counts only when that identifier is a module (``os.replace``).
+_SINK_MODULES = frozenset({
+    "os", "shutil", "subprocess", "fs", "promises", "child_process", "cp", "FileUtils", "File", "IO",
+    "Kernel", "Open3", "posix", "Files", "pathlib", "commands",
+})
+_INDIRECT_RE = _rx(r'\b(?:getattr|__import__|importlib|eval|exec)\s*\(')
+
+
+def _match_close(text: str, i: int) -> int:
+    """Index of the bracket closing ``text[i]``, quotes respected; -1 when unbalanced."""
+    depth, quote, j = 0, "", i
+    while j < len(text):
+        ch = text[j]
+        if quote:
+            if ch == "\\":
+                j += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return -1
+
+
+def _split_args(inner: str) -> List[str]:
+    args, cur, depth, quote, j = [], [], 0, "", 0
+    while j < len(inner):
+        ch = inner[j]
+        if quote:
+            cur.append(ch)
+            if ch == "\\" and j + 1 < len(inner):
+                j += 1
+                cur.append(inner[j])
+            elif ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+            cur.append(ch)
+        elif ch in "([{":
+            depth += 1
+            cur.append(ch)
+        elif ch in ")]}":
+            depth -= 1
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            args.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        j += 1
+    args.append("".join(cur))
+    return [a for a in args if a.strip()]
+
+
+def _receiver_before(text: str, dot: int) -> str:
+    """The expression a ``.method(`` is called on: ``(Path.home()/'x')``, ``Path('x')``, ``os.path``."""
+    pos = dot
+    for _ in range(8):
+        k = pos
+        while k > 0 and text[k - 1].isspace():
+            k -= 1
+        if k > 0 and text[k - 1] in ")]":
+            depth, m = 0, k - 1
+            while m >= 0:
+                if text[m] in ")]}":
+                    depth += 1
+                elif text[m] in "([{":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                m -= 1
+            if m < 0:
+                break
+            while m > 0 and (text[m - 1].isalnum() or text[m - 1] in "_.$"):
+                m -= 1
+            pos = m
+            continue
+        while k > 0 and (text[k - 1].isalnum() or text[k - 1] in "_.$"):
+            k -= 1
+        pos = k
+        break
+    return text[max(pos, dot - 400):dot]
+
+
+def _names_control_plane(expr: str) -> bool:
+    return any(w in _BENIGN_CONTROL_RE.sub("", expr).casefold() for w in _CONTROL_PLANE_WORDS)
+
+
+def _open_writes(args: List[str], mode_index: int) -> bool:
+    """``open(path, mode)`` writes unless its mode is a literal read mode (no mode = read)."""
+    for a in args:
+        m = re.match(r"\s*mode\s*=\s*(.*)", a, re.S)
+        if m:
+            return _mode_writes(m.group(1))
+    return mode_index < len(args) and _mode_writes(args[mode_index])
+
+
+def _mode_writes(mode: str) -> bool:
+    lit = _LITERAL_ARG_RE.fullmatch(mode)
+    return not lit or bool(re.search(r"[wax+>]", mode))
+
+
+def _program_opaque_write(program: str) -> bool:
+    """A program that hands a write/exec sink a run-time path expression that itself names the control plane."""
+    if not _names_control_plane(program):
+        return False
+    if _INDIRECT_RE.search(program):  # getattr(__import__('os'), 'system')(...) hides which sink runs
+        return True
+    for m in _CALL_RE.finditer(program):
+        name = m.group(1)
+        open_at = m.end() - 1
+        close = _match_close(program, open_at)
+        args = _split_args(program[open_at + 1 : close if close > 0 else len(program)])
+        dot = m.start() - 1
+        method = dot >= 0 and program[dot] == "."
+        receiver = _receiver_before(program, dot) if method else ""
+        plain = bool(_PLAIN_RECEIVER_RE.fullmatch(receiver))
+        exprs: List[str] = []
+        if name == "open":
+            if method:  # Path(...).open(mode)
+                if not _open_writes(args, 0):
+                    continue
+                exprs = [receiver]
+            else:
+                perl = len(args) > 1 and args[1].lstrip(" '\"").startswith((">", "+<", "+>"))
+                if not (perl or _open_writes(args, 1)):
+                    continue
+                exprs = args[1:2] if perl else args[:1]
+        elif name in ("write", "binwrite") and receiver.split(".")[-1] in _FILE_CLASSES:
+            exprs = args[:1]
+        elif (name in _PATH_FIRST_SINKS or name in _PATH_ALL_SINKS) and not (
+            method and plain and receiver.split(".")[-1] not in _SINK_MODULES
+        ) and not (not method and name == "replace"):
+            exprs = args[:1] if name in _PATH_FIRST_SINKS else args
+        elif name in _RECEIVER_SINKS and method and not plain:
+            exprs = [receiver] + (args if name in ("rename", "replace", "symlink_to", "hardlink_to") else [])
+        else:
+            continue
+        if method and not plain and name not in _RECEIVER_SINKS and name != "open":
+            exprs.append(receiver)
+        for e in exprs:
+            if not _LITERAL_ARG_RE.fullmatch(e) and _names_control_plane(e):
+                return True
+    return False
+
+
+def _inline_programs(command: str) -> List[str]:
+    """The program text of every inline interpreter in ``command``: its ``-c`` / ``-e`` argument, or its heredoc body."""
+    out: List[str] = []
+    if "<<" in command:
+        for body, _quoted, line in _heredoc_bodies(command):
+            if any(_INTERPRETER_NAME_RE.fullmatch(os.path.basename(w)) for w in _feed_words(line)):
+                out.append(body)
+        command = _hide_heredoc_bodies(command, keep_programs=False)
+    for m in _INTERPRETER_START_RE.finditer(command):
+        try:
+            toks = shlex.split(command[m.start():], posix=True)
+        except ValueError:
+            continue
+        for i, tok in enumerate(toks[1:], 1):
+            if tok in (";", "|", "||", "&&", "&"):
+                break
+            if _INLINE_FLAG_RE.fullmatch(tok) and i + 1 < len(toks):
+                out.append(toks[i + 1])
+                break
+    return out
 
 
 def _opaque_inline_write(command: str) -> Optional[str]:
@@ -5746,25 +5931,17 @@ def _opaque_inline_write(command: str) -> Optional[str]:
 
     ``python3 -c "open(os.path.join(h, '.agentwire', 'damage'+'control.yml'), 'w')"``
     assembles its target at run time — no text match can read it, and no spelling
-    list ever will. The unknowable SHAPE is what is refused: an inline program
-    (``-c`` / ``-e``) whose call sinks take a non-literal first argument AND that
-    mentions a control-plane directory or file name. A literal path is the verb
-    rules' business; a program that never names the control plane, or only reads
-    (``open(p)`` with no write mode), is untouched.
+    list ever will. The unknowable SHAPE is what is refused: in the program text
+    ONLY (the ``-c`` / ``-e`` argument or a heredoc fed to the interpreter, never
+    the rest of the command line), a write/exec sink whose path expression is not
+    one plain literal AND itself names a control-plane directory or file. A
+    literal path is the verb rules' business; a control word elsewhere in the
+    program (a comment, a printed string, data written), a read-only use, and the
+    agent-owned ``.claude/projects/*/memory`` / ``.agentwire/wiki|artifacts`` stay
+    untouched. A control word split across a variable assigned elsewhere in the
+    program is a declared residual.
     """
-    if "<<" in command:  # a heredoc body is data (prose, a script): only an inline ``-c`` argument is the program
-        command = _hide_heredoc_bodies(command, keep_programs=False)
-    m = _INLINE_INTERPRETER_RE.search(command)
-    if not m:
-        return None
-    program = command[m.end():]
-    folded = program.casefold()
-    if not any(w in folded for w in _CONTROL_PLANE_WORDS):
-        return None
-    sink = _INLINE_SINK_RE.search(program) or (
-        _INLINE_OPEN_RE.search(program) and _INLINE_WRITE_MODE_RE.search(program)
-    )
-    if sink and _INLINE_NONLITERAL_ARG_RE.search(program):
+    if any(_program_opaque_write(p) for p in _inline_programs(command)):
         return (
             "an inline interpreter program writes to a path it computes at run time "
             "and names the control plane"

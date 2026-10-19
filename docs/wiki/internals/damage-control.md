@@ -389,18 +389,23 @@ re-scanned as a command, so the verb still decides (reads stay allowed):
   fail-closed for any inline program naming the path, an inline *read* of it is
   refused the same way it is unwrapped.
 
-**Run-time-assembled paths fail closed on SHAPE (#1065).** An inline interpreter
-program (`python/node/perl/ruby/lua/php … -c|-e`) that hands a call sink
-(`open` in a write mode, `write*`, `system`, `subprocess`, `unlink`, `rename`, …) a
-first argument that is not one plain string literal, AND names a control-plane
-directory or file (`.agentwire`, `.claude`, `damagecontrol`, `settings.json`), asks
-(`core.control-plane-target`, unverifiable — bypass does not demote it). The
-path is not decided, the unknowable shape is refused: `open(os.path.join(h,
-'.agentwire', 'damage'+'control.yml'), 'w')` asks, `open('/tmp/x','w')`, a
-program that never names the control plane, and a read-only `open(p)` do not.
-A heredoc body is data and is not read as the program. Measured against the
-6.5 k distinct audit-log commands: one new ask (a test-generating script that
-held both shapes), no other diff.
+**Run-time-assembled paths fail closed on SHAPE (#1065).** The program text is
+taken ONLY from an inline interpreter's `-c`/`-e` argument (`python/node/perl/ruby/lua/php`)
+or a heredoc fed to one — never the rest of the command line. A write/exec sink
+(`open` in a write or non-literal mode, `File.write`, `writeFile*`, `os.system`,
+`subprocess.*`, `unlink`, `shutil.copy/move`, `Path(...).write_text`, a
+`perl open(F, ">…")`) whose path expression is not one plain literal AND itself
+contains a control-plane word (`.agentwire`, `.claude`, `damagecontrol`,
+`settings.json`) asks (`core.control-plane-target`, unverifiable — bypass does
+not demote it). `getattr`/`__import__`/`eval`/`exec` in a program that names the
+control plane asks too (the sink is hidden). Not fired: a control word in a
+comment, a printed string, written data or argv; read-only use; a literal path
+(the verb rules decide it); the agent-owned `.claude/projects/*/memory` and
+`.agentwire/wiki|artifacts`. Measured against 6.85 k distinct audit-log commands:
+exactly one new ask, a scratch-dir script writing `S+"/ks/damagecontrol.yml"` —
+the shape itself, by design. A control word split across a variable assigned
+elsewhere in the program (`d = Path.home()/'.claude'; (d/'x').write_text(..)`)
+is a declared residual.
 
 Declared residuals (not statically knowable): paths assembled at runtime
 beyond that shape (`format`, decoding, `d=$(…); … $d/damagecontrol.yml`, a
@@ -1664,8 +1669,8 @@ decidable shape closed, the rest fails closed or is yours to enforce at the OS*.
 | Residual | State | What decides it |
 |---|---|---|
 | Literal / quoted / escaped / `$HOME` / `~` spellings of a protected path; `ln` / `link` onto one | **Closed** (block) | path ladders, masked subcommands |
-| Existing symlink / hardlink / directory alias of a protected file, incl. a relative word after `cd <dir> &&` | **Closed** (block) | realpath + inode match at hook time (`_realpath_variants`, `_cwd_realpath_variants`) |
-| Brace expansion past the 256-variant cap | **Fail-closed** (block) | `brace_variants` returns None; every path pattern treats it as a hit |
+| Existing symlink / hardlink / directory alias of a protected file (pre-existing); a relative word after `cd <dir> &&` is new | **Closed** (block) | realpath + inode match at hook time (`_realpath_variants`, `_cwd_realpath_variants`) |
+| Brace expansion past the 256-variant cap (pre-existing) | **Fail-closed** (block; ask `core.control-plane-target` when only that check sees it, e.g. a protected path before the braces) | `brace_variants` returns None; path patterns treat it as a hit |
 | Inline interpreter writing to a computed path while naming the control plane | **Fail-closed** (ask, unverifiable) | `_opaque_inline_write` |
 | Unresolvable `cd` then a bare protected name; `patch` / `git apply` in a protected dir | **Fail-closed** (ask) | `unverifiable_target_verdict` |
 | Scan too large / too slow; hook outliving its timeout | **Fail-closed** (ask / block) | size gate, SIGALRM deadline, watchdog |

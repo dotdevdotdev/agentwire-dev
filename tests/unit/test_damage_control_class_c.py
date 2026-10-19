@@ -55,6 +55,11 @@ INLINE_ASKS = [
     "node -e \"require('fs').writeFileSync(p+'/.claude/settings.json','{}')\"",
     "ruby -e \"File.write(dir + '/.agentwire/x', 'y')\"",
     "python3 -c \"import os;os.system('touch '+d+'/.claude/hooks/x')\"",
+    # the sink hides in the receiver, a getattr, a non-literal mode, or a heredoc program
+    "python3 -c \"from pathlib import Path;(Path.home()/'.claude'/'settings.json').write_text('{}')\"",
+    "python3 -c \"getattr(__import__('os'),'system')('echo x > '+h+'/.claude/settings.json')\"",
+    "python3 -c \"open(h+'/.claude/settings.json',m)\"",
+    "python3 - <<'EOF'\nimport os\nopen(os.path.expanduser('~')+'/.claude/'+'settings.json','w')\nEOF",
 ]
 INLINE_ALLOWS = [
     "python3 -c \"import os;open(os.path.join('/tmp','x'),'w')\"",  # no control-plane name
@@ -62,6 +67,15 @@ INLINE_ALLOWS = [
     "python3 -c \"print(open(p+'/.claude/x').read())\"",  # reads only
     "python3 -c \"print(1)\"; echo .claude",
     "cat > notes.md <<'EOF'\npython3 -c \"open(p+'/.claude/x','w')\"\nEOF",  # a heredoc body is prose
+    "cat >> tests/test_env.py <<EOF\nx = 1\nEOF",
+    # the control word is nowhere near a sink's path expression
+    "python3 -c \"import os;open(os.path.join(os.path.expanduser('~/.claude/projects/p/memory'),n),'w').write(t)\"",
+    "python3 -c \"import os;os.makedirs(os.path.join(root,'.claude','x'))\"",
+    "python3 -c \"import shutil,sys;shutil.copy(sys.argv[1],sys.argv[2])\" ~/.claude/a ~/.claude/b",
+    "python3 -c \"import os;open(os.path.join(os.environ['W'],'p.md'),'w').write('~/.agentwire/wiki')\"",
+    "python3 -c \"import json,sys;json.dump(d,open(out,'w'))\" package/settings.json",
+    "ruby -e \"File.write(dir+'/x', IO.read('.claude/CLAUDE.md'))\"",
+    "python3 - <<'PYEOF'\np='docs/a.md'\ns=open(p).read()\nopen(p,'w').write(s.replace('.claude','x'))\nPYEOF",
 ]
 
 
@@ -84,7 +98,7 @@ def test_inline_interpreter_decision_is_the_same_inside_a_wrapper(cfg):
     assert not bad, bad
 
 
-# ---- (b) existing symlink / hardlink aliases, resolved at hook time ------------------------------
+# ---- (b) existing aliases, resolved at hook time (the relative-after-cd cases are new here) --------
 
 
 def test_existing_aliases_of_the_control_plane_are_judged_as_what_they_resolve_to(cfg, home, tmp_path):
@@ -109,6 +123,7 @@ def test_existing_aliases_of_the_control_plane_are_judged_as_what_they_resolve_t
 
 
 def test_in_command_links_onto_the_control_plane_are_refused(cfg, home):
+    """Pin of behavior that predates this change (#1101/#1139); it guards nothing new."""
     cp = home / ".agentwire" / "damagecontrol.yml"
     refused = [
         f"ln -s {cp} /tmp/lnk && echo x > /tmp/lnk",
@@ -125,6 +140,7 @@ def test_in_command_links_onto_the_control_plane_are_refused(cfg, home):
 
 
 def test_over_cap_brace_expansion_never_allows_a_protected_prefix(cfg, home):
+    """Pin of behavior that predates this change; it guards nothing new."""
     big = "{x,y}" * 9  # 512 variants, past the 256 cap
     bad = [
         c
