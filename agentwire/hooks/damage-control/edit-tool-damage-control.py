@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "4479f53fa809b9712d7bffd05e64fad9769f04a074d92a16fbc997a01e9607cb", "generated_at": "2026-10-19T12:48:01Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "e9a830d328e01bdf4d23489125f62b3420803f8d9d401e9d8204620da50d9f98", "generated_at": "2026-10-19T13:03:51Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -5624,25 +5624,49 @@ def _realpath_variants(command: str) -> List[str]:
     """
     out: List[str] = []
     seen = set()
-    home = os.path.expanduser("~")
     for m in itertools.islice(_PATH_WORD.finditer(command), _REALPATH_WORD_CAP):
         word = m.group(0)
         if word in seen or len(word) < 2:
             continue
         seen.add(word)
-        path = os.path.expanduser(word)
-        try:
-            if "/" not in path and not os.path.lexists(path):
-                continue
-            real = os.path.realpath(path)
-            target = real if real != posixpath.normpath(os.path.abspath(path)) and _under_protected(real) else None
-            if target is None and os.path.isfile(path) and os.stat(path).st_nlink > 1:
-                st = os.stat(path)
-                target = next((p for p, ps in _protected_inodes(home) if os.path.samestat(st, ps)), None)
-        except (OSError, ValueError):
-            continue
-        if target and target != path:
+        target = _alias_target(os.path.expanduser(word))
+        if target and target != os.path.expanduser(word):
             out.append(command.replace(word, _quote_word(target)))
+    return out
+
+
+def _alias_target(path: str) -> Optional[str]:
+    """Where ``path`` really lands, when that is a protected file or directory it is only an alias of; else None."""
+    try:
+        if "/" not in path and not os.path.lexists(path):
+            return None
+        real = os.path.realpath(path)
+        if real != posixpath.normpath(os.path.abspath(path)) and _under_protected(real):
+            return real
+        if os.path.isfile(path) and os.stat(path).st_nlink > 1:
+            st = os.stat(path)
+            return next((p for p, ps in _protected_inodes(os.path.expanduser("~")) if os.path.samestat(st, ps)), None)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _cwd_realpath_variants(command: str) -> List[str]:
+    """``_realpath_variants`` for a relative word after a literal ``cd <dir> &&`` (#1065).
+
+    ``cd /tmp/d && echo x > lnk`` names no path until the cwd is applied, and
+    ``_cwd_variants`` only rewrites words that are lexically protected. The
+    aliased word is resolved against the same cwd and judged as what it is.
+    """
+    out: List[str] = []
+    for cwd, rest in _cwd_scopes(command)[0]:
+        for m in itertools.islice(_PATH_WORD.finditer(rest), _REALPATH_WORD_CAP):
+            word = m.group(0)
+            if word.startswith(("/", "~", "-")) or len(word) < 2:
+                continue
+            target = _alias_target(posixpath.normpath(posixpath.join(cwd, word)))
+            if target:
+                out.append(rest.replace(word, _quote_word(target)))
     return out
 
 
@@ -5697,6 +5721,57 @@ def _named_control_plane_files() -> List[Tuple[str, "frozenset[str]"]]:
     return [(d, frozenset(names)) for d, names in sorted(by_dir.items())]
 
 
+_INLINE_INTERPRETER_RE = _rx(r'\b' + _INTERPRETERS + r'\b[^\n|;&]*?\s-[A-Za-z]*[ceE]\b')
+# Words the program text uses for a control-plane directory or file, even when the
+# path itself is assembled at run time (``'damage'+'control.yml'``, ``join(h, '.claude')``).
+_CONTROL_PLANE_WORDS = (".agentwire", ".claude", "damagecontrol", "settings.json")
+# A call that writes, deletes, or runs something, whatever it is handed…
+_INLINE_SINK_RE = _rx(
+    r'\b(?:system|popen|subprocess|Popen|check_call|check_output|exec\w*|spawn\w*|write\w*'
+    r'|append\w*|unlink|rmtree|rename|replace|copy\w*|move|chmod|remove)\b'
+)
+# …and ``open``, which only writes in a write mode.
+_INLINE_OPEN_RE = _rx(r'\b(?:open|Path|File|IO)\s*[.(]')
+_INLINE_WRITE_MODE_RE = _rx(r'''['"](?:[wax][bt+]*|r\+[bt]*|\s*\+?>{1,2}[^'"]*)['"]''')
+# The first argument of a sink that is not one plain string literal: a run-time path.
+_INLINE_NONLITERAL_ARG_RE = _rx(
+    r'''\b(?:open|Path|write\w*|append\w*|system|popen|unlink|remove|rmtree|rename|replace|copy\w*|move'''
+    r'''|chmod|exec\w*|spawn\w*|run|call|check_call|check_output|Popen|join)\s*\(\s*'''
+    r'''(?!(['"])[^'"]*\1\s*[,)])'''
+)
+
+
+def _opaque_inline_write(command: str) -> Optional[str]:
+    """Why an inline interpreter program needs a human: it writes to a path it computes, and names the control plane (#1065).
+
+    ``python3 -c "open(os.path.join(h, '.agentwire', 'damage'+'control.yml'), 'w')"``
+    assembles its target at run time — no text match can read it, and no spelling
+    list ever will. The unknowable SHAPE is what is refused: an inline program
+    (``-c`` / ``-e``) whose call sinks take a non-literal first argument AND that
+    mentions a control-plane directory or file name. A literal path is the verb
+    rules' business; a program that never names the control plane, or only reads
+    (``open(p)`` with no write mode), is untouched.
+    """
+    if "<<" in command:  # a heredoc body is data (prose, a script): only an inline ``-c`` argument is the program
+        command = _hide_heredoc_bodies(command, keep_programs=False)
+    m = _INLINE_INTERPRETER_RE.search(command)
+    if not m:
+        return None
+    program = command[m.end():]
+    folded = program.casefold()
+    if not any(w in folded for w in _CONTROL_PLANE_WORDS):
+        return None
+    sink = _INLINE_SINK_RE.search(program) or (
+        _INLINE_OPEN_RE.search(program) and _INLINE_WRITE_MODE_RE.search(program)
+    )
+    if sink and _INLINE_NONLITERAL_ARG_RE.search(program):
+        return (
+            "an inline interpreter program writes to a path it computes at run time "
+            "and names the control plane"
+        )
+    return None
+
+
 def unverifiable_target_verdict(
     command: str, allowed_paths: List[Dict[str, Any]], depth: int = 0
 ) -> Optional[str]:
@@ -5719,6 +5794,9 @@ def unverifiable_target_verdict(
                 return reason
     if "{" in command and mentions_control_plane(command) and brace_variants(canonicalize_command(command)) is None:
         return "a brace expansion past the cap cannot be enumerated"
+    opaque = _opaque_inline_write(command)
+    if opaque:
+        return opaque
     known, unknown = _cwd_scopes(command)
     for cwd, rest in known:
         if cwd in _protected_dirs() or cwd == os.path.expanduser("~"):
@@ -5783,6 +5861,7 @@ def _derived_commands(command: str) -> List[str]:
         + _glob_variants(visible)
         + _cwd_variants(visible)
         + _realpath_variants(visible)
+        + _cwd_realpath_variants(visible)
     )
     return list(dict.fromkeys(derived))[:_RESCAN_FANOUT]
 
@@ -9133,11 +9212,41 @@ def hard_exit(code: int) -> None:
     os._exit(code)
 
 
-def run_hook_guarded(main: Any) -> None:
-    """Run a hook ``main``; any unexpected exception becomes a blocking exit 2."""
+HOOK_WATCHDOG_SECONDS = 20  # past every scan deadline, well inside HOOK_TIMEOUT_SECONDS
+
+
+def _watchdog_fire() -> None:
+    """The hook outlived its budget: block. Runs on the watchdog thread, so it exits the PROCESS."""
+    hard_exit(_block_exit(f"the hook exceeded its {HOOK_WATCHDOG_SECONDS}s budget"))
+
+
+def run_hook_guarded(main: Any, deadline_seconds: Optional[float] = None) -> None:
+    """Run a hook ``main``; any unexpected exception becomes a blocking exit 2.
+
+    The harness runs a hook that outlives its timeout as NO DECISION, so a hook
+    must answer inside it. Two bounds, independent of each other:
+
+    * ``deadline_seconds`` — the SIGALRM scan deadline (:func:`scan_deadline`)
+      around all of ``main``, for the hooks that do not carry their own per-scan
+      deadline (edit/write/read/mcp; the bash hook's ``check_command`` does).
+      The signal reaches a pattern stuck inside the regex engine, which checks
+      for signals; it needs POSIX and the main thread.
+    * a watchdog thread that exits the process with a block at
+      ``HOOK_WATCHDOG_SECONDS``. It needs neither SIGALRM nor the main thread, so
+      it covers Windows and any wait that releases the GIL (a hung ``stat`` /
+      ``realpath`` on a network mount). It cannot fire while one C call holds the
+      GIL for good (a runaway regex) — that is what the SIGALRM bound is for.
+    """
+    watchdog = threading.Timer(HOOK_WATCHDOG_SECONDS, _watchdog_fire)
+    watchdog.daemon = True
+    watchdog.start()
     code = 0
     try:
-        main()
+        if deadline_seconds is None:
+            main()
+        else:
+            with scan_deadline(deadline_seconds):
+                main()
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else (0 if e.code is None else 2)
     except HookInputError as e:
@@ -9148,6 +9257,7 @@ def run_hook_guarded(main: Any) -> None:
         code = _block_exit("input nested too deeply to analyze safely")
     except BaseException as e:  # KeyboardInterrupt included: never exit 1
         code = _block_exit(f"the hook failed ({type(e).__name__}: {e})")
+    watchdog.cancel()
     hard_exit(code)
 
 

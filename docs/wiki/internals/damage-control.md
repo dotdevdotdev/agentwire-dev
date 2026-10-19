@@ -352,8 +352,9 @@ re-scanned as a command, so the verb still decides (reads stay allowed):
   unresolvable-`cd` ask is evaluated against the control-plane allowlist, so a
   default `/tmp/*` allowance cannot waive it. The `patch`/`git apply` read-only
   flags excuse only the command they sit in, and the verb is matched by basename.
-  Not covered: a symlink alias reached through a `cd` directory the hook's own
-  cwd cannot see (`cd <work> && touch dirlink/…`), and a bare `cd`.
+  An existing alias reached through a literal `cd <dir> &&` is resolved against
+  that directory too (`_cwd_realpath_variants`: `cd /tmp/d && echo x > lnk`).
+  Not covered: a bare `cd`, or a `cd` into a directory the scanner cannot read.
 - **A `cd` the scanner cannot resolve** (`cd -`, `popd`, `cd $x` with `x` not a
   literal assignment) followed by a distinctive protected NAME that the rest of
   the command would write (`cd - && touch damagecontrol.yml`) is an ASK that
@@ -388,9 +389,22 @@ re-scanned as a command, so the verb still decides (reads stay allowed):
   fail-closed for any inline program naming the path, an inline *read* of it is
   refused the same way it is unwrapped.
 
+**Run-time-assembled paths fail closed on SHAPE (#1065).** An inline interpreter
+program (`python/node/perl/ruby/lua/php … -c|-e`) that hands a call sink
+(`open` in a write mode, `write*`, `system`, `subprocess`, `unlink`, `rename`, …) a
+first argument that is not one plain string literal, AND names a control-plane
+directory or file (`.agentwire`, `.claude`, `damagecontrol`, `settings.json`), asks
+(`core.control-plane-target`, unverifiable — bypass does not demote it). The
+path is not decided, the unknowable shape is refused: `open(os.path.join(h,
+'.agentwire', 'damage'+'control.yml'), 'w')` asks, `open('/tmp/x','w')`, a
+program that never names the control plane, and a read-only `open(p)` do not.
+A heredoc body is data and is not read as the program. Measured against the
+6.5 k distinct audit-log commands: one new ask (a test-generating script that
+held both shapes), no other diff.
+
 Declared residuals (not statically knowable): paths assembled at runtime
-(`join`, `chr`, `format`, decoding, `d=$(…); … $d/damagecontrol.yml`, a
-component that is only `$var`), stdin text produced by anything but
+beyond that shape (`format`, decoding, `d=$(…); … $d/damagecontrol.yml`, a
+component that is only `$var`, a program that names none of the four words), stdin text produced by anything but
 `echo`/`printf`/a heredoc (`cat file | ssh host`, `bash -c "$(cat x)"` names no
 path until it runs), text that a stdin reader receives through a stage the
 scanner does not model (`… | tee x | ssh host`, `… | mosh host`,
@@ -408,7 +422,7 @@ name asks instead — above), `make -C`-style directory options of other tools
 (`make -C <dir> clean` runs a Makefile nobody can read), a symlink or hardlink
 alias created AND written through by the same command from a computed name, a
 derived-command budget exhausted by a pathological command, and the TOCTOU
-window. Directory-extraction spellings `/.`, `//`, `/sub/..`,
+window (see [Closed, fail-closed, user-owned](#closed-fail-closed-user-owned-1065)). Directory-extraction spellings `/.`, `//`, `/sub/..`,
 `--one-top-level=` and `bsdtar` are normalized. Pins:
 `tests/unit/test_control_plane_writers.py` (must-block per verb *and* must-allow
 siblings).
@@ -1638,6 +1652,34 @@ silent loop with no screen to show it on.
 
 ---
 
+## Closed, fail-closed, user-owned (#1065)
+
+The single honest statement of what the text hook decides. A PreToolUse hook reads
+the command text before it runs, so anything whose path or verb exists only at run
+time, or whose content is in a file the text merely names, is not decidable by
+tightening rules (the lesson of #913/#915/#917/#921: it moves the bypass to the
+next spelling). The claim is **not** "zero residuals": it is *every statically
+decidable shape closed, the rest fails closed or is yours to enforce at the OS*.
+
+| Residual | State | What decides it |
+|---|---|---|
+| Literal / quoted / escaped / `$HOME` / `~` spellings of a protected path; `ln` / `link` onto one | **Closed** (block) | path ladders, masked subcommands |
+| Existing symlink / hardlink / directory alias of a protected file, incl. a relative word after `cd <dir> &&` | **Closed** (block) | realpath + inode match at hook time (`_realpath_variants`, `_cwd_realpath_variants`) |
+| Brace expansion past the 256-variant cap | **Fail-closed** (block) | `brace_variants` returns None; every path pattern treats it as a hit |
+| Inline interpreter writing to a computed path while naming the control plane | **Fail-closed** (ask, unverifiable) | `_opaque_inline_write` |
+| Unresolvable `cd` then a bare protected name; `patch` / `git apply` in a protected dir | **Fail-closed** (ask) | `unverifiable_target_verdict` |
+| Scan too large / too slow; hook outliving its timeout | **Fail-closed** (ask / block) | size gate, SIGALRM deadline, watchdog |
+| SQL fed from a file (`psql -f`, `mysql < f`) | **User-owned** | read-only database role for agent sessions |
+| `make` / `just` / package-script recipe text | **User-owned** | sandbox profile / container / separate uid |
+| Check-then-use race (TOCTOU) | **User-owned** | `chflags uchg` (macOS) / `chattr +i` (Linux) on the control files |
+| Run-time-assembled paths or verbs beyond the fail-closed shapes (decoded payloads, `chr()` chains, `$(…)` output, earlier-turn aliases) | **User-owned** | the same immutable flags, or a sandbox profile denying writes to them |
+
+`agentwire doctor` prints the user-owned rows under "Residuals you own"
+(informational, never scored; the list is `agentwire/safety/residuals.py`).
+agentwire does not set these controls: the immutable flag stops agentwire's own
+edits to the file too (`chflags nouchg` to change it), which is a decision for
+the person who owns the machine.
+
 ## Troubleshooting
 
 ### Hook Not Blocking Expected Command
@@ -1870,12 +1912,22 @@ against main over that slice found no decision differences). Known allow, same
 as main: a writer AND the path both inside ONE quoted string (`ln`, `curl -o`)
 is data in a quote, not a command.
 
-The read hook has no deadline but is linear in the path length (a 20 MB path
-takes ~4 s); edit/write scan only the path.
+The read hook is linear in the path length (a 20 MB path takes ~4 s); edit/write
+scan only the path. All five hooks are bounded anyway (#1065): the edit/write/read/mcp
+entrypoints run `main` under the same 10 s `SIGALRM` scan deadline
+(`run_hook_guarded(main, deadline_seconds=…)`; over it = block exit 2), and EVERY
+hook starts a 20 s watchdog thread that exits the process with a block, so a
+hook can never outlive the 30 s harness timeout into "no decision".
 
-Declared residuals: the clock budget needs `SIGALRM` on the main thread (every
-hook process; not a portal worker thread or Windows, where only the size gate
-applies).
+Why two: the signal is the only thing that interrupts a pattern stuck inside the
+regex engine (`re` checks for signals; a thread waiting on a timer needs the GIL,
+which a long C regex never yields) — but it needs POSIX and the main thread.
+The watchdog needs neither, so it covers Windows and any wait that releases the
+GIL (a hung `stat`/`realpath` on a network mount). **Declared residual:** a
+runaway regex on a platform without `SIGALRM` (Windows) outlives the watchdog
+too; the size gate is the only bound there. `check_command` called in-process
+from a portal worker thread keeps the old shape (size gate only; the watchdog
+exits the process and so is hook-only).
 
 ### A command inside a compound body is judged like the same command at top level (#1112)
 
