@@ -1983,7 +1983,13 @@ the measured use is zero); a file or another command's output is an
 `unverifiable` ask (`cat setup.sh | bash` → `bash setup.sh`). `curl … | jq`,
 `| python3 -c '…'`, `| sh -c 'wc'` and `curl -o f u && sh f` are unaffected.
 
-Declared residuals: a function or alias defined in a *previous* command, a
+Declared residuals: a **computed consumer after a fetch pipe** (`c=sh; curl u | $c`,
+`| /bin/$c`, `| command $c`, `| $SHELL`, `| ${SH:-sh}`) is not recognised as a
+shell, so it allows; and a fetch pipe inside a substitution (`$(curl u | sh)`,
+backticks, `echo $(curl u | sh)`) is not blocked — it asks through the
+ordinary substitution rule (still gated, just not hard-blocked). Subscript
+assignments (`m[k]=v`, `a[0]=v`) resolve; a subscript computed from an
+expansion does not. Also: a function or alias defined in a *previous* command, a
 variable set in another command, `declare -n` namerefs, `${!x}` indirection and
 arithmetic heads (treated as environment names, so they pass unless the
 command names a control-plane path). A resolved verb is decided *as typed*, so

@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "ef7999a77a020c3df5cd783b01ebad4db0b6f83d57e501a09fd75405ae33b9a5", "generated_at": "2026-10-19T12:33:00Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "4479f53fa809b9712d7bffd05e64fad9769f04a074d92a16fbc997a01e9607cb", "generated_at": "2026-10-19T12:48:01Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -4501,6 +4501,9 @@ _IND_ASSIGN_RE = re.compile(
 _IND_ARRAY_RE = re.compile(
     _IND_SEP + r"\s*(?:(?:declare|local|typeset)\s+(?:-[A-Za-z]+\s+)*)?([A-Za-z_]\w*)(\+?)=\(([^()]*)\)"
 )
+_IND_SUBSCRIPT_RE = re.compile(
+    _IND_SEP + r"\s*(?:(?:declare|local|typeset)\s+(?:-[A-Za-z]+\s+)*)?([A-Za-z_]\w*)\[([^\]$]+)\]=(" + _IND_VALUE + ")"
+)
 _IND_FOR_RE = re.compile(r"\b(?:for|select)\s+([A-Za-z_]\w*)\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b")
 _IND_DYNAMIC_RE = re.compile(r"\b(?:read|mapfile|readarray)\b([^;&|\n]*)|\bprintf\s+-v\s+([A-Za-z_]\w*)")
 _IND_ALIAS_RE = re.compile(_IND_SEP + r"\s*alias\s+([\w.@+-]+)=(" + _IND_VALUE + ")")
@@ -4553,6 +4556,7 @@ class _IndirectEnv:
         self.scalars: Dict[str, List[str]] = {}
         self.arrays: Dict[str, List[str]] = {}
         self.dynamic: Dict[str, Tuple[str, bool]] = {}
+        self.subs: Dict[str, Dict[str, str]] = {}
         self.aliases: Dict[str, str] = {}
         self.functions: Dict[str, Tuple[str, str]] = {}
         self.positional: Optional[List[str]] = None
@@ -4578,6 +4582,12 @@ class _IndirectEnv:
                 self.dynamic[name] = ("an unparsable array", True)
                 continue
             self.arrays[name] = (self.arrays.get(name, []) if plus else []) + items
+        for m in _IND_SUBSCRIPT_RE.finditer(text):
+            value = _ind_literal(m.group(3))
+            if value is None or "$" in value:
+                self.dynamic[m.group(1)] = ("an element assigned from an expansion", False)
+            else:
+                self.subs.setdefault(m.group(1), {})[m.group(2).strip("'\"")] = value
         for m in _IND_ASSIGN_RE.finditer(text):
             name, plus, raw = m.group(1), m.group(2), m.group(3)
             value = _ind_literal(raw)
@@ -4674,6 +4684,10 @@ class _IndirectEnv:
                     choices = [" ".join(self.positional)]
                 else:
                     choices = self.positional[int(name) - 1 : int(name)] or [""]
+            elif name in self.subs and name not in self.arrays:
+                known = self.subs[name]
+                key = (index or "0").strip("'\"")
+                choices = [known[key]] if key in known else list(known.values())
             elif name in self.arrays:
                 items = self.arrays[name]
                 if index in ("@", "*"):
@@ -4734,6 +4748,9 @@ class _IndirectEnv:
             for n, v in self.arrays.items():
                 if n not in lines and mentions(n, r"\$\{?"):
                     lines[n] = f"{n}=({' '.join(shlex.quote(i) for i in v)})"
+            for n, v in self.subs.items():
+                if "sub " + n not in lines and mentions(n, r"\$\{?"):
+                    lines["sub " + n] = "\n".join(f"{n}[{k}]={shlex.quote(x)}" for k, x in v.items())
             for n, v in self.aliases.items():
                 if "alias " + n not in lines and mentions(n):
                     lines["alias " + n] = f"alias {n}={shlex.quote(v)}"
