@@ -713,7 +713,7 @@ ROUND2_ALLOW = [
     "echo 'touch @P' | sudo ls -i",
     "echo 'touch @P' | sudo -u root ls -si",
     "echo 'touch @P' | sudo cat",
-    "echo 'touch @P' | lua -e 'print(1)'",
+    "echo 'touch @P' | jq .",
     "echo 'touch /tmp/x' | sudo -s",
     "sudo -s <<EOF\nls /tmp\nEOF",
 ]
