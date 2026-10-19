@@ -1928,20 +1928,32 @@ A verb the shell computes cannot be read, so it is **resolved** from what the
 same command defines and the result is judged by the same engine
 (`_indirect_verbs` feeds `_hidden_commands`; `_decide_command` recurses, so a
 resolved verb is decided exactly as typed — also inside `sh -c`/`ssh` payloads,
-which are walked too). Resolved: literal scalars and `export`s (multi-valued if
-assigned twice), literal arrays (`${a[0]}`, `${a[@]}`, any index), `for`/`select`
-lists (brace-expanded), `alias n=v`, and functions — a call substitutes its
-arguments for `$1…`, `"$@"`, `$#` in the body and rescans it. Concatenation
-resolves too: `x=ev;y=al; $x$y '…'` is the builtin.
+which are walked too, with the definitions they mention, as an exported
+variable reaches them). Resolved: literal scalars and `export`s (`=` and `+=`,
+multi-valued if assigned twice), literal and associative arrays (`+=`, `[@]:n`
+slices), `for`/`select` lists (brace-expanded), `set --`, `alias n=v` (chains
+too), `${x:=d}` / `${x^^}` / `${x@Q}` forms, and functions (`{ }` and `( )`
+bodies, nested calls) — a call substitutes its arguments for `$1…`, `"$@"`,
+`$#` in the body and rescans it. Assignments are found after `then`/`do`/`else`/
+`{`/`(`/`)`/`!`, not only after `;`. `$x"al"` is read as `${x}"al"`, so
+`x=ev; $x"al" '…'` is the builtin. A defined variable is also substituted into
+text handed to a shell (`echo "$x -9 1" | sh`, `sh <<< "$x …"`, `at now <<< …`).
+Only the definitions a resolved command mentions travel with it, and a
+function whose verbs are all literal is not re-scanned per call (its body is
+scanned where it sits).
 
-What cannot be resolved asks (`core.indirect-verb`, `unverifiable`: never
-granted, never demoted by bypass, a block unattended) in exactly three cases:
-the variable is filled by the command itself from a substitution / `read` /
-`mapfile` / a glob or `$(…)` loop list; the head glues expansions or literals
-around one (`e${x}val`, `$a$b`); or the command names a control-plane path and
-the head is any expansion it does not define. A bare environment name
+What cannot be resolved asks (`core.indirect-verb`) in these cases: a variable
+filled by `read` / `mapfile` / a glob loop list, a head that is a literal
+PREFIX OF A BUILTIN glued to an expansion (`e${x}val`), or any unresolved
+expansion in a command that names a control-plane path — all `unverifiable`
+(never granted, never demoted by bypass, a block unattended); and a variable
+filled by an ordinary `$(…)` (`p=$(pick); $p x`), which keeps the plain,
+bypass-demotable ask such commands always had. A bare environment name
 (`$CC -o x`, `$EDITOR f`, `$VENV/bin/python`, `${HOME}/bin/t`, `"$@"` in a
-function that is only defined) is how scripts run programs and passes.
+function that is only defined) passes, and so does any head with a literal `/`
+before the expansion (`./$script`, `bin/$tool`, `./scripts/$1.sh`) or a plain
+literal prefix that is not the start of a builtin (`python$V`, `pip$V`,
+`$CC$FLAGS`): those cannot spell `eval`/`exec`/`source`.
 
 **Measurement** (replay of `~/.agentwire/logs/damage-control`, 6,563 distinct
 Bash commands over 9 days, bundled rules, fake HOME — one fleet's own
@@ -1954,15 +1966,17 @@ the "bare environment name passes" carve-out costs nothing measurable and an
 ask there would be a silent loop for an unattended run. `alias` used as a verb:
 1; a function called in-command: ~490 rows, one repeated mutation-test script.
 `curl|wget … | sh`: 0 executions (3 rows are prose inside an issue/prompt body);
-`cat … | sh`: 0 executions. **Replay before/after: 2 diffs in 6,563, both
-`ask → ask`** (a command that already asked via `core.ambiguous-command`, whose
-verb is a `PY=$(…)`-filled variable, now asks unverifiably instead of
-bypass-demotably); 0 allow→ask, 0 →block.
+`cat … | sh`: 0 executions. **Replay before/after: 0 diffs in 6,563
+commands, at the same wall time** (an earlier draft cost 3x on function-heavy
+scripts and timed out 14 of them into scan-budget asks — the replay is what
+found it; definitions now travel only where mentioned).
 
 **Unreadable producers.** `echo`/`printf`/heredoc/here-string feeds are read and
 judged (above). Any other producer piped into a program-reading shell or
-interpreter (`bash`, `sh`, `python3 -`, `sudo bash -s`; not `-c`, not a script
-operand): a **download** (`curl|wget|fetch|aria2c|http|xh` anywhere in the
+interpreter (`bash`, `sh`, `python3 -`, `lua`, `sudo -u root bash -s`,
+`busybox sh`; not `-c`, `-n`, or a script operand — a redirect such as `2>&1`
+is not an operand) or fed through `sh <(…)` / `. <(…)` / `source <(…)`, in the
+command, in any `-c`/ssh payload of it, or in a `( … )` group: a **download** (`curl|wget|fetch|aria2c|http|xh` anywhere in the
 pipeline) is a **block** (`core.fetched-program-pipe` — the classic remote-code
 run; the fix is to download, read, run the file, which no rule touches, and
 the measured use is zero); a file or another command's output is an
@@ -1970,9 +1984,13 @@ the measured use is zero); a file or another command's output is an
 `| python3 -c '…'`, `| sh -c 'wc'` and `curl -o f u && sh f` are unaffected.
 
 Declared residuals: a function or alias defined in a *previous* command, a
-variable set in another command, `declare -n` namerefs, and arithmetic /
-`${x:-y}` / `${!x}` heads (treated as environment names, so they pass unless
-the command names a control-plane path). Test:
+variable set in another command, `declare -n` namerefs, `${!x}` indirection and
+arithmetic heads (treated as environment names, so they pass unless the
+command names a control-plane path). A resolved verb is decided *as typed*, so
+two pre-existing gaps in the typed form remain visible here: a redirect before
+the verb (`>/dev/null kill -9 1`) and `env -S "kill -9 1"` are not read as the
+verb by the kill rule even without any indirection. An alias is not carried
+into `bash -c '…'` — the real shell does not either. Test:
 `tests/unit/test_damage_control_indirect_verbs.py`.
 
 ### Hidden commands are judged as commands (#1136)

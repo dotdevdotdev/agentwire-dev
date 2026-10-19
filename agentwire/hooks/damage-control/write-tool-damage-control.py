@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "eb1c5850f815ce66ffd4582c83635f79c76922598a667b2836ef500113db1ab7", "generated_at": "2026-10-19T12:32:59Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "ef7999a77a020c3df5cd783b01ebad4db0b6f83d57e501a09fd75405ae33b9a5", "generated_at": "2026-10-19T12:33:00Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -4470,41 +4470,65 @@ def _hidden_commands(command: str, rules: bool = False) -> List[str]:
 # ``alias a=touch; a x``, ``f() { $1 x; }; f touch``, ``x=ev;y=al; $x$y '…'``,
 # ``for c in touch rm; do $c x; done``. Two answers, in this order:
 #
-#   1. RESOLVE what the same command defines — literal scalars, literal arrays,
-#      for-lists, aliases, function bodies — and judge each resolved command by
-#      the SAME engine (``_decide_command`` recurses through ``_hidden_commands``),
-#      so a resolved verb is decided exactly as it would be typed.
-#   2. What cannot be resolved ASKS (``unverifiable``, never granted, never
-#      demoted by bypass) — but only where the shape says the verb is truly
-#      unknown: a variable the command itself fills from a substitution / read /
-#      glob, a verb spelled by gluing expansions (``e${x}val``), or ANY
-#      unresolved verb in a command that names a guarded path. A plain
-#      environment name (``$CC -o x``, ``$EDITOR f``, ``$VENV/bin/python``,
-#      ``"$@"``) is how scripts run programs, and asking on it would be the
-#      silent loop of an unattended run — it passes.
+#   1. RESOLVE what the same command defines — literal scalars (``=`` and
+#      ``+=``), literal and associative arrays (``+=``, slices), for-lists,
+#      ``set --``, aliases, function bodies, ``${x:=d}``-style defaults — and
+#      judge each resolved command by the SAME engine (``_decide_command``
+#      recurses through ``_hidden_commands``). A resolved command carries the
+#      definitions with it, so a function calling a function, an alias chain
+#      and a payload (``bash -c '$x'``) resolve the same way.
+#   2. What cannot be resolved ASKS — but only where the shape says the verb is
+#      truly unknown: a variable the command itself fills from ``read`` / a
+#      glob (``unverifiable``), a variable filled by a substitution that is not
+#      a pure lookup (an ordinary, bypass-demotable ask — the tier such
+#      commands always had), a head spelled as a prefix of a builtin around an
+#      expansion (``e${x}val``), or ANY unresolved verb in a command that names
+#      a guarded path. A plain environment name (``$CC -o x``, ``$EDITOR f``,
+#      ``./$script``, ``python$V``, ``"$@"``) is how scripts run programs, and
+#      asking on it would be the silent loop of an unattended run — it passes.
 #
 # Piped programs from a producer the scanner cannot read (``cat x.sh | sh``,
 # ``curl u | sh``) are the same class: fetched-then-run is BLOCKED, file-fed
-# is an ask.
+# is an ask. The check runs on the command, on every ``-c`` / ssh payload in
+# it, and on ``sh <(curl u)``.
 
+_IND_SEP = r"(?:^|[;&|\n(){]|&&|\|\||!|\b(?:then|do|else|elif|if|while|until)\b)"
 _IND_VALUE = r"""'[^']*'|"[^"]*"|\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`|[^\s;|&()<>]*"""
 _IND_ASSIGN_RE = re.compile(
-    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:(?:export|readonly|local|declare(?:\s+-[A-Za-z]+)*|typeset)\s+)?"
-    r"([A-Za-z_]\w*)=(" + _IND_VALUE + ")"
+    _IND_SEP + r"\s*(?:(?:export|readonly|local|declare(?:\s+-[A-Za-z]+)*|typeset)\s+)?"
+    r"([A-Za-z_]\w*)(\+?)=(" + _IND_VALUE + ")"
 )
-_IND_ARRAY_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:(?:declare|local|typeset)\s+(?:-[A-Za-z]+\s+)*)?([A-Za-z_]\w*)=\(([^()]*)\)")
+_IND_ARRAY_RE = re.compile(
+    _IND_SEP + r"\s*(?:(?:declare|local|typeset)\s+(?:-[A-Za-z]+\s+)*)?([A-Za-z_]\w*)(\+?)=\(([^()]*)\)"
+)
 _IND_FOR_RE = re.compile(r"\b(?:for|select)\s+([A-Za-z_]\w*)\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b")
 _IND_DYNAMIC_RE = re.compile(r"\b(?:read|mapfile|readarray)\b([^;&|\n]*)|\bprintf\s+-v\s+([A-Za-z_]\w*)")
-_IND_ALIAS_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*alias\s+([\w.@+-]+)=(" + _IND_VALUE + ")")
-_IND_FUNC_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:function\s+)?([A-Za-z_][\w.-]*)\s*(?:\(\s*\))?\s*\{")
-_IND_EXPANSION_RE = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?:\[([^\]]*)\])?\}|([A-Za-z_]\w*))")
+_IND_ALIAS_RE = re.compile(_IND_SEP + r"\s*alias\s+([\w.@+-]+)=(" + _IND_VALUE + ")")
+_IND_SET_RE = re.compile(_IND_SEP + r"\s*set\s+--(?:\s+([^;&|\n]*))?")
+_IND_FUNC_RE = re.compile(_IND_SEP + r"\s*(?:function\s+)?([A-Za-z_][\w.-]*)\s*(\(\s*\))?\s*([{(])")
+_IND_EXPANSION_RE = re.compile(
+    r"\$(?:\{([A-Za-z_]\w*|\d+|[@*])(?:\[([^\]]*)\])?([:#%/@^,!+\-=?][^}]*)?\}|([A-Za-z_]\w*)|(\d|[@*]))"
+)
 _IND_PURE_HEAD_RE = re.compile(r"""^["']?\$(?:\{[^}]*\}|\w+|[@*#?!$-])["']?(?:/.*)?$""")
 _IND_POSITIONAL_RE = re.compile(r"(\")?\$(?:\{(\d+|[@*#])\}|(\d|[@*#]))(?(1)\")")
-_IND_REDIRECT_TOKEN_RE = re.compile(r"^(?:\d*[<>]+&?\d*-?|&>>?)$")
 _IND_SAFE_WORD_RE = re.compile(r"^[\w@%+=:,./~$*?\[\]{}^-]+$")
 _IND_CANDIDATE_CAP = 16
+# a construct that hands text to a shell: only there does a defined variable change what RUNS
+_IND_FED_RE = re.compile(r"\|\s*(?:sudo\s+)?(?:\S*/)?(?:sh|bash|zsh|dash|ksh)\b|<<<|\benv\s+-S|\b(?:at|batch)\s+\S|<\(")
 # the shell does not alias-expand or function-call these; resolving them would invent verbs
-_IND_NOT_VERBS = frozenset({"alias", "unalias", "function", "export", "local", "declare", "readonly", "typeset", "unset"})
+_IND_NOT_VERBS = frozenset({"alias", "unalias", "function", "export", "local", "declare", "readonly", "typeset", "unset", "set"})
+# a verb a glued head could spell: the dynamic-evaluation and sourcing builtins
+_IND_SPELLABLE = ("eval", "exec", "source", "builtin", "command", "trap", "coproc")
+_IND_KEYWORDS = frozenset({"if", "while", "until", "for", "case", "select", "then", "do", "else", "elif", "function"})
+
+
+def _redirect_width(word: str) -> int:
+    """Words a redirect occupies: 1 for ``2>&1`` / ``>/dev/null``, 2 for a bare ``>``, 0 if ``word`` is not one."""
+    if re.fullmatch(r"\d*[<>]+&\d+-?|\d*[<>]+[^\s<>&=][^\s]*|&>>?[^\s<>]\S*", word):
+        return 1
+    if re.fullmatch(r"\d*[<>]+|&>>?", word):
+        return 2
+    return 0
 
 
 def _ind_quote(word: str, raw: bool) -> str:
@@ -4528,27 +4552,42 @@ class _IndirectEnv:
     def __init__(self, command: str) -> None:
         self.scalars: Dict[str, List[str]] = {}
         self.arrays: Dict[str, List[str]] = {}
-        self.dynamic: Dict[str, str] = {}
+        self.dynamic: Dict[str, Tuple[str, bool]] = {}
         self.aliases: Dict[str, str] = {}
-        self.functions: Dict[str, str] = {}
+        self.functions: Dict[str, Tuple[str, str]] = {}
+        self.positional: Optional[List[str]] = None
         self.body_free = command
         self._collect_functions(command)
         text = self.body_free
+        for m in _IND_SET_RE.finditer(text):
+            try:
+                self.positional = shlex.split(m.group(1) or "")
+            except ValueError:
+                self.dynamic["$"] = ("an unparsable set --", True)
+            if self.positional and any("$" in w or "`" in w for w in self.positional):
+                self.positional = None
+                self.dynamic["$"] = ("positional parameters set from an expansion", True)
         for m in _IND_ARRAY_RE.finditer(text):
-            if "$" in m.group(2) or "`" in m.group(2):
-                self.dynamic[m.group(1)] = "an array filled from an expansion"
+            name, plus, body = m.group(1), m.group(2), m.group(3)
+            if "$" in body or "`" in body:
+                self.dynamic[name] = ("an array filled from an expansion", True)
                 continue
             try:
-                self.arrays[m.group(1)] = shlex.split(m.group(2))
+                items = [re.sub(r"^\[[^\]]*\]=", "", w) for w in shlex.split(body)]
             except ValueError:
-                self.dynamic[m.group(1)] = "an unparsable array"
+                self.dynamic[name] = ("an unparsable array", True)
+                continue
+            self.arrays[name] = (self.arrays.get(name, []) if plus else []) + items
         for m in _IND_ASSIGN_RE.finditer(text):
-            name, value = m.group(1), _ind_literal(m.group(2))
+            name, plus, raw = m.group(1), m.group(2), m.group(3)
+            value = _ind_literal(raw)
             if value is not None and "$" in value:
                 resolved = self.expand(value)
                 value = resolved[0] if resolved else None
             if value is None:
-                self.dynamic[name] = "a variable the command fills from a substitution"
+                self.dynamic[name] = ("a variable the command fills from a substitution", False)
+            elif plus and self.scalars.get(name):
+                self.scalars[name] = [v + value for v in self.scalars[name]]
             else:
                 self.scalars.setdefault(name, []).append(value)
         for m in _IND_FOR_RE.finditer(text):
@@ -4558,7 +4597,10 @@ class _IndirectEnv:
             except ValueError:
                 words = None
             if words is None or any(re.search(r"[$`*?\[]", w) for w in words):
-                self.dynamic[name] = "a loop variable over a list the shell computes"
+                self.dynamic[name] = (
+                    "a loop variable over a list the shell computes",
+                    words is None or not any(("$(" in w or "`" in w) for w in words),
+                )
             else:
                 expanded: List[str] = []
                 for w in words:
@@ -4567,23 +4609,24 @@ class _IndirectEnv:
         for m in _IND_DYNAMIC_RE.finditer(text):
             names = [w for w in (m.group(1) or m.group(2) or "").split() if re.fullmatch(r"[A-Za-z_]\w*", w)]
             for name in names or ["REPLY"]:
-                self.dynamic[name] = "a variable filled by read"
+                self.dynamic[name] = ("a variable filled by read", True)
         for m in _IND_ALIAS_RE.finditer(text):
             value = _ind_literal(m.group(2))
             if value is None:
-                self.dynamic["alias:" + m.group(1)] = "an alias defined from a substitution"
+                self.dynamic["alias:" + m.group(1)] = ("an alias defined from a substitution", False)
             else:
                 self.aliases[m.group(1)] = value
 
     def _collect_functions(self, command: str) -> None:
-        """Function bodies by brace matching; ``body_free`` is the command with each definition blanked."""
+        """Function bodies by bracket matching; ``body_free`` is the command with each definition blanked."""
         out, pos = [], 0
         for m in _IND_FUNC_RE.finditer(command):
-            if m.start() < pos or m.group(1) in _IND_NOT_VERBS or m.group(1) in ("if", "while", "until", "for", "case", "select", "then", "do", "else"):
+            name, parens, opener = m.group(1), m.group(2), m.group(3)
+            if m.start() < pos or name in _IND_NOT_VERBS or name in _IND_KEYWORDS:
                 continue
-            has_parens = "(" in command[m.start(1) + len(m.group(1)) : m.end()]
-            if not has_parens and "function" not in command[m.start() : m.start(1)]:
+            if not parens and "function" not in command[m.start() : m.start(1)]:
                 continue
+            close = "}" if opener == "{" else ")"
             depth, i, quote = 1, m.end(), ""
             while i < len(command) and depth:
                 c = command[i]
@@ -4596,51 +4639,142 @@ class _IndirectEnv:
                     quote = c
                 elif c == "\\":
                     i += 1
-                elif c == "{":
+                elif c == opener:
                     depth += 1
-                elif c == "}":
+                elif c == close:
                     depth -= 1
                 i += 1
             if depth:
-                self.dynamic["function:" + m.group(1)] = "an unterminated function body"
+                self.dynamic["function:" + name] = ("an unterminated function body", True)
                 continue
-            self.functions[m.group(1)] = command[m.end() : i - 1]
+            self.functions[name] = (opener, command[m.end() : i - 1])
             out.append(command[pos : m.end(1)] + " :")
             pos = i
         out.append(command[pos:])
         if self.functions:
-            self.body_free = "".join(out) if len(out) > 1 else command
+            self.body_free = "".join(out)
 
     def expand(self, word: str) -> Optional[List[str]]:
-        """Every literal value ``word`` can take, or None when an expansion in it is not defined here."""
+        """Every literal value ``word`` can take, or None when a name in it is filled at run time.
+
+        A name this command does not define is an ENVIRONMENT name: it stays in the text (the head
+        classification decides what that is worth), and a ``${x:-d}``-style default adds ``d``.
+        """
         results = [word]
         for m in _IND_EXPANSION_RE.finditer(word):
-            name, index, bare = m.group(1) or m.group(3), m.group(2), m.group(3) is not None
+            name = m.group(1) or m.group(4) or m.group(5)
+            index, mod = m.group(2), m.group(3) or ""
             if name in self.dynamic:
                 return None
-            if name in self.arrays and not bare:
+            extra: List[str] = []
+            if name.isdigit() or name in ("@", "*"):
+                if self.positional is None:
+                    continue
+                if name in ("@", "*"):
+                    choices = [" ".join(self.positional)]
+                else:
+                    choices = self.positional[int(name) - 1 : int(name)] or [""]
+            elif name in self.arrays:
                 items = self.arrays[name]
                 if index in ("@", "*"):
-                    choices = [" ".join(items)]
+                    sl = re.fullmatch(r":(\d+)(?::(\d+))?", mod)
+                    if sl:
+                        start = int(sl.group(1))
+                        items = items[start : start + int(sl.group(2))] if sl.group(2) else items[start:]
+                    choices = [" ".join(items)] + (items if sl else [])
                 elif index is not None and index.isdigit():
                     choices = items[int(index) : int(index) + 1] or [""]
                 else:
                     choices = items or [""]
             elif name in self.scalars and (index is None or index == "0"):
-                choices = self.scalars[name]
-            elif name in self.arrays:
-                choices = self.arrays[name][:1] or [""]
+                choices = list(self.scalars[name])
+                if mod[:1] in ("^", ","):
+                    choices += [c.upper() if mod[0] == "^" else c.lower() for c in choices]
             else:
-                continue  # an environment name: stays in the text for the head classification
-            results = [r.replace(m.group(0), c) for r in results for c in choices][:_IND_CANDIDATE_CAP]
+                if mod[:2] in (":-", ":=", ":+") or mod[:1] in ("-", "=", "+"):
+                    extra = [mod.lstrip(":")[1:]]
+                if not extra:
+                    continue  # an environment name: stays in the text for the head classification
+                choices = extra
+            repl = [r.replace(m.group(0), c) for r in results for c in choices]
+            results = (repl + (results if extra else []))[:_IND_CANDIDATE_CAP]
         return results
 
-    def assignments(self) -> str:
-        """The scalar definitions, replayed ahead of a rebuilt command so its operands still resolve."""
-        return "\n".join(f"{n}={shlex.quote(v[0])}" for n, v in self.scalars.items()) + "\n" if self.scalars else ""
+    def computes_a_verb(self, body: str) -> str:
+        """``"args"`` when a function body runs a verb its arguments (or another function) supply, ``"var"``
+        for any other computed verb, ``""`` when every verb in it is a literal (the body is scanned where it sits)."""
+        kind = ""
+        for toks in _ind_segments(body):
+            head = _ind_head(toks)
+            if head is None:
+                continue
+            text = toks[head][0]
+            if _IND_POSITIONAL_RE.search(text) or text in self.functions or text in self.aliases:
+                return "args"
+            if "$" in text:
+                kind = "var"
+        return kind
+
+    def preamble(self, needed: str = "") -> str:
+        """The definitions ``needed`` (and what they need) mentions, replayed ahead of a rebuilt command.
+
+        Only what the rebuilt text refers to travels with it: dragging every function body along
+        re-scans the whole command once per resolved verb.
+        """
+        wanted = {"text": needed}
+
+        def mentions(name: str, sigil: str = r"\b") -> bool:
+            return bool(re.search(sigil + re.escape(name) + r"\b", wanted["text"]))
+
+        lines: Dict[str, str] = {}
+        for _ in range(3):  # a definition can pull in another
+            for n, v in self.scalars.items():
+                if n not in lines and mentions(n, r"\$\{?"):
+                    lines[n] = f"{n}={shlex.quote(v[0])}"
+            for n, v in self.arrays.items():
+                if n not in lines and mentions(n, r"\$\{?"):
+                    lines[n] = f"{n}=({' '.join(shlex.quote(i) for i in v)})"
+            for n, v in self.aliases.items():
+                if "alias " + n not in lines and mentions(n):
+                    lines["alias " + n] = f"alias {n}={shlex.quote(v)}"
+            for n, (opener, body) in self.functions.items():
+                if "fn " + n not in lines and mentions(n):
+                    lines["fn " + n] = f"{n}() {opener} {body}\n{'}' if opener == '{' else ')'}"
+            wanted["text"] = needed + "\n" + "\n".join(lines.values())
+        if self.positional is not None and _IND_POSITIONAL_RE.search(wanted["text"]):
+            lines["set"] = "set -- " + " ".join(shlex.quote(w) for w in self.positional)
+        return "\n".join(lines.values()) + "\n" if lines else ""
+
+    def substituted(self, command: str) -> List[str]:
+        """``command`` with defined scalars replaced outside single quotes — what a fed program really contains."""
+        if not self.scalars:
+            return []
+        out: List[str] = []
+        for k in range(1):
+            buf, i, n, single = [], 0, len(command), False
+            while i < n:
+                ch = command[i]
+                if ch == "'" :
+                    single = not single
+                if not single and ch == "$":
+                    m = _IND_EXPANSION_RE.match(command, i)
+                    name = (m.group(1) or m.group(4)) if m else None
+                    if m and name in self.scalars and not m.group(2) and not m.group(3):
+                        vals = self.scalars[name]
+                        buf.append(vals[min(k, len(vals) - 1)])
+                        i = m.end()
+                        continue
+                buf.append(ch)
+                i += 1
+            text = "".join(buf)
+            if text != command and text not in out:
+                out.append(text)
+        return out
 
 
 def _ind_segments(command: str) -> List[List[Tuple[str, bool, bool]]]:
+    # ``$x"al"`` reads as the variable ``xal`` once the quotes are resolved; close the name first
+    command = re.sub(r"\$([A-Za-z_]\w*)(?=[\"'])", r"${\1}", command)
     masked, mask_err = _mask_command_substitutions(inert_view(command))
     return [strip_command_openers(t) for t in _scan_masked_tokens(_strip_heredoc_bodies(command if mask_err else masked))]
 
@@ -4650,9 +4784,11 @@ def _ind_head(toks: List[Tuple[str, bool, bool]]) -> Optional[int]:
     i, n, prev_option = 0, len(toks), False
     while i < n:
         text, fq, _ex = toks[i]
-        if not fq and (_ASSIGN_TOKEN_RE.match(text) or _IND_REDIRECT_TOKEN_RE.match(text)):
-            i += 2 if _IND_REDIRECT_TOKEN_RE.match(text) else 1
-            continue
+        if not fq:
+            width = _redirect_width(text)
+            if width or _ASSIGN_TOKEN_RE.match(text):
+                i += width or 1
+                continue
         base = text.rsplit("/", 1)[-1]
         if base in _POSITION_WRAPPERS:
             prev_option = False
@@ -4667,9 +4803,12 @@ def _ind_head(toks: List[Tuple[str, bool, bool]]) -> Optional[int]:
 
 
 def _ind_rebuild(toks: List[Tuple[str, bool, bool]], head: int, replacement: List[str]) -> str:
-    words = [_ind_quote(t, not fq and (bool(_IND_REDIRECT_TOKEN_RE.match(t)) or "$" in t)) for t, fq, _ex in toks[:head]]
+    def word(t: str, fq: bool) -> str:
+        return _ind_quote(t, not fq and (bool(_redirect_width(t)) or "$" in t))
+
+    words = [word(t, fq) for t, fq, _ex in toks[:head]]
     words += [_ind_quote(w, False) for w in replacement]
-    words += [_ind_quote(t, not fq and (bool(_IND_REDIRECT_TOKEN_RE.match(t)) or "$" in t)) for t, fq, _ex in toks[head + 1 :]]
+    words += [word(t, fq) for t, fq, _ex in toks[head + 1 :]]
     return " ".join(words)
 
 
@@ -4689,15 +4828,35 @@ def _ind_function_call(body: str, args: List[str]) -> str:
     return _IND_POSITIONAL_RE.sub(sub, body)
 
 
-def _indirect_verbs(command: str, guarded: bool = False, _depth: int = 0) -> Tuple[List[str], Optional[str]]:
-    """``(resolved commands, unresolved reason)`` for every computed verb in ``command``."""
+def _ind_head_unresolved(text: str, guarded: bool) -> Optional[Tuple[str, bool]]:
+    """Why an expansion head this command does not define is worth an ask, or None when it is an environment name."""
+    if _IND_PURE_HEAD_RE.match(text):
+        why = None
+    else:
+        before = text.split("$", 1)[0]
+        if "/" in before or not before or not any(s.startswith(before) for s in _IND_SPELLABLE):
+            why = None  # a path, a plain name with a suffix, or glued environment names cannot spell a builtin
+        else:
+            why = ("a verb spelled by joining expansions", True)
+    if why is None and guarded:
+        why = ("an expansion the command does not define, in a command that names a guarded path", True)
+    return why
+
+
+def _indirect_verbs(command: str, guarded: bool = False, _depth: int = 0, _outer: str = "") -> Tuple[List[str], Optional[Tuple[str, bool]]]:
+    """``(resolved commands, (reason, unverifiable))`` for every computed verb in ``command``.
+
+    ``_outer`` is the definitions of the command this one is a payload of: an exported variable
+    reaches ``bash -c '$x'``, and the payload is judged with it.
+    """
     if _depth > _RESCAN_DEPTH or (
         "$" not in command and "alias" not in command and "()" not in command and "function" not in command
     ):
         return [], None
-    env = _IndirectEnv(command)
+    env = _IndirectEnv(_outer + command)
     resolved: List[str] = []
-    unresolved: Optional[str] = None
+    called: set = set()
+    unresolved: Optional[Tuple[str, bool]] = None
     for toks in _ind_segments(env.body_free):
         head = _ind_head(toks)
         if head is None:
@@ -4707,7 +4866,12 @@ def _indirect_verbs(command: str, guarded: bool = False, _depth: int = 0) -> Tup
             continue  # a substitution in the verb slot is the concealment path's, not this one's
         args = [t for t, _f, _e in toks[head + 1 :]]
         if text in env.functions:
-            resolved.append(env.assignments() + _ind_function_call(env.functions[text], args))
+            kind = env.computes_a_verb(env.functions[text][1])
+            # a verb taken from the ARGUMENTS differs per call; one taken from a variable is the same every time
+            if kind and (kind == "args" or text not in called):
+                body = _ind_function_call(env.functions[text][1], args)
+                resolved.append(env.preamble(body) + body)
+                called.add(text)
             continue
         if text in env.aliases:
             try:
@@ -4715,14 +4879,15 @@ def _indirect_verbs(command: str, guarded: bool = False, _depth: int = 0) -> Tup
             except ValueError:
                 replacement = []
             if replacement:
-                resolved.append(env.assignments() + _ind_rebuild(toks, head, replacement))
+                rebuilt = _ind_rebuild(toks, head, replacement)
+                resolved.append(env.preamble(rebuilt) + rebuilt)
             continue
         if "alias:" + text in env.dynamic:
             unresolved = unresolved or env.dynamic["alias:" + text]
             continue
         if "$" not in text:
             continue
-        names = [m.group(1) or m.group(3) for m in _IND_EXPANSION_RE.finditer(text)]
+        names = [m.group(1) or m.group(4) or m.group(5) for m in _IND_EXPANSION_RE.finditer(text)]
         why = next((env.dynamic[n] for n in names if n in env.dynamic), None)
         values = env.expand(text) if why is None else None
         for value in values or []:
@@ -4732,18 +4897,19 @@ def _indirect_verbs(command: str, guarded: bool = False, _depth: int = 0) -> Tup
                 except ValueError:
                     replacement = [value]
                 if replacement and replacement != [text]:
-                    resolved.append(env.assignments() + _ind_rebuild(toks, head, replacement))
-            elif why is None and not _IND_PURE_HEAD_RE.match(value):
-                why = "a verb spelled by joining expansions"
-            elif why is None and guarded:
-                why = "an expansion the command does not define, in a command that names a guarded path"
+                    rebuilt = _ind_rebuild(toks, head, replacement)
+                resolved.append(env.preamble(rebuilt) + rebuilt)
+            elif why is None:
+                why = _ind_head_unresolved(value, guarded)
         if why is not None and unresolved is None:
             unresolved = why
+    if _IND_FED_RE.search(command):
+        resolved += env.substituted(command)
     for payload in _shell_payloads(command):
-        inner, why = _indirect_verbs(payload, guarded, _depth + 1)
+        inner, why = _indirect_verbs(payload, guarded, _depth + 1, env.preamble(payload))
         resolved += inner
         unresolved = unresolved or why
-    return resolved[:_RESCAN_FANOUT], unresolved
+    return resolved[:12], unresolved
 
 
 def _shell_payloads(command: str) -> List[str]:
@@ -4756,7 +4922,7 @@ def _shell_payloads(command: str) -> List[str]:
             inner, _rest = _eval_shell_invocation(words[k + 1 :], False)
             if inner:
                 out.append(inner)
-        elif head in ("ssh", "timeout", "env", "sudo", "nohup", "time"):
+        elif head in ("ssh", "timeout", "env", "sudo", "nohup", "time", "exec", "command", "doas"):
             base, args = _exec_tool(words)
             if base == "ssh":
                 remote = " ".join(w for w in _ssh_remote_command(args) if w != "--")
@@ -4772,65 +4938,140 @@ def _shell_payloads(command: str) -> List[str]:
     return out
 
 
-def _is_fetch_head(stage: str) -> bool:
-    words = strip_command_opener_words(_words(stage))
-    while words and (words[0] in ("sudo", "doas", "command", "exec", "env", "time", "nohup") or _ASSIGN_WORD.match(words[0])):
-        words = words[1:]
-    return bool(words) and os.path.basename(words[0]) in _FETCH_PROGRAMS
-
-
 _FETCH_PROGRAMS = frozenset({"curl", "wget", "fetch", "aria2c", "http", "https", "xh", "lwp-request", "ftp"})
 _PRODUCER_READABLE = frozenset({"echo", "printf"})
-_STDIN_INTERPRETERS = frozenset({"python", "python2", "python3", "perl", "ruby", "node", "php", "deno", "bun"})
+_STDIN_INTERPRETERS = frozenset({
+    "python", "python2", "python3", "perl", "ruby", "node", "php", "deno", "bun",
+    "lua", "luajit", "tclsh", "Rscript", "julia", "groovy", "osascript",
+})
+_SUDO_VALUE_OPTS = frozenset({"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-r", "-t"})
+_WRAPPER_WORDS = frozenset({"sudo", "doas", "exec", "env", "command", "time", "nohup", "busybox", "builtin", "nice", "stdbuf"})
+
+
+def _ind_clean_words(stage: str) -> List[str]:
+    """A stage's words past openers, group parens and redirects (a redirect is not an operand)."""
+    words = [w.strip("{}") for w in strip_command_opener_words(_words(re.sub(r"(?<!\$)[()]", " ", stage)))]
+    out: List[str] = []
+    i = 0
+    while i < len(words):
+        w = words[i]
+        width = _redirect_width(w) if w else 0
+        if width:
+            i += width
+            continue
+        if w:
+            out.append(w)
+        i += 1
+    return out
+
+
+def _ind_program_words(stage: str) -> List[str]:
+    """The words of ``stage`` from the program it runs: past assignments and wrappers (``sudo -u root``, ``env -i``, ``busybox``)."""
+    words = _ind_clean_words(stage)
+    while words:
+        w = os.path.basename(words[0])
+        if _ASSIGN_WORD.match(words[0]):
+            words = words[1:]
+        elif w in _WRAPPER_WORDS:
+            words = words[1:]
+            while words and words[0].startswith("-") and words[0] != "--":
+                words = words[2:] if words[0] in _SUDO_VALUE_OPTS else words[1:]
+            if words and words[0] == "--":
+                words = words[1:]
+        else:
+            break
+    return words
 
 
 def _stdin_program_consumer(stage: str) -> bool:
     """A shell (or interpreter) at the head of ``stage`` with no program of its own: it runs its stdin."""
-    words = [w for w in strip_command_opener_words(_words(stage)) if w not in ("(", ")", "{", "}")]
-    while words and (_ASSIGN_WORD.match(words[0]) or words[0] in ("sudo", "doas", "exec", "env", "command", "time", "nohup", "-E", "-H")):
-        words = words[1:]
+    words = _ind_program_words(stage)
     if not words:
         return False
     head, args = os.path.basename(words[0]), words[1:]
     if head in _SHELL_NAMES - {"su"}:
         if any(re.fullmatch(r"-[A-Za-z]*c|--command(?:=.*)?", a) for a in args):
             return False
+        if any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", a) for a in args):
+            return False  # -n parses and runs nothing
         operands = [a for a in args if not a.startswith("-")]
-        return not operands or "-s" in args or any(re.fullmatch(r"-[A-Za-z]*s", a) for a in args)
+        return not operands or any(re.fullmatch(r"-[A-Za-z]*s", a) for a in args)
     if head in _STDIN_INTERPRETERS:
         return all(a == "-" for a in args)
     return False
 
 
-def fed_program_verdict(command: str) -> Optional[Tuple[str, str]]:
+def _echoes_its_text(stage: str) -> bool:
+    """Whether the stage's command is ``echo``/``printf`` — text written in the command, past openers and wrappers."""
+    words = _ind_clean_words(stage)
+    if words and words[0] == "case":
+        words = words[next((k + 2 for k, w in enumerate(words) if w == "in"), len(words)) :]  # `case x in pat)`
+    for w in words:
+        base = os.path.basename(w)
+        if base in _PRODUCER_READABLE:
+            return True
+        if not (_ASSIGN_WORD.match(w) or base in _POSITION_WRAPPERS or base in _WRAPPER_WORDS or w.startswith("-") or w[:1].isdigit()):
+            return False
+    return False
+
+
+def _chain_verdict(chain: List[str]) -> Optional[Tuple[str, str]]:
+    """The verdict on the producers (first stage last in ``chain``) of a program-reading consumer."""
+    if _HERE_STRING_RE.search(chain[-1]) or "<<" in chain[-1] or _echoes_its_text(chain[-1]):
+        return None
+    if any(_is_fetch_head(s) for s in chain):
+        return "block", "a downloaded program is piped straight into a shell/interpreter"
+    return "ask", "a program is piped into a shell from a producer nothing can read"
+
+
+def _is_fetch_head(stage: str) -> bool:
+    words = _ind_program_words(stage)
+    return bool(words) and os.path.basename(words[0]) in _FETCH_PROGRAMS
+
+
+_PROCSUB_CONSUMER_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:(?:sudo|doas|exec)\s+(?:-\w+\s+)*)?(?:[\w/.-]*/)?"
+    r"(?:sh|bash|zsh|dash|ksh|\.|source)\s+(?:-[A-Za-z]+\s+)*<\(((?:[^()]|\([^()]*\))*)\)"
+)
+
+
+def fed_program_verdict(command: str, _depth: int = 0) -> Optional[Tuple[str, str]]:
     """``("block"|"ask", why)`` for a pipe whose reader runs a program a producer the scanner cannot read writes.
 
     ``echo`` / ``printf`` / heredoc / here-string feeds are READ (``_eval_fed_programs``) and judged
     as commands; anything else is text nothing here can see. A download piped to a shell is the
-    classic remote-code-run, blocked; a file or another command's output is a confirm.
+    classic remote-code-run, blocked; a file or another command's output is a confirm. The
+    command's ``-c`` / ssh payloads are walked too: wrapping it in a shell changes nothing.
     """
-    if "|" not in command:
+    if _depth > _RESCAN_DEPTH:
         return None
-    stages = _pipe_stages(_hide_heredoc_bodies(command, keep_programs=False))
     verdict: Optional[Tuple[str, str]] = None
-    for k, (op, stage) in enumerate(stages):
-        if op != "|" or not _stdin_program_consumer(stage):
-            continue
-        chain = []
-        j = k - 1
-        while j >= 0:
-            chain.append(stages[j][1])
-            if stages[j][0] != "|":
-                break
-            j -= 1
-        if not chain:
-            continue
-        first = strip_command_opener_words(_words(chain[-1]))
-        if _HERE_STRING_RE.search(chain[-1]) or "<<" in chain[-1] or (first and os.path.basename(first[0]) in _PRODUCER_READABLE):
-            continue
-        if any(_is_fetch_head(s) for s in chain):
-            return "block", "a downloaded program is piped straight into a shell/interpreter"
-        verdict = verdict or ("ask", "a program is piped into a shell from a producer nothing can read")
+    for m in _PROCSUB_CONSUMER_RE.finditer(command):
+        found = _chain_verdict([s for _op, s in _pipe_stages(m.group(1))][::-1] or [m.group(1)])
+        if found and found[0] == "block":
+            return found
+        verdict = verdict or found
+    if "|" in command:
+        stages = _pipe_stages(_hide_heredoc_bodies(command, keep_programs=False))
+        for k, (op, stage) in enumerate(stages):
+            if op != "|" or not _stdin_program_consumer(stage):
+                continue
+            chain = []
+            j = k - 1
+            while j >= 0:
+                chain.append(stages[j][1])
+                if stages[j][0] != "|":
+                    break
+                j -= 1
+            found = _chain_verdict(chain) if chain else None
+            if found and found[0] == "block":
+                return found
+            verdict = verdict or found
+    for payload in _shell_payloads(command):
+        found = fed_program_verdict(payload, _depth + 1)
+        if found and found[0] == "block":
+            return found
+        verdict = verdict or found
     return verdict
 
 
@@ -8949,9 +9190,22 @@ def _unresolvable_verdict(command: str, verdict: Dict[str, Any]) -> Dict[str, An
         }
     if verdict["decision"] == "block" or verdict.get("unverifiable"):
         return verdict
-    why = fed[1] if fed else _indirect_verbs(command, mentions_control_plane(command))[1]
-    if not why:
-        return verdict
+    if fed:
+        why, unverifiable = fed[1], True
+    else:
+        found = _indirect_verbs(command, mentions_control_plane(command))[1]
+        if not found or (verdict["decision"] == "ask" and not found[1]):
+            return verdict
+        why, unverifiable = found
+    if not unverifiable:
+        # filled by an ordinary substitution: the bypass-demotable ask such commands always had
+        return {
+            "decision": "ask",
+            "reason": f"Unverifiable command ({why}) — confirm before running",
+            "pattern": f"ambiguous:{why}",
+            "command": command,
+            "id": "core.indirect-verb",
+        }
     return {
         "decision": "ask",
         "reason": f"Unverifiable command ({why}) — nothing can analyze what this runs, so a human must confirm it (not demoted by bypass)",
