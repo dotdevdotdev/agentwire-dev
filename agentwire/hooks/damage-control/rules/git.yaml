@@ -63,6 +63,17 @@ bashToolPatterns:
     ask: true
     anchored: true
 
+  # SET-FORM config (`git config [--global] <key> <value>`, #1133/#9/#28): the
+  # same keys `git -c` is asked about (git.config-exec-key), plus the keys that
+  # REDIRECT git itself. Reads (`--get*`, `--list`, `--unset*`, `--edit`) and a
+  # keyless/valueless call never match.
+  # 1) Redirect keys: no benign value exists, always ask.
+  - id: git.config-set-redirect-key
+    pattern: '\bgit\s+config\b(?![^;&|]*\s(?:--(?:get|unset|list|edit)|-l\b|-e\b))[^;&|]*?\s(?:core\.(?:worktree|hookspath)|include\.path|includeif\.\S+\.path)\s+\S'
+    reason: git config redirects the worktree, hooks dir, or an included config
+    ask: true
+    anchored: true
+
   - pattern: '\bgit\s+stash\s+drop\b'
     reason: Permanently deletes a stash
     ask: true

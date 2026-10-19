@@ -132,3 +132,24 @@ bashToolPatterns:
     ask: true
     id: git.config-exec-key
     anchored: false
+
+  # Set-form `git config <exec-key> <value>` (#1133): git runs the value through
+  # a shell, so only a known editor/pager word is bare-safe -- either bare, or
+  # quoted with plain flags (`'vim -f'`, `'code --wait'`). Anything else asks:
+  # a separator or substitution inside quotes (`'less;sh'`), an escape
+  # (`less\;sh`), `$'..'`, an unknown program. Unanchored: the quoting and
+  # escaping that decide safety are invisible in the masked view. Command
+  # position is required, so a message that merely quotes the command passes.
+  - pattern: '(?:^|[;&|(`]|\$\(|(?:\s-c|\bssh\s+\S+)\s+[''"])\s*(?:\w+=\S*\s+|(?:sudo|doas|env|nohup|time|command|exec|timeout|gtimeout|nice|xargs|stdbuf|ionice|setsid|caffeinate|unbuffer)\s+(?:-\S+\s+|\d+[smhd]?\s+)*)*git\b[^;&|]*?\sconfig\b(?![^;&|]*\s(?:--(?:get|unset|list|edit)|-l\b|-e\b))[^;&|]*?\s(?:core\.(?:sshcommand|fsmonitor|pager|editor|askpass|alternaterefscommand)|sequence\.editor|gpg\.program|diff\.external|credential\.helper|uploadpack\.packobjectshook|filter\.[^.\s]+\.(?:clean|smudge|process)|difftool\.[^.\s]+\.cmd|mergetool\.[^.\s]+\.cmd|merge\.[^.\s]+\.driver|remote\.[^.\s]+\.(?:uploadpack|receivepack)|browser\.[^.\s]+\.cmd|man\.[^.\s]+\.cmd)\s+(?!(?:(?:vim|nvim|vi|view|nano|pico|micro|emacs|ed|ex|less|more|cat|bat|most|true|false|code|subl|mate|zed)(?:\s+-{1,2}[A-Za-z][\w-]*(?:=[\w.-]+)?)*(?=(?:\s+--(?:global|local|system|worktree|replace-all|add))*\s*(?:$|[;&|)`]))|([''\"])(?:vim|nvim|vi|view|nano|pico|micro|emacs|ed|ex|less|more|cat|bat|most|true|false|code|subl|mate|zed)(?:\s+-{1,2}[A-Za-z][\w-]*(?:=[\w.-]+)?)*\1(?=(?:\s+--(?:global|local|system|worktree|replace-all|add))*\s*(?:$|[;&|)`]))))[^\s\x00]'
+    reason: git config sets a key that names a program git will execute
+    ask: true
+    id: git.config-set-exec-key
+    anchored: false
+
+  # Set-form alias with the bang form (`git config alias.x '!cmd'`): the `!` sits
+  # inside a quoted value, which the anchored git.yaml rules see masked.
+  - pattern: '\bgit\s+config\b(?![^;&|]*\s(?:--(?:get|unset|list|edit)|-l\b|-e\b))[^;&|]*?\salias\.[^.=\s]+\s+[''"]?!'
+    reason: git config sets a shell-command alias (alias.x = !cmd)
+    ask: true
+    id: git.config-set-alias-bang
+    anchored: false
