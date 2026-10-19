@@ -1475,6 +1475,26 @@ Things that bite:
 
 Worked example, ready to copy: [`examples/gws-tooldef.yaml`](examples/gws-tooldef.yaml) (reference and reads) and [`examples/gws-rules.yaml`](examples/gws-rules.yaml) (verb-based enforcement: send, create, insert, patch, update, modify, trash, import, batch*, delete, sharing changes, `+helper` forms; reads, `schema`, `--dry-run` and `--help` allowed; calendar `events insert|quickAdd` is `ask` under id `gws.calendar-event-create`). They are documentation, not part of the loaded bundled set.
 
+## Rule groups and packs (#1141)
+
+Damage control used to install every bundled rule and tooldef everywhere, so an AWS rule applied to someone who never runs `aws`. Each bundled file now belongs to exactly one registry entry (`agentwire/safety/groups.py`; a sweep test fails on an orphan or a double owner):
+
+| kind | on by default | who may change it |
+|---|---|---|
+| kernel group (`control-plane`, `core`) | always | nobody |
+| default group (`git`, `agentwire`, `payloads`, `remote`, `mcp-tools`, `outbound`) | yes | human opt-out: `agentwire safety groups disable <g>` |
+| pack (`aws`, `gcp`, `firebase`, `cloud-hosting`, `databases`, `containers`, `infrastructure`, `publish`) | no | human opt-in: `agentwire safety packs enable <p>` |
+
+**State** lives in the protected `~/.agentwire/damagecontrol.yml` (`packs:` = enabled packs, `disabled_groups:`). **Mutations are human-only**: the command refuses without a tty (`tasks_cli._host_context_ok`, same gate as `tasks promote`) and `agentwire safety (packs|groups) (enable|disable)` is a `PROTECTED_COMMAND_PATTERNS` entry, so an agent's Bash tool is stopped first. `list`/`status` (CLI `--json`, MCP `safety_packs_list`/`safety_groups_list`) are read-only. Agents are told (CLAUDE.md, the `agentwire` role) to *suggest* a pack when the user's work touches that vendor.
+
+**No deploy skew by construction.** The hooks never read this state; they load whatever is installed in `~/.agentwire/{damage-control,tooldefs}`. "Pack off" is "files not installed", so rule loading and hooks cannot disagree. `heal_damage_control` is the only writer: it installs the wanted files through the usual three-way baselines, and for a disabled entry removes the installed copy **only if pristine** (byte-equal to a shipped version) — an edited file is reported (`*_kept_edited`) and left, because it may be the user's own. `rules_drift`/`tooldefs_drift` skip a disabled entry's files, so a deliberate "off" is never `[!!] missing`.
+
+**Migration.** While `packs:` is absent (every pre-packs install), the first heal records every pack with ANY installed file (pristine or edited — an edited file still loads) as enabled, then writes the key. Upgrading changes no decision; the owner disables what they don't use. Read-only surfaces (`doctor`, `list`) show that same preview via `packs.effective_state`, so no reader reports a pack as off while its files are live. Pinned by an upgrade test that compares decisions before/after on an old all-files layout.
+
+**Surfaces.** `doctor` prints enabled packs, available packs, vendor CLIs found with the pack off, and opted-out groups — `[..]`, informational, never scored. `agentwire init` lists packs and suggests those whose CLI is on `PATH`.
+
+**Limits, stated.** `cloud-hosting.yaml` carries `gh repo delete`, so that protection is opt-in until it moves to the git group. `gws` is not bundled; the owner-written example is in `docs/wiki/internals/examples/`. With no installed rules dir at all the loader falls back to the bundled dir (everything on) — a dev/test-only state.
+
 ## Deployment: merged is not deployed (#936 + #916)
 
 `heal_damage_control` is the one function that puts rules, tooldefs and hook

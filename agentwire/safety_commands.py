@@ -91,6 +91,13 @@ unattended_allow: []
 #   - path: ".env.development"
 #     allow: [read, write, edit]
 allowed_paths: []
+
+# Rule groups and vendor packs (#1141). Written by `agentwire safety packs|groups`
+# (human-only). `packs` = enabled vendor packs (aws, databases, ...); the key is
+# added on first heal. `disabled_groups` = opted-out default groups; the kernel
+# (control-plane, core) can never be disabled.
+# packs: [aws]
+# disabled_groups: [outbound]
 """
 
 
@@ -948,10 +955,20 @@ def _sync_state(target: Path, source: Path, shipped: List[str]) -> str:
 
 
 def _yaml_sync_states(source_dir: Path, target_dir: Path, section: str) -> Dict[str, str]:
+    """Sync state per bundled file this machine is meant to have.
+
+    A disabled pack/group's files are out of scope: not being installed is the
+    intended state, so it is not ``missing`` drift (#1141).
+    """
+    from agentwire.safety import packs
+
     shipped = load_rule_baselines().get(section, {})
+    off = packs.unwanted_files(
+        section, packs.effective_state(DAMAGECONTROL_FILE, RULES_DIR, TOOLDEFS_DIR)
+    )
     return {
         src.name: _sync_state(target_dir / src.name, src, shipped.get(src.name, []))
-        for src in sorted(source_dir.glob("*.yaml"))
+        for src in sorted(source_dir.glob("*.yaml")) if src.name not in off
     }
 
 
@@ -1136,12 +1153,36 @@ def _sync_yaml_dir(
     force: bool,
     log,
     label: str,
+    state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, List[str]]:
-    """Three-way sync one bundled YAML dir into its installed counterpart."""
-    result: Dict[str, List[str]] = {"installed": [], "updated": [], "unknown": []}
+    """Three-way sync one bundled YAML dir into its installed counterpart.
+
+    Files owned by a disabled pack/group (``state``) are not installed. A
+    pristine installed copy of one is removed; an edited one is never ours to
+    delete and is reported (#1141).
+    """
+    from agentwire.safety import packs
+
+    result: Dict[str, List[str]] = {
+        "installed": [], "updated": [], "unknown": [], "removed": [], "kept_edited": [],
+    }
     shipped = load_rule_baselines().get(section, {})
+    off = packs.unwanted_files(section, state) if state is not None else set()
     for src in sorted(source_dir.glob("*.yaml")):
         target = target_dir / src.name
+        if src.name in off:
+            if not target.exists():
+                continue
+            digest = _sha256(target)
+            if digest is not None and (digest == _sha256(src) or digest in shipped.get(src.name, [])):
+                target.unlink()
+                result["removed"].append(src.name)
+                log(f"✓ Removed {label} {src.name} (its pack/group is disabled)")
+            else:
+                result["kept_edited"].append(src.name)
+                log(f"⚠️  Left {label} {src.name} installed — its pack/group is disabled but "
+                    f"the file was edited, and an edited file is never removed. Delete it by hand.")
+            continue
         state = _sync_state(target, src, shipped.get(src.name, []))
         if state == "ok":
             continue
@@ -1167,6 +1208,29 @@ def _sync_yaml_dir(
                 f"`--force` replaces it (a .local-<ts>.bak is kept)."
             )
     return result
+
+
+def migrate_pack_state() -> Dict[str, Any]:
+    """Load pack/group state, first recording a pre-packs install's packs (#1141).
+
+    While ``packs:`` is absent from the policy file, every pack with any file
+    already installed is written as enabled, so upgrading changes no decision.
+    Returns the state dict plus ``migrated`` (the packs just recorded).
+    """
+    from agentwire.safety import packs
+
+    state = packs.read_state(DAMAGECONTROL_FILE)
+    migrated: List[str] = []
+    if state[packs.PACKS_KEY] is None:
+        installed = {
+            "rules": {p.name for p in RULES_DIR.glob("*.yaml")},
+            "tooldefs": {p.name for p in TOOLDEFS_DIR.glob("*.yaml")},
+        }
+        migrated = packs.migrate_packs(state, installed)
+        packs.write_state(DAMAGECONTROL_FILE, packs=migrated)
+        state[packs.PACKS_KEY] = migrated
+    state["migrated"] = migrated
+    return state
 
 
 def heal_damage_control(
@@ -1205,6 +1269,9 @@ def heal_damage_control(
         "hooks_installed": [], "hooks_updated": [], "hooks_downgrade_refused": [],
         "rules_installed": [], "rules_updated": [], "rules_unknown": [],
         "tooldefs_installed": [], "tooldefs_updated": [], "tooldefs_unknown": [],
+        "rules_removed": [], "rules_kept_edited": [],
+        "tooldefs_removed": [], "tooldefs_kept_edited": [],
+        "packs_migrated": [],
         "matchers_added": 0, "policy_scaffolded": False,
         "refused": False, "provenance": "",
     }
@@ -1229,6 +1296,11 @@ def heal_damage_control(
     if scaffold_damagecontrol_file():
         summary["policy_scaffolded"] = True
         log(f"✓ Scaffolded {DAMAGECONTROL_FILE} (enabled: true)")
+
+    pack_state = migrate_pack_state()
+    summary["packs_migrated"] = pack_state["migrated"]
+    if pack_state["migrated"]:
+        log(f"✓ Recorded already-installed packs as enabled: {', '.join(pack_state['migrated'])}")
 
     hooks_source = Path(__file__).parent / "hooks" / "damage-control"
     for fn in DAMAGE_CONTROL_FILES:
@@ -1259,8 +1331,10 @@ def heal_damage_control(
 
     try:
         rules = _sync_yaml_dir(
-            get_damage_control_source(), RULES_DIR, "rules", force, log, "rule"
+            get_damage_control_source(), RULES_DIR, "rules", force, log, "rule", pack_state
         )
+        summary["rules_removed"] = rules["removed"]
+        summary["rules_kept_edited"] = rules["kept_edited"]
         summary["rules_installed"] = rules["installed"]
         summary["rules_updated"] = rules["updated"]
         summary["rules_unknown"] = rules["unknown"]
@@ -1269,8 +1343,10 @@ def heal_damage_control(
 
     try:
         tooldefs = _sync_yaml_dir(
-            get_tooldefs_source(), TOOLDEFS_DIR, "tooldefs", force, log, "tooldef"
+            get_tooldefs_source(), TOOLDEFS_DIR, "tooldefs", force, log, "tooldef", pack_state
         )
+        summary["tooldefs_removed"] = tooldefs["removed"]
+        summary["tooldefs_kept_edited"] = tooldefs["kept_edited"]
         summary["tooldefs_installed"] = tooldefs["installed"]
         summary["tooldefs_updated"] = tooldefs["updated"]
         summary["tooldefs_unknown"] = tooldefs["unknown"]

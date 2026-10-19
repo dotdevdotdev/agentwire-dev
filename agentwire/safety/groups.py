@@ -43,7 +43,6 @@ _ENTRIES = (
     Entry("containers", "pack", "Docker and Kubernetes", ("containers.yaml",), ("docker.yaml", "kubectl.yaml"), binaries=("docker", "kubectl")),
     Entry("infrastructure", "pack", "Terraform, Pulumi, Serverless, SAM", ("infrastructure.yaml",), ("terraform.yaml",), binaries=("terraform", "pulumi", "serverless", "sam")),
     Entry("publish", "pack", "Package registry publish + npm", ("publish.yaml",), ("npm.yaml",), binaries=("npm", "twine")),
-    Entry("gws", "pack", "Google Workspace CLI", ("gws.yaml",), ("gws.yaml",), binaries=("gws",)),
 )
 
 REGISTRY: Dict[str, Entry] = {e.name: e for e in _ENTRIES}

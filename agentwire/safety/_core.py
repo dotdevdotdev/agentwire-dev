@@ -5247,6 +5247,11 @@ PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = [
         "agentwire tasks promote writes the protected .agentwire.tasks.yml — "
         "host-only, run it from your own terminal (not through an agent).",
     ),
+    (
+        r'\bagentwire\s+safety\s+(?:packs|groups)\s+(?:enable|disable)\b',
+        "agentwire safety packs/groups enable|disable changes damage-control "
+        "policy — host-only, run it from your own terminal (not through an agent).",
+    ),
 ]
 
 

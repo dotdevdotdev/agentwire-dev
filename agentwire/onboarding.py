@@ -322,6 +322,25 @@ def run_onboarding(skip_session: bool = True, force: bool = False) -> int:
     print_success(f"Setup: {'Multi-machine' if is_multi_machine else 'Standalone'}")
 
     # ─────────────────────────────────────────────────────────────
+    # Damage-control packs (informational — enabling is a separate human step)
+    # ─────────────────────────────────────────────────────────────
+    print_header("4. Damage-Control Packs")
+    try:
+        from .safety_packs_cli import overview
+
+        packs = [r for r in overview() if r["kind"] == "pack"]
+        suggested = [r["name"] for r in packs if r["suggest_enable"]]
+        print_info("Core protection is on. Vendor rule packs are opt-in: "
+                   + ", ".join(r["name"] for r in packs))
+        if suggested:
+            print_info("Vendor CLIs found here. Consider: "
+                       + "; ".join(f"agentwire safety packs enable {n}" for n in suggested))
+        else:
+            print_info("List them any time: agentwire safety packs list")
+    except Exception as e:  # informational step: never block first-run setup
+        print_warning(f"Could not list damage-control packs: {e}")
+
+    # ─────────────────────────────────────────────────────────────
     # Write Minimal Config
     # ─────────────────────────────────────────────────────────────
     print_header("Saving Configuration")

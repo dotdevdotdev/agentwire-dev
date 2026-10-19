@@ -90,3 +90,34 @@ def network_status() -> str:
     if output:
         return output
     return f"Failed to check network: {data.get('error', 'Unknown error')}"
+
+
+def _format_entries(label: str, data: dict) -> str:
+    if not data.get("success"):
+        return f"Failed to list {label}: {data.get('error', 'Unknown error')}"
+    lines = []
+    for e in data.get("entries", []):
+        mark = "on" if e["enabled"] else "off"
+        suffix = " (vendor CLI found on this machine)" if e.get("suggest_enable") else ""
+        lines.append(f"[{mark}] {e['name']} — {e['description']}{suffix}")
+    return "\n".join(lines) or f"No {label}."
+
+
+@mcp.tool()
+def safety_packs_list() -> str:
+    """List damage-control vendor packs (aws, databases, ...) and whether each is on.
+
+    Read-only. Enabling or disabling a pack is human-only: SUGGEST
+    `agentwire safety packs enable <name>` to the user when their work touches
+    that vendor — never run it yourself.
+    """
+    return _format_entries("packs", run_agentwire_cmd(["safety", "packs", "list"]))
+
+
+@mcp.tool()
+def safety_groups_list() -> str:
+    """List damage-control default groups and whether each is on (read-only).
+
+    Kernel groups are always on. Opting a group out is human-only.
+    """
+    return _format_entries("groups", run_agentwire_cmd(["safety", "groups", "list"]))
