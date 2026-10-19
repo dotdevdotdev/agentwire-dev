@@ -5692,8 +5692,17 @@ _INTERPRETER_NAME_RE = _rx(r'(?:' + _INTERPRETERS + r')')
 # Words the program text uses for a control-plane directory or file, even when the
 # path itself is assembled at run time (``'damage'+'control.yml'``, ``join(h, '.claude')``).
 _CONTROL_PLANE_WORDS = (".agentwire", ".claude", "damagecontrol", "settings.json")
-# Directories under those names that agents write by design.
-_BENIGN_CONTROL_RE = _rx(r'''\.claude/projects/[^'"\s]*?memory[^'"\s]*|\.agentwire/(?:wiki|artifacts)\b[^'"\s]*''')
+# Directories under those names that agents write by design — matched on a whole path segment.
+_BENIGN_PATH_RE = _rx(r'(?:^|/)\.claude/projects/[^/]+/memory(?:/|$)|(?:^|/)\.agentwire/(?:wiki|artifacts)(?:/|$)')
+# The ONE expression shape the exemption covers: a single string literal, optionally
+# the sole argument of ``expanduser`` / ``Path``. Anything else (a variable, a join, ``+``,
+# ``os.pardir``, a call) is not a path the scan can read, so it is not exempt.
+_STATIC_PATH_RES = (
+    _rx(r'''\s*['"]([^'"\\$@#]*)['"]\s*'''),
+    _rx(r'''\s*(?:os\.path\.)?expanduser\(\s*['"]([^'"\\$@#]*)['"]\s*\)\s*'''),
+    _rx(r'''\s*(?:pathlib\.)?Path\(\s*['"]([^'"\\$@#]*)['"]\s*\)\s*'''),
+)
+_CHDIR_RE = _rx(r'\bchdir\s*\(')
 _CALL_RE = _rx(r'([A-Za-z_]\w*)\s*\(')
 # one plain string (a double-quoted one with ``$``/``@``/``#{`` interpolates: not literal)
 _LITERAL_ARG_RE = _rx(r'''\s*(?:'[^']*'|"[^"$@#\\]*")\s*''')
@@ -5812,19 +5821,23 @@ def _receiver_before(text: str, dot: int) -> str:
     return text[max(pos, dot - 400):dot]
 
 
-# A path that climbs out of (or is assembled from pieces of) the agent-owned directory:
-# ``<memory>/../../hooks/x`` is not memory, so the exemption must not apply.
-_TRAVERSAL_RE = _rx(r'\.\.|\bparents?\b|\bjoinpath\b|\bresolve\b')
-
-
 def _names_control_plane(expr: str) -> bool:
-    """``expr`` names a control-plane word; the agent-owned dirs are exempt unless the path can climb out of them.
+    """``expr`` names a control-plane word, unless it is ONE static path inside an agent-owned directory.
 
-    A symlink INSIDE ``.claude/projects/*/memory`` that points at the control
-    plane is a declared residual (the text cannot see it).
+    The exemption is all-or-nothing: only a single string literal (optionally
+    inside ``expanduser`` / ``Path``) whose normalized form lies inside
+    ``.claude/projects/*/memory`` or ``.agentwire/wiki|artifacts`` and names no
+    other control-plane word. A non-literal piece anywhere (a variable segment,
+    ``os.path.join``, ``+``, ``os.pardir``, a call) means the scan cannot say
+    where the path lands, so there is no exemption. A symlink INSIDE those
+    directories is a declared residual.
     """
-    if not _TRAVERSAL_RE.search(expr):
-        expr = _BENIGN_CONTROL_RE.sub("", expr)
+    static = next((m.group(1) for r in _STATIC_PATH_RES for m in (r.fullmatch(expr),) if m), None)
+    if static is not None:
+        norm = posixpath.normpath(static)
+        hit = _BENIGN_PATH_RE.search(norm)
+        if hit:
+            expr = norm[: hit.start()] + norm[hit.end():]
     return any(w in expr.casefold() for w in _CONTROL_PLANE_WORDS)
 
 
@@ -5870,6 +5883,9 @@ def _program_opaque_write(program: str) -> bool:
     if _INDIRECT_RE.search(program):  # getattr(__import__('os'), 'system')(...) hides which sink runs
         return True
     in_string = _string_mask(program)
+    # ``os.chdir(M); os.chdir('..'); open('hooks/x', 'w')``: the working directory moves, so any
+    # write whose path is not an absolute literal could land anywhere.
+    moved = any(not in_string[m.start()] for m in _CHDIR_RE.finditer(program))
     for m in _CALL_RE.finditer(program):
         if in_string[m.start()]:  # ``open(p, 'w')`` quoted as DATA (a fixture, a message) is not a call
             continue
@@ -5909,6 +5925,8 @@ def _program_opaque_write(program: str) -> bool:
             exprs.append(receiver)
         for e in exprs:
             if not _LITERAL_ARG_RE.fullmatch(e) and _names_control_plane(e):
+                return True
+            if moved and not re.fullmatch(r'''\s*['"](?:/|~)[^'"]*['"]\s*''', e):
                 return True
     return False
 

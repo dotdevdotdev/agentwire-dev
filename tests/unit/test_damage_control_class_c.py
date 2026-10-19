@@ -70,6 +70,19 @@ INLINE_ASKS = [
     "python3 -c \"from pathlib import Path;(Path.home()/'.agentwire/wiki'/'..'/'hooks'/'x').write_text('y')\"",
     "python3 -c \"import shutil,os;shutil.copy(s,os.path.expanduser('~/.agentwire/wiki')+'/../hooks/x')\"",
     "python3 -c \"import os;os.system('cp a '+os.path.expanduser('~/.claude/projects/x/memory')+'/../../hooks/x')\"",
+    # the exemption is ONE static path: any other spelling of "inside memory/wiki" asks
+    "python3 -c \"import os;open(os.path.join(os.path.expanduser('~/.claude/projects/x/memory'),os.pardir,os.pardir,'hooks','e.sh'),'w')\"",
+    "python3 -c \"import os;open(os.path.join(os.path.expanduser('~/.claude/projects/x/memory'),os.path.pardir,'e.sh'),'w')\"",
+    "python3 -c \"import os;open(os.path.join(os.path.expanduser('~/.claude/projects/p/memory'),d),'w')\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.claude/projects/x/memory')+'/'+d,'w')\"",
+    "python3 -c \"from pathlib import Path;(Path.home()/'.claude/projects/x/memory'/d).write_text('x')\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.claude/projects/x/memory')+'/.\\x2e/.\\x2e/hooks/e.sh','w')\"",
+    "python3 -c \"import os;dd='..';open(os.path.join(os.path.expanduser('~/.claude/projects/x/memory'),dd,dd,'hooks','e.sh'),'w')\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.claude/projects/x/memory')+'/'+'.'*2+'/hooks/e','w')\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.claude/projects/x/memory')+'/'+chr(46)*2+'/hooks/e','w')\"",
+    "python3 -c \"import os;os.chdir(os.path.expanduser('~/.claude/projects/x/memory'));os.chdir('..');os.chdir('..');open('hooks/e.sh','w')\"",
+    "python3 -c \"import os;M=os.path.expanduser('~/.claude/projects/x/memory');os.chdir(M);os.chdir('..');open('hooks/e.sh','w')\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.agentwire/wiki-evil/x'),'w')\"",
     # more ways to open a path for writing
     "ruby -e \"File.open(h+'/.claude/settings.json','w')\"",
     "ruby -e \"File.new(h+'/.claude/settings.json','w')\"",
@@ -91,13 +104,13 @@ INLINE_ALLOWS = [
     "cat > notes.md <<'EOF'\npython3 -c \"open(p+'/.claude/x','w')\"\nEOF",  # a heredoc body is prose
     "cat >> tests/test_env.py <<EOF\nx = 1\nEOF",
     # the control word is nowhere near a sink's path expression
-    "python3 -c \"import os;open(os.path.join(os.path.expanduser('~/.claude/projects/p/memory'),n),'w').write(t)\"",
     "python3 -c \"import os;os.makedirs(os.path.join(root,'.claude','x'))\"",
     "python3 -c \"import shutil,sys;shutil.copy(sys.argv[1],sys.argv[2])\" ~/.claude/a ~/.claude/b",
     "python3 -c \"import os;open(os.path.join(os.environ['W'],'p.md'),'w').write('~/.agentwire/wiki')\"",
     "python3 -c \"import json,sys;json.dump(d,open(out,'w'))\" package/settings.json",
     "ruby -e \"File.write(dir+'/x', IO.read('.claude/CLAUDE.md'))\"",
-    "python3 -c \"import os;open(os.path.expanduser('~/.claude/projects/x/memory')+'/n.md','w')\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.claude/projects/x/memory/n.md'),'w')\"",
+    "python3 -c \"from pathlib import Path;Path('/home/u/.agentwire/wiki/p.md').write_text('x')\"",
     "python3 -c \"import os;os.open(h+'/.claude/CLAUDE.md',os.O_RDONLY)\"",
     # sink-shaped text quoted as DATA (a test fixture, a message) is not a call
     "python3 - <<'PYEOF'\nFIX = \"open(h+'/.claude/settings.json','w')\"\nopen(out,'w').write(FIX)\nPYEOF",

@@ -408,17 +408,26 @@ plane asks too (the sink is hidden). Calls quoted as data (a fixture, a
 message) are not calls.
 
 Not fired: a control word in a comment, a printed string, written data or argv;
-read-only use; a literal path (the verb rules decide it); the agent-owned
-`.claude/projects/*/memory` and `.agentwire/wiki|artifacts` — **unless the
-expression can climb out** (`..`, `parent(s)`, `joinpath`, `resolve`): then the
-exemption does not apply (`<memory>/../../hooks/x` asks). Declared residuals: a
-symlink INSIDE `memory`/`wiki` that points at the control plane; a control word
-split across a variable assigned elsewhere in the program
+read-only use; a literal path (the verb rules decide it). The agent-owned
+`.claude/projects/*/memory` and `.agentwire/wiki|artifacts` are exempt
+**all-or-nothing**: only when the path expression is ONE static string literal
+(optionally the sole argument of `expanduser` / `Path`) whose normalized form lies
+inside that directory on a whole path segment (`.agentwire/wiki-evil` is not
+wiki). Any other piece — a variable segment, `os.path.join`, `+`, `os.pardir`,
+a call, a `chdir` earlier in a program that names the control plane — means the
+scan cannot say where the path lands, so there is no exemption and it asks. This
+is a shape, not a spelling denylist: `'.\x2e'`, `'.'*2`, `chr(46)*2` and a
+`dd='..'` variable all fall out the same way. The price: a routine writer that
+builds a memory path from a variable segment asks; write the full path as one
+literal (the Write tool is unaffected). Declared residuals: a symlink INSIDE
+`memory`/`wiki` that points at the control plane; a control word split across a
+variable assigned elsewhere in the program
 (`d = Path.home()/'.claude'; (d/'x').write_text(..)`).
 
-Audit replay (6.9 k distinct logged commands): exactly one new ask on the current
+Audit replay (7.0 k distinct logged commands): exactly one new ask on the current
 code — a scratch-dir script writing `S+"/ks/damagecontrol.yml"`, the shape itself,
-by design. Earlier revisions asked on three: that one, a test-fixture author whose
+by design; no routine memory/wiki writer exists among them (memory is written with the
+Write tool). Earlier revisions asked on three: that one, a test-fixture author whose
 string data held sink calls, and a probe writer; string-literal masking removed
 the data-as-code ones.
 
