@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "92fb080f8c2b4b33876e7071a3e18d09952d33cdb805cd0a7f5f92af3e415d3e", "generated_at": "2026-10-19T13:03:51Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "163db63e0368a8d74986285ca05667ca4c87ea6e460b5f3a566d5c322eb20539", "generated_at": "2026-10-19T13:03:51Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -5720,7 +5720,7 @@ def _named_control_plane_files() -> List[Tuple[str, "frozenset[str]"]]:
     return [(d, frozenset(names)) for d, names in sorted(by_dir.items())]
 
 
-_INLINE_FLAG_RE = _rx(r'-[A-Za-z]*[ceE]')
+_INLINE_FLAG_RE = _rx(r'-[A-Za-z]*[ceE]|-r')  # ``-r`` is php's inline flag (ruby's is a require: see _inline_programs)
 _INTERPRETER_START_RE = _rx(r'\b' + _INTERPRETERS + r'\b')
 _INTERPRETER_NAME_RE = _rx(r'(?:' + _INTERPRETERS + r')')
 # Words the program text uses for a control-plane directory or file, even when the
@@ -5736,7 +5736,7 @@ _PLAIN_RECEIVER_RE = _rx(r'''[\w.$:]*''')
 _PATH_FIRST_SINKS = frozenset({
     "system", "popen", "popen2", "popen3", "Popen", "run", "call", "check_call", "check_output",
     "unlink", "unlinkSync", "remove", "rmtree", "rmSync", "chmod", "chown", "truncate",
-    "writeFile", "writeFileSync", "appendFile", "appendFileSync", "file_put_contents",
+    "writeFile", "writeFileSync", "appendFile", "appendFileSync", "file_put_contents", "createWriteStream",
     "exec", "execv", "execve", "execl", "execlp", "execvp", "spawn", "spawnSync", "execSync", "execFile",
 })
 # A call whose EVERY argument is a path (two ends).
@@ -5749,11 +5749,16 @@ _RECEIVER_SINKS = frozenset({
     "write_text", "write_bytes", "touch", "unlink", "symlink_to", "hardlink_to", "rename", "replace", "chmod",
 })
 _FILE_CLASSES = frozenset({"File", "IO", "fs", "Files", "FileUtils"})
+# Calls that open a path and write only in a write mode / flag (path first, mode second).
+_OPEN_NAMES = frozenset({"open", "fopen", "openSync", "new"})
+# Archive extraction: the destination is an argument, whatever the receiver (``tar.extractall(d)``).
+_EXTRACT_SINKS = frozenset({"extractall", "extract", "unpack_archive"})
 # ``var.replace(a, b)`` / ``items.remove(x)`` are string and list methods: a path-taking name
 # called on a plain identifier counts only when that identifier is a module (``os.replace``).
 _SINK_MODULES = frozenset({
     "os", "shutil", "subprocess", "fs", "promises", "child_process", "cp", "FileUtils", "File", "IO",
-    "Kernel", "Open3", "posix", "Files", "pathlib", "commands",
+    "Kernel", "Open3", "posix", "Files", "pathlib", "commands", "io", "codecs", "gzip", "bz2", "lzma",
+    "tarfile", "zipfile", "builtins",
 })
 _INDIRECT_RE = _rx(r'\b(?:getattr|__import__|importlib|eval|exec)\s*\(')
 
@@ -5841,8 +5846,39 @@ def _receiver_before(text: str, dot: int) -> str:
     return text[max(pos, dot - 400):dot]
 
 
+# A path that climbs out of (or is assembled from pieces of) the agent-owned directory:
+# ``<memory>/../../hooks/x`` is not memory, so the exemption must not apply.
+_TRAVERSAL_RE = _rx(r'\.\.|\bparents?\b|\bjoinpath\b|\bresolve\b')
+
+
 def _names_control_plane(expr: str) -> bool:
-    return any(w in _BENIGN_CONTROL_RE.sub("", expr).casefold() for w in _CONTROL_PLANE_WORDS)
+    """``expr`` names a control-plane word; the agent-owned dirs are exempt unless the path can climb out of them.
+
+    A symlink INSIDE ``.claude/projects/*/memory`` that points at the control
+    plane is a declared residual (the text cannot see it).
+    """
+    if not _TRAVERSAL_RE.search(expr):
+        expr = _BENIGN_CONTROL_RE.sub("", expr)
+    return any(w in expr.casefold() for w in _CONTROL_PLANE_WORDS)
+
+
+def _string_mask(program: str) -> List[bool]:
+    """``mask[i]`` is True when ``program[i]`` is inside a string literal (``'``, ``"``, triple-quoted)."""
+    mask = [False] * len(program)
+    i, n = 0, len(program)
+    while i < n:
+        ch = program[i]
+        if ch in "'\"":
+            q = program[i : i + 3] if program[i : i + 3] in ("'''", '"""') else ch
+            j = i + len(q)
+            while j < n and program[j : j + len(q)] != q:
+                j += 2 if program[j] == "\\" else 1
+            for k in range(i, min(j + len(q), n)):
+                mask[k] = True
+            i = j + len(q)
+        else:
+            i += 1
+    return mask
 
 
 def _open_writes(args: List[str], mode_index: int) -> bool:
@@ -5856,6 +5892,8 @@ def _open_writes(args: List[str], mode_index: int) -> bool:
 
 def _mode_writes(mode: str) -> bool:
     lit = _LITERAL_ARG_RE.fullmatch(mode)
+    if re.search(r"O_RDONLY", mode) and not re.search(r"O_(?:WRONLY|RDWR|CREAT|APPEND|TRUNC)", mode):
+        return False
     return not lit or bool(re.search(r"[wax+>]", mode))
 
 
@@ -5865,7 +5903,10 @@ def _program_opaque_write(program: str) -> bool:
         return False
     if _INDIRECT_RE.search(program):  # getattr(__import__('os'), 'system')(...) hides which sink runs
         return True
+    in_string = _string_mask(program)
     for m in _CALL_RE.finditer(program):
+        if in_string[m.start()]:  # ``open(p, 'w')`` quoted as DATA (a fixture, a message) is not a call
+            continue
         name = m.group(1)
         open_at = m.end() - 1
         close = _match_close(program, open_at)
@@ -5875,12 +5916,13 @@ def _program_opaque_write(program: str) -> bool:
         receiver = _receiver_before(program, dot) if method else ""
         plain = bool(_PLAIN_RECEIVER_RE.fullmatch(receiver))
         exprs: List[str] = []
-        if name == "open":
-            if method:  # Path(...).open(mode)
-                if not _open_writes(args, 0):
+        if name in _OPEN_NAMES and (name != "new" or receiver.split(".")[-1] == "File"):
+            if method and not (plain and receiver.split(".")[-1] in _SINK_MODULES | _FILE_CLASSES):
+                # Path(...).open(mode): the receiver is the path
+                if plain or not _open_writes(args, 0):
                     continue
                 exprs = [receiver]
-            else:
+            else:  # open(path, mode), File.open / io.open / os.open / fs.openSync, fopen
                 perl = len(args) > 1 and args[1].lstrip(" '\"").startswith((">", "+<", "+>"))
                 if not (perl or _open_writes(args, 1)):
                     continue
@@ -5891,11 +5933,13 @@ def _program_opaque_write(program: str) -> bool:
             method and plain and receiver.split(".")[-1] not in _SINK_MODULES
         ) and not (not method and name == "replace"):
             exprs = args[:1] if name in _PATH_FIRST_SINKS else args
+        elif name in _EXTRACT_SINKS:
+            exprs = args
         elif name in _RECEIVER_SINKS and method and not plain:
             exprs = [receiver] + (args if name in ("rename", "replace", "symlink_to", "hardlink_to") else [])
         else:
             continue
-        if method and not plain and name not in _RECEIVER_SINKS and name != "open":
+        if method and not plain and name not in _RECEIVER_SINKS and name not in _OPEN_NAMES:
             exprs.append(receiver)
         for e in exprs:
             if not _LITERAL_ARG_RE.fullmatch(e) and _names_control_plane(e):
@@ -5919,6 +5963,8 @@ def _inline_programs(command: str) -> List[str]:
         for i, tok in enumerate(toks[1:], 1):
             if tok in (";", "|", "||", "&&", "&"):
                 break
+            if tok == "-r" and os.path.basename(toks[0]) != "php":
+                continue
             if _INLINE_FLAG_RE.fullmatch(tok) and i + 1 < len(toks):
                 out.append(toks[i + 1])
                 break

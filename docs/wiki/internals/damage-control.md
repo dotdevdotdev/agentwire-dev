@@ -390,22 +390,37 @@ re-scanned as a command, so the verb still decides (reads stay allowed):
   refused the same way it is unwrapped.
 
 **Run-time-assembled paths fail closed on SHAPE (#1065).** The program text is
-taken ONLY from an inline interpreter's `-c`/`-e` argument (`python/node/perl/ruby/lua/php`)
-or a heredoc fed to one — never the rest of the command line. A write/exec sink
-(`open` in a write or non-literal mode, `File.write`, `writeFile*`, `os.system`,
-`subprocess.*`, `unlink`, `shutil.copy/move`, `Path(...).write_text`, a
-`perl open(F, ">…")`) whose path expression is not one plain literal AND itself
-contains a control-plane word (`.agentwire`, `.claude`, `damagecontrol`,
-`settings.json`) asks (`core.control-plane-target`, unverifiable — bypass does
-not demote it). `getattr`/`__import__`/`eval`/`exec` in a program that names the
-control plane asks too (the sink is hidden). Not fired: a control word in a
-comment, a printed string, written data or argv; read-only use; a literal path
-(the verb rules decide it); the agent-owned `.claude/projects/*/memory` and
-`.agentwire/wiki|artifacts`. Measured against 6.85 k distinct audit-log commands:
-exactly one new ask, a scratch-dir script writing `S+"/ks/damagecontrol.yml"` —
-the shape itself, by design. A control word split across a variable assigned
-elsewhere in the program (`d = Path.home()/'.claude'; (d/'x').write_text(..)`)
-is a declared residual.
+taken ONLY from an inline interpreter's `-c`/`-e` argument (`php -r`;
+`python/node/perl/ruby/lua`) or a heredoc fed to one — never the rest of the
+command line. A write/exec sink whose path expression is not one plain literal
+AND itself contains a control-plane word (`.agentwire`, `.claude`,
+`damagecontrol`, `settings.json`) asks (`core.control-plane-target`,
+unverifiable — bypass does not demote it). Sinks: `open` / `io.open` /
+`codecs.open` / `os.open` / `File.open` / `File.new` / `fs.openSync` / `fopen` in a
+write (or non-literal) mode, a Perl `open(F, ">…")`, `File.write`,
+`writeFile*` / `appendFile*` / `createWriteStream`, `file_put_contents`,
+`os.system` / `subprocess.*` / `popen` / `exec*` / `spawn*`, `unlink` / `remove` /
+`rmtree` / `chmod`, `shutil.copy*` / `move` / `rename` / `os.replace`,
+archive `extractall` / `extract` / `unpack_archive`, and the receiver of
+`Path(...).write_text` / `write_bytes` / `touch` / `unlink` / `open(mode)`.
+`getattr` / `__import__` / `eval` / `exec` in a program that names the control
+plane asks too (the sink is hidden). Calls quoted as data (a fixture, a
+message) are not calls.
+
+Not fired: a control word in a comment, a printed string, written data or argv;
+read-only use; a literal path (the verb rules decide it); the agent-owned
+`.claude/projects/*/memory` and `.agentwire/wiki|artifacts` — **unless the
+expression can climb out** (`..`, `parent(s)`, `joinpath`, `resolve`): then the
+exemption does not apply (`<memory>/../../hooks/x` asks). Declared residuals: a
+symlink INSIDE `memory`/`wiki` that points at the control plane; a control word
+split across a variable assigned elsewhere in the program
+(`d = Path.home()/'.claude'; (d/'x').write_text(..)`).
+
+Audit replay (6.9 k distinct logged commands): exactly one new ask on the current
+code — a scratch-dir script writing `S+"/ks/damagecontrol.yml"`, the shape itself,
+by design. Earlier revisions asked on three: that one, a test-fixture author whose
+string data held sink calls, and a probe writer; string-literal masking removed
+the data-as-code ones.
 
 Declared residuals (not statically knowable): paths assembled at runtime
 beyond that shape (`format`, decoding, `d=$(…); … $d/damagecontrol.yml`, a

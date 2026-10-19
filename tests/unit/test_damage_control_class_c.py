@@ -60,6 +60,28 @@ INLINE_ASKS = [
     "python3 -c \"getattr(__import__('os'),'system')('echo x > '+h+'/.claude/settings.json')\"",
     "python3 -c \"open(h+'/.claude/settings.json',m)\"",
     "python3 - <<'EOF'\nimport os\nopen(os.path.expanduser('~')+'/.claude/'+'settings.json','w')\nEOF",
+    # the agent-owned dirs are not an exemption once the path climbs out of them
+    "python3 -c \"import os;open(os.path.expanduser('~/.claude/projects/x/memory')+'/../../hooks/evil.sh','w')\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.claude/projects/x/memory')+'/../../commands/evil.md','w')\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.agentwire/wiki')+'/../hooks/damage-control/rules/x.yaml','w')\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.agentwire/wiki')+'/../machines.json','w')\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.agentwire/wiki')+'/../config.yaml','w')\"",
+    "python3 -c \"from pathlib import Path;(Path.home()/'.claude/projects/x/memory/../../hooks/x').write_text('y')\"",
+    "python3 -c \"from pathlib import Path;(Path.home()/'.agentwire/wiki'/'..'/'hooks'/'x').write_text('y')\"",
+    "python3 -c \"import shutil,os;shutil.copy(s,os.path.expanduser('~/.agentwire/wiki')+'/../hooks/x')\"",
+    "python3 -c \"import os;os.system('cp a '+os.path.expanduser('~/.claude/projects/x/memory')+'/../../hooks/x')\"",
+    # more ways to open a path for writing
+    "ruby -e \"File.open(h+'/.claude/settings.json','w')\"",
+    "ruby -e \"File.new(h+'/.claude/settings.json','w')\"",
+    "node -e \"require('fs').createWriteStream(h+'/.claude/settings.json')\"",
+    "node -e \"fs.openSync(h+'/.claude/settings.json','w')\"",
+    "python3 -c \"import io;io.open(h+'/.claude/settings.json','w')\"",
+    "python3 -c \"import codecs;codecs.open(h+'/.claude/settings.json','w')\"",
+    "python3 -c \"import os;os.open(h+'/.claude/settings.json',os.O_WRONLY)\"",
+    "python3 -c \"import tarfile;tarfile.open(a).extractall(h+'/.claude')\"",
+    "python3 -c \"import shutil;shutil.unpack_archive(a,h+'/.claude/hooks')\"",
+    "php -r \"file_put_contents(\\$h.'/.claude/settings.json','x');\"",
+    "php -r \"fopen(\\$h.'/.claude/settings.json','w');\"",
 ]
 INLINE_ALLOWS = [
     "python3 -c \"import os;open(os.path.join('/tmp','x'),'w')\"",  # no control-plane name
@@ -75,6 +97,10 @@ INLINE_ALLOWS = [
     "python3 -c \"import os;open(os.path.join(os.environ['W'],'p.md'),'w').write('~/.agentwire/wiki')\"",
     "python3 -c \"import json,sys;json.dump(d,open(out,'w'))\" package/settings.json",
     "ruby -e \"File.write(dir+'/x', IO.read('.claude/CLAUDE.md'))\"",
+    "python3 -c \"import os;open(os.path.expanduser('~/.claude/projects/x/memory')+'/n.md','w')\"",
+    "python3 -c \"import os;os.open(h+'/.claude/CLAUDE.md',os.O_RDONLY)\"",
+    # sink-shaped text quoted as DATA (a test fixture, a message) is not a call
+    "python3 - <<'PYEOF'\nFIX = \"open(h+'/.claude/settings.json','w')\"\nopen(out,'w').write(FIX)\nPYEOF",
     "python3 - <<'PYEOF'\np='docs/a.md'\ns=open(p).read()\nopen(p,'w').write(s.replace('.claude','x'))\nPYEOF",
 ]
 
