@@ -116,19 +116,51 @@ telemetry:
 - **Nothing that identifies a person or device:** no hardware/hostname/username derivation, no Claude conversation ids, no hashes, no IP storage (the endpoint must discard it).
 - **Why this shape (EU):** the EDPB's reading is that storing or accessing information on a user's terminal equipment needs consent under ePrivacy Art. 5(3) with an affirmative action, before any access or storage, withdrawable as easily as given ([EDPB letter OUT2023-0098, annex, read](https://www.dirittobancario.it/wp-content/uploads/2024/01/EDPB-letter-13-dicembre-2023-OUT2023-0098.pdf)). The design aims to avoid being a consent-requiring or personal-data case at all by sending only aggregates with no persistent identifier, while still collecting explicit opt-in before anything is sent. The letter does not itself say a persistent identifier is personal data; that comes from general GDPR definitions and is exactly a question for counsel.
 
-### Transport
+### Transport (automatic after opt-in)
 
-Weekly, completed UTC days only, HTTPS POST of the previewed JSON via stdlib `urllib`, 5 s timeout, from the watchdog (never a hot path). Failure retries next week; queue capped at 4 weeks. A test asserts no socket opens while `share` is false.
+After an explicit yes, collection is **automatic**: a weekly background send from the limits watchdog (never a hot path), completed UTC days only, HTTPS POST of exactly the previewed JSON via stdlib `urllib`, 5 s timeout. Failure backs off (next tick, then exponential up to the next week) and **never blocks or slows a command**; queue capped at 4 weeks. A kill-switch response from the server (below) makes the client stop sending until the next release. `export` remains only as the no-network inspection path. A test asserts no socket opens while `share` is false.
 
-### Endpoint
+### Endpoint: decided, Cloudflare Worker, isolated
 
-| Option | Cost | Abuse and ops | Privacy | Verdict |
-|--------|------|---------------|---------|---------|
-| **Owned: Cloudflare Worker + D1/KV** **[A]** | free tier to a few $/mo | per-IP + global rate limit, 8 KB body cap, strict validation against `schema.py` (reject unknown keys/enums), drop IP | full control, can state it truthfully | **Recommended** |
-| Vendor (PostHog HTTP capture API, not the SDK) | free tier then per-event; self-host = ops | vendor rate limits | SDKs default to adding ids/geo-IP; third-party processor in the legal story | viable if dashboards for free matter |
-| Manual: `export` and send to us | $0 | n/a | fully transparent | fine stopgap for 2a |
+**Decision (2026-10-20):** a Cloudflare Worker with D1, **fully isolated**: its own Cloudflare account or project scope (at minimum its own zone, Worker and D1), no shared secrets, no connection to the website's Supabase or any other store.
 
-Treat inbound data as **untrusted**: anyone can POST. Aggregates are indicative; nothing auto-acts on them.
+Reasons: (1) a public unauthenticated write endpoint is an abuse target, so its blast radius must be zero; (2) near-zero idle cost; (3) rate limiting runs at the edge before our code; (4) the Worker is open source, so the no-IP-storage claim is checkable.
+
+| Option | Verdict |
+|--------|---------|
+| **Cloudflare Worker + D1, isolated** | **Chosen** |
+| PostHog | Rejected: SDK identity model fights the no-persistent-id design; IP-discard and EU hosting unverified |
+| AWS Lambda + API Gateway | Rejected: more ops, no benefit here |
+| Supabase as ingest | Rejected unless it is its own project: shared quota and abuse blast radius with whatever else lives there. A **separate** Supabase project is acceptable later as an optional analysis store fed aggregates |
+
+Inbound data is **untrusted**: anyone can POST. Aggregates are indicative; nothing auto-acts on them.
+
+#### Worker spec
+
+- `POST /v1/ingest`, `Content-Type: application/json`; anything else 404/405.
+- **Body cap 8 KB** (enforced in the Worker; Cloudflare's own plan limit is 100 MB, so this is ours to enforce).
+- **Strict validation against `schema.py`** (shipped as a versioned JSON export of the schema): reject unknown keys, unknown enum values, wrong types, out-of-range counts. Schema is versioned in the payload; unsupported versions get a clear 4xx.
+- **Rate limits:** per-IP via a Cloudflare rate-limiting rule (before the Worker runs) plus a global cap in the Worker. Counting by IP is the only characteristic on Free and Pro plans.
+- **No IP stored or logged by our code.** Cloudflare itself sees IPs at the edge; what its logs retain is a question for counsel and the dashboard settings (section 5 legal list).
+- **Kill switch:** the response body can carry `{"stop": true, "until_version": "..."}`; clients stop sending. Lets a bad schema or bug be shut off without a release.
+- **Storage: one row (or one R2 object) per batch, never per counter.** A batch is one JSON blob plus `received_day`, `schema_version`, `agentwire_version`. A **daily scheduled job** aggregates batches into the queried/published tables and applies the k floor, then drops raw batches past a short retention **[A]** (7 days).
+- Optional later: forward aggregates to a separate analysis store.
+
+**Capacity:** 100k opted-in installs sending weekly is about **14k batches/day** (100,000 / 7). That is one row write each: well under the D1 free cap of 100k row writes/day and the Worker free cap of 100k requests/day. Per-counter rows (about 200 per batch) would be about 2.9M writes/day and break the free tier, which is why batches are one row.
+
+#### Verify before building 2b
+
+Official pages read 2026-10-20 (figures as the pages state them; re-check at build time because limits change):
+
+| Item | Free | Paid | Source |
+|------|------|------|--------|
+| Workers requests | 100,000/day; 10 ms CPU | $5/mo min, 10M requests/mo included, then $0.30/M | [limits](https://developers.cloudflare.com/workers/platform/limits/), [pricing](https://developers.cloudflare.com/workers/platform/pricing/) |
+| D1 | 100,000 rows written/day, 5M read/day, 5 GB | 50M written/mo included then $1/M; 5 GB then $0.75/GB-mo | [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/) |
+| R2 | 10 GB-mo, 1M Class A, 10M Class B per month, free egress | $0.015/GB-mo, $4.50/M Class A | [R2 pricing](https://developers.cloudflare.com/r2/pricing/) |
+| Analytics Engine | 100k data points/day, 10k queries/day | 10M/mo then $0.25/M; billing currently paused | [pricing](https://developers.cloudflare.com/analytics/analytics-engine/pricing/) |
+| Rate-limiting rules | 1 rule, IP only, 10 s period | Pro 2 rules; Business 5 | [WAF rate limiting](https://developers.cloudflare.com/waf/rate-limiting-rules/) |
+
+Still to confirm before 2b: (a) rate-limiting rules attach to a **zone**, so the isolated project needs a zone (a custom domain) on the plan we choose, and the Free plan's single 10 s-period rule may be too coarse for a weekly-per-install pattern, so a Worker-side limiter is the fallback; (b) what Cloudflare retains in edge/Worker logs about IPs and how to minimize it; (c) D1 behavior on bursty writes if installs sync on the same weekday (client jitter on the send time mitigates).
 
 ### Legal: questions for counsel, not conclusions
 
@@ -160,33 +192,32 @@ Reading: incumbents mostly opt out with a notice; Go reversed to opt-in under ba
 
 | Phase | Scope | Size | Gate |
 |-------|-------|------|------|
-| **1a** | `schema.py`, `record()`, spool write, watchdog aggregator, schema test (mutation: add an unbounded str field, test must fail), benchmark | M | hook p99 / CLI startup delta under 0.5 ms |
-| **1b** | Instrument CLI exit, MCP dispatch, session launch, scheduler, doctor; derive `dc`/`hook`/`fail`/`rephrased` from audit rows | M | coverage test: every registered subcommand and MCP tool maps to an enum value |
-| **1c** | `stats`, `telemetry show/schema`, doctor line, `telemetry_stats` MCP tool, wiki page | S | owner reads two weeks of own data |
-| **2a** | Config block, consent record, `status/preview/export/enable/decline/disable/delete`, protected key, DO_NOT_TRACK; **no network code** | M | owner reviews preview payload |
-| **2b** | Endpoint, sender, per-send token, k floor (server and client), rate limiting and validation | M | counsel answers section 5; consent text approved |
-| **2c** | Onboarding question in `init`/`doctor`, announcement | S | 2b run on the owner's machine for a week |
+| **1a** | Local counters: `schema.py`, `record()`, spool write, watchdog aggregator, instrument CLI/MCP/session/scheduler/doctor, derive `dc`/`hook`/`fail`/`rephrased` from audit rows, schema test (mutation: add an unbounded str field, test must fail), coverage test (every subcommand/tool maps to an enum), benchmark | L | hook p99 and `agentwire --version` delta under 0.5 ms |
+| **1b** | Local surfaces: `stats`, `telemetry show/schema`, doctor line, `telemetry_stats` MCP tool, wiki page | S | owner reads two weeks of own data |
+| **2a** | Config block, consent record, onboarding question, `status/preview/export/enable/decline/disable/delete`, protected key, DO_NOT_TRACK, **automatic weekly sender** with backoff/kill-switch handling, per-send token, client-side fold. Built and tested against a **local test endpoint** | M | owner reviews preview payload; no-socket-when-off test |
+| **2b** | Real endpoint: isolated Cloudflare Worker + D1 per the spec, rate limiting, daily aggregation with k floor, "verify before building 2b" list resolved | M | counsel answers section 5; consent text approved |
 
-1a to 1c are useful without Phase 2 and ship independently.
+1a and 1b are useful without Phase 2 and ship independently.
 
 ## 8. Owner decisions
 
 **Settled (2026-10-20):**
 1. Sharing is opt-in, default off; onboarding suggests it; no answer / Enter / non-interactive / skipped = off; declined recorded.
 2. Local counters on by default with kill switch and doctor line. Pair events cut.
-11. (formerly pair events) cut, see 2.
+3. Collection is automatic after opt-in (weekly watchdog send); `export` is inspection only.
+4. **Endpoint: isolated Cloudflare Worker + D1**, batch-per-row storage with a daily aggregation job. No shared secrets or stores with the website or anything else.
 
 **Open, with recommendation:**
-3. **Store format:** spool + daily counters (recommended) vs SQLite; accept no-fsync.
-4. **Wipe survival:** counters disposable, `~/.agentwire/telemetry/` only (recommended, matches 2026-10-12).
-5. **Endpoint:** owned Cloudflare Worker (recommended); PostHog HTTP API or manual export as alternatives.
-6. **Identity:** per-send random token, no persistent id (recommended); or no token and Go-style sampling.
-7. **k floor:** 10 server-side contributors, 3 client-side fold (proposed; trade accuracy for privacy).
-8. **Consent key protection:** protected-key mechanism for `config.yaml` (Phase 2a checks how `PROTECTED_COMMAND_PATTERNS` treats it).
-9. **Re-ask policy:** re-prompt only when the consent text changes materially (recommended), never automatically on schema bumps.
-10. **Legal:** who answers section 5, and is a privacy-notice page needed before 2b?
+5. **Store format:** spool + daily counters (recommended) vs SQLite; accept no-fsync.
+6. **Wipe survival:** counters disposable, `~/.agentwire/telemetry/` only (matches 2026-10-12).
+7. **Identity:** per-send random token, no persistent id (recommended); or no token and Go-style sampling.
+8. **k floor:** 10 server-side contributors, 3 client-side fold (proposed).
+9. **Consent key protection:** mechanism for `config.yaml` (2a checks how `PROTECTED_COMMAND_PATTERNS` treats it).
+10. **Re-ask policy:** only when the consent text changes materially (recommended).
+11. **Legal:** who answers section 5, and is a privacy-notice page needed before 2b?
 12. **Audit log retention:** unchanged, never uploaded (recommended).
 13. **Rephrase flag:** accept new aggregator logic and its 5-minute window, or defer.
+14. **Cloudflare plan and zone:** which plan and which domain for the isolated zone (rate-limiting needs one); raw-batch retention (proposed 7 days).
 
 ## Assumptions to verify
 
