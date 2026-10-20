@@ -3565,6 +3565,29 @@ def _hide_heredoc_bodies(command: str, keep_programs: bool) -> str:
     return "".join(out)
 
 
+def hide_data_sink_heredocs(command: str) -> str:
+    """``command`` with the quoted heredoc bodies written to a file by ``cat`` / ``tee`` hidden.
+
+    ``cat > f <<'EOF' … EOF`` stores text: a secret's NAME inside it (a
+    ``.gitignore`` line, a script's source, a message) names nothing to read.
+    Only a quoted body (no expansion) whose LAST command is ``cat``/``tee`` with
+    nothing piped after the marker qualifies; a body any interpreter, ``xargs``
+    or loop could consume stays visible, and the command line itself (the
+    destination path) is never touched.
+    """
+    out, pos = [], 0
+    for h in _heredocs(command):
+        words = _feed_words(h.line)
+        last = words[max((i + 1 for i, w in enumerate(words) if w in _WORD_OPERATORS), default=0):]
+        if not h.quoted or not last or os.path.basename(last[0]) not in ("cat", "tee"):
+            continue
+        out.append(command[pos : h.body_start])
+        out.append(_HEREDOC_BODY + "\n")
+        pos = h.body_end
+    out.append(command[pos:])
+    return "".join(out)
+
+
 def _command_substitutions(text: str) -> List[str]:
     """Bodies of the ``$(...)`` / backtick substitutions the shell would run in ``text``.
 
@@ -9781,8 +9804,9 @@ def _decide_rules(
     if first_ask is not None and not concealing:
         return first_ask
 
+    zero_haystacks = [hide_data_sink_heredocs(hay) for hay in haystacks]
     for path in zero_access:
-        if any(matches_path_in_command(path, hay) for hay in haystacks):
+        if any(matches_path_in_command(path, hay) for hay in zero_haystacks):
             if is_command_path_allowed(command, guarded_allowlist(allowed, zero_access), "read"):
                 continue
             return {
