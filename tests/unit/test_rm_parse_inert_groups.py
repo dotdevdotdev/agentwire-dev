@@ -10,7 +10,6 @@ command unmodelled, because modelling it would leak a subshell's state.
 """
 
 import os
-import uuid
 from pathlib import Path
 
 import pytest
@@ -57,13 +56,13 @@ NOT_GROUPS = {
 
 
 @pytest.fixture
-def scratch():
-    d = Path(f"/private/tmp/claude-{os.getuid()}") / f"proj-{uuid.uuid4().hex[:8]}" / "sess" / "scratchpad"
+def scratch(tmp_path, monkeypatch):
+    """A session scratch dir under a patched scratch root, so it exists on any OS."""
+    root = Path(os.path.realpath(tmp_path)) / "claude-scratch"
+    monkeypatch.setattr("agentwire.safety._core._scratch_roots", lambda: [str(root)])
+    d = root / "proj" / "sess" / "scratchpad"
     d.mkdir(parents=True)
-    yield d
-    for f in d.iterdir():
-        f.unlink()
-    os.removedirs(d)
+    return d
 
 
 def test_harmless_groups_do_not_poison_the_model(scratch):

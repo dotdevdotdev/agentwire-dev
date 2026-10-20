@@ -8888,22 +8888,18 @@ def _group_in_command_position(prefix: str) -> bool:
     """Whether a ``(`` that follows ``prefix`` opens a subshell group (not a pattern, array or extglob).
 
     Only a ``(`` at command position qualifies: after the start of the text, a
-    newline, ``;`` (but not the ``;;`` of a case arm), ``&``, ``|``, ``{`` or a
-    spaced ``!``. Directly after a word character, an assignment, an extglob
+    newline, ``;``, ``&``, ``|`` or a spaced ``!`` (case arms never get here:
+    ``_replace_inert_groups`` leaves any command containing ``case`` alone). Directly after a word character, an assignment, an extglob
     operator or a ``(``, or after any other word (``in``, ``echo``), it is
     something else, so it is left alone.
     """
-    if "\\" in prefix or prefix.count("'") % 2 or prefix.count('"') % 2:
-        return False
     stripped = prefix.rstrip(" \t")
     if not stripped:
         return True
     last = stripped[-1]
     spaced = len(stripped) != len(prefix)
-    if last == "\n" or last in "&|{":
+    if last in "\n&|;":
         return True
-    if last == ";":
-        return not stripped.endswith(";;")
     return last == "!" and spaced
 
 
