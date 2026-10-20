@@ -124,6 +124,8 @@ After an explicit yes, collection is **automatic**: a weekly background send fro
 
 **Decision (2026-10-20):** a Cloudflare Worker with D1, **fully isolated**: its own Cloudflare account or project scope (at minimum its own zone, Worker and D1), no shared secrets, no connection to the website's Supabase or any other store.
 
+**Host:** a dedicated subdomain `t.<agentwire-domain>` on an agentwire-branded domain whose nameservers are at Cloudflare (a zone, which unlocks zone-level rate limiting). **Which domain, and whether it is already on Cloudflare DNS, is an open owner decision (section 8).** `damage-control.dev` is **not** used: it is reserved for a possible standalone damage-control project (#1064). Keep the telemetry host on its own subdomain so the zone can later host other things, and keep the schema and URL path generic (`/v1/ingest`, no product name in the payload) so nothing is hard-wired to one product.
+
 Reasons: (1) a public unauthenticated write endpoint is an abuse target, so its blast radius must be zero; (2) near-zero idle cost; (3) rate limiting runs at the edge before our code; (4) the Worker is open source, so the no-IP-storage claim is checkable.
 
 | Option | Verdict |
@@ -131,7 +133,7 @@ Reasons: (1) a public unauthenticated write endpoint is an abuse target, so its 
 | **Cloudflare Worker + D1, isolated** | **Chosen** |
 | PostHog | Rejected: SDK identity model fights the no-persistent-id design; IP-discard and EU hosting unverified |
 | AWS Lambda + API Gateway | Rejected: more ops, no benefit here |
-| Supabase as ingest | Rejected unless it is its own project: shared quota and abuse blast radius with whatever else lives there. A **separate** Supabase project is acceptable later as an optional analysis store fed aggregates |
+| Supabase as ingest | Viable **only as its own separate project** (not the website's), with the same validation, size cap and rate limiting written by us; otherwise shared quota and abuse blast radius. The design (schema, validation, no-IP-store, k floor) is backend-independent, so this stays a swap, not a redesign. Cloudflare remains the decision. A separate Supabase project is also acceptable later as an optional analysis store fed aggregates |
 
 Inbound data is **untrusted**: anyone can POST. Aggregates are indicative; nothing auto-acts on them.
 
@@ -140,13 +142,23 @@ Inbound data is **untrusted**: anyone can POST. Aggregates are indicative; nothi
 - `POST /v1/ingest`, `Content-Type: application/json`; anything else 404/405.
 - **Body cap 8 KB** (enforced in the Worker; Cloudflare's own plan limit is 100 MB, so this is ours to enforce).
 - **Strict validation against `schema.py`** (shipped as a versioned JSON export of the schema): reject unknown keys, unknown enum values, wrong types, out-of-range counts. Schema is versioned in the payload; unsupported versions get a clear 4xx.
-- **Rate limits:** per-IP via a Cloudflare rate-limiting rule (before the Worker runs) plus a global cap in the Worker. Counting by IP is the only characteristic on Free and Pro plans.
-- **No IP stored or logged by our code.** Cloudflare itself sees IPs at the edge; what its logs retain is a question for counsel and the dashboard settings (section 5 legal list).
+- **Rate limits, layered** (see below): coarse flood control in a zone rule, per-batch-token replay control in the Worker.
+- **The Worker does not read, log or persist the client IP** (see "IP address" below).
 - **Kill switch:** the response body can carry `{"stop": true, "until_version": "..."}`; clients stop sending. Lets a bad schema or bug be shut off without a release.
 - **Storage: one row (or one R2 object) per batch, never per counter.** A batch is one JSON blob plus `received_day`, `schema_version`, `agentwire_version`. A **daily scheduled job** aggregates batches into the queried/published tables and applies the k floor, then drops raw batches past a short retention **[A]** (7 days).
 - Optional later: forward aggregates to a separate analysis store.
 
 **Capacity:** 100k opted-in installs sending weekly is about **14k batches/day** (100,000 / 7). That is one row write each: well under the D1 free cap of 100k row writes/day and the Worker free cap of 100k requests/day. Per-counter rows (about 200 per batch) would be about 2.9M writes/day and break the free tier, which is why batches are one row.
+
+#### Rate-limit layering
+
+| Layer | Tool | What it catches | Notes (official docs read) |
+|-------|------|-----------------|----------------------------|
+| 1. Zone | WAF rate-limiting rule on `t.<domain>` | Floods, per-IP bursts, before the Worker runs (and before Worker request quota is spent) | Free plan: 1 rule, IP only, 10 s period and 10 s mitigation; Pro 2 rules, up to 1 min; Business 5 ([docs](https://developers.cloudflare.com/waf/rate-limiting-rules/)). Coarse by design |
+| 2. Worker binding | Workers Rate Limiting binding keyed on the **batch token** | Replay of one token; one token sent repeatedly | Period must be 10 or 60 s, `simple` type only; described as "permissive, eventually consistent, and intentionally designed to not be used as an accurate accounting system"; limits are per Cloudflare location; the page recommends **against** keying on IPs; pricing and plan availability not stated on the page ([docs](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)) |
+| 3. Dedupe | D1 unique index on batch token (or a Durable Object) | Exact replay across locations and over days | A DO is accurate (single-threaded per object) but costs requests/duration: SQLite-backed DOs are available on Free (100k requests/day, 13,000 GB-s/day, 100k rows written/day) ([docs](https://developers.cloudflare.com/durable-objects/platform/pricing/)). At about 14k batches/day a DO adds a request per batch and shares the 100k/day budget in spirit; a D1 unique constraint on the token is cheaper and good enough |
+
+Recommendation: layer 1 for coarse flood, layer 2 for cheap per-token throttling, layer 3 (D1 unique token) for replay. Per-IP limiting is **only** in layer 1, so the Worker never needs the IP. Accuracy is not required: a few extra junk batches are tolerable because the k floor and aggregation are the defense, not the limiter.
 
 #### Verify before building 2b
 
@@ -160,11 +172,32 @@ Official pages read 2026-10-20 (figures as the pages state them; re-check at bui
 | Analytics Engine | 100k data points/day, 10k queries/day | 10M/mo then $0.25/M; billing currently paused | [pricing](https://developers.cloudflare.com/analytics/analytics-engine/pricing/) |
 | Rate-limiting rules | 1 rule, IP only, 10 s period | Pro 2 rules; Business 5 | [WAF rate limiting](https://developers.cloudflare.com/waf/rate-limiting-rules/) |
 
-Still to confirm before 2b: (a) rate-limiting rules attach to a **zone**, so the isolated project needs a zone (a custom domain) on the plan we choose, and the Free plan's single 10 s-period rule may be too coarse for a weekly-per-install pattern, so a Worker-side limiter is the fallback; (b) what Cloudflare retains in edge/Worker logs about IPs and how to minimize it; (c) D1 behavior on bursty writes if installs sync on the same weekday (client jitter on the send time mitigates).
+Still to confirm before 2b: (a) the chosen domain is (or can be moved) onto Cloudflare nameservers, and the plan's rule count and 10 s period are enough for layer 1; (b) what Cloudflare retains in edge/Worker logs about IPs and how to minimize it; (c) D1 behavior on bursty writes if installs sync on the same weekday (client jitter on the send time mitigates).
+
+### IP address
+
+An IP address reaches Cloudflare's edge with every request; that is unavoidable for any HTTPS endpoint. The claim this design makes, and the only one:
+
+> **The Worker does not read, log or persist the client IP. The IP is used transiently for zone-level rate limiting only, and Cloudflare's edge handles it transiently.**
+
+It does **not** claim "IPs never reach us" or "no IP is processed": Cloudflare processes it at the edge, and the zone rule counts by it.
+
+- **Header removal:** Cloudflare's **Remove visitor IP headers** managed transform removes `cf-connecting-ip`, `x-forwarded-for` (visitor IP only, when another CDN proxied) and `true-client-ip` from the request ([managed transforms reference](https://developers.cloudflare.com/rules/transform/managed-transforms/reference/); the HTTP headers page also points to it for not receiving `CF-Connecting-IP` ([docs](https://developers.cloudflare.com/fundamentals/reference/http-headers/))). Neither page says how it interacts with a Worker on the same zone, and the Workers `request.cf` docs list no client IP field ([docs](https://developers.cloudflare.com/workers/runtime-apis/request/)). **Unverified: whether enabling it hides the IP from the Worker in practice. Test in 2b.** The Worker code also never reads those headers, which makes the claim checkable in the open-source Worker.
+- **Not verified:** what Cloudflare itself retains (edge/Worker log retention, the DPA terms, analytics defaults). Listed under questions for counsel; dashboard settings to review.
+- **Law, as questions not conclusions:** GDPR recital 30 says natural persons "may be associated with online identifiers provided by their devices, applications, tools and protocols", naming "internet protocol addresses, cookie identifiers or other identifiers" ([recital 30](https://gdpr-info.eu/recitals/no-30/), read). The CJEU's *Breyer* (C-582/14, 2016) is commonly cited for dynamic IPs being personal data where the operator has legal means to identify the person; **I could not load the judgment text, so that reading is from general knowledge and unverified**. For CCPA/CPRA, the AG's FAQ page I read defines personal information broadly (identifies, relates to, or could reasonably be linked with a person or household) but does not itself mention IP addresses ([oag.ca.gov](https://oag.ca.gov/privacy/ccpa)); the statutory text (Civ. Code 1798.140) did not load (HTTP 403). Whether an IP is personal data here, and whether transient edge handling is processing by us, are for counsel.
+
+### Later hardening: Oblivious HTTP (not in Phase 2)
+
+OHTTP is the only route to the stronger claim "we technically **cannot** see the IP". It is **optional, post-launch, and not part of any phase**.
+
+- **Mechanism ([RFC 9458](https://www.rfc-editor.org/rfc/rfc9458), read; last 8 KB unread):** the relay sees the client IP and ciphertext only; the gateway sees the plaintext request but "never sees the Client's IP address". The RFC requires that the relay not be operated by the same entity as the gateway.
+- **Cloudflare options as of 2026-10-20:** the managed **OHTTP Relay** is Enterprise-only and in closed beta ([docs](https://developers.cloudflare.com/ohttp-relay/)). The **OHTTP Gateway** is a closed-beta paid add-on to a zone, price unpublished, waitlist, and it "will refuse to decrypt requests sent from Cloudflare Workers or from proxied hosts on Cloudflare" ([announcement](https://blog.cloudflare.com/announcing-cloudflare-ohttp-gateway/), [InfoQ](https://infoq.com/news/2026/10/cloudflare-ohttp-gateway/)), so a Cloudflare-hosted endpoint plus a Cloudflare-hosted relay is exactly what it blocks. Cloudflare publishes a Worker relay ([privacy-gateway-relay](https://github.com/cloudflare/privacy-gateway-relay)), but running both hops ourselves defeats the separation.
+- **Precedent:** Mozilla announced engaging Fastly to operate an OHTTP relay, with Divvi Up as DAP aggregator, for Firefox metrics ([Mozilla](https://blog.mozilla.org/en/products/firefox/partnership-ohttp-prio/), read; the page gives the goal, not a full architecture, so exact setup would need secondary sources).
+- **Open question:** is any independent relay available to a small project, and at what cost? Revisit after launch; until then the honest claim above stands.
 
 ### Legal: questions for counsel, not conclusions
 
-1. Is an aggregate-only payload with a per-send random token and no stored IP outside "personal data" (GDPR) and outside Art. 5(3) ePrivacy? If Art. 5(3) still applies, does our onboarding yes + preview satisfy "affirmative action, before access or storage, withdrawable"?
+1. Is an aggregate-only payload with a per-send random token, and an IP that our Worker neither reads nor stores but that Cloudflare handles at the edge, outside "personal data" (GDPR) and outside Art. 5(3) ePrivacy? Is Cloudflare our processor, and what do its DPA and log retention say? If Art. 5(3) still applies, does our onboarding yes + preview satisfy "affirmative action, before access or storage, withdrawable"?
 2. Does the *local* counter store count as "storage of information in terminal equipment" needing consent, given it never leaves the machine and is read only by the user? (Go treats local collection as acceptable by default.)
 3. Controller identity and lawful basis for a one-person open-source project versus a company; is a privacy notice URL required in the consent text?
 4. CCPA/CPRA: does the per-send token count as a "unique identifier"? Does opt-in-only plus deletion avoid "sale/share" duties?
@@ -195,7 +228,7 @@ Reading: incumbents mostly opt out with a notice; Go reversed to opt-in under ba
 | **1a** | Local counters: `schema.py`, `record()`, spool write, watchdog aggregator, instrument CLI/MCP/session/scheduler/doctor, derive `dc`/`hook`/`fail`/`rephrased` from audit rows, schema test (mutation: add an unbounded str field, test must fail), coverage test (every subcommand/tool maps to an enum), benchmark | L | hook p99 and `agentwire --version` delta under 0.5 ms |
 | **1b** | Local surfaces: `stats`, `telemetry show/schema`, doctor line, `telemetry_stats` MCP tool, wiki page | S | owner reads two weeks of own data |
 | **2a** | Config block, consent record, onboarding question, `status/preview/export/enable/decline/disable/delete`, protected key, DO_NOT_TRACK, **automatic weekly sender** with backoff/kill-switch handling, per-send token, client-side fold. Built and tested against a **local test endpoint** | M | owner reviews preview payload; no-socket-when-off test |
-| **2b** | Real endpoint: isolated Cloudflare Worker + D1 per the spec, rate limiting, daily aggregation with k floor, "verify before building 2b" list resolved | M | counsel answers section 5; consent text approved |
+| **2b** | Real endpoint: isolated Cloudflare Worker + D1 per the spec, layered rate limiting, daily aggregation with k floor. **Prerequisites:** zone created (agentwire domain on Cloudflare nameservers), endpoint host `t.<agentwire-domain>` chosen, official-limit check done and re-read, IP-header behavior tested | M | counsel answers section 5; consent text approved |
 
 1a and 1b are useful without Phase 2 and ship independently.
 
@@ -205,7 +238,7 @@ Reading: incumbents mostly opt out with a notice; Go reversed to opt-in under ba
 1. Sharing is opt-in, default off; onboarding suggests it; no answer / Enter / non-interactive / skipped = off; declined recorded.
 2. Local counters on by default with kill switch and doctor line. Pair events cut.
 3. Collection is automatic after opt-in (weekly watchdog send); `export` is inspection only.
-4. **Endpoint: isolated Cloudflare Worker + D1**, batch-per-row storage with a daily aggregation job. No shared secrets or stores with the website or anything else.
+4. **Endpoint: isolated Cloudflare Worker + D1**, batch-per-row storage with a daily aggregation job, layered rate limiting. No shared secrets or stores with the website or anything else. Supabase stays a viable swap only as its own separate project.
 
 **Open, with recommendation:**
 5. **Store format:** spool + daily counters (recommended) vs SQLite; accept no-fsync.
@@ -217,11 +250,14 @@ Reading: incumbents mostly opt out with a notice; Go reversed to opt-in under ba
 11. **Legal:** who answers section 5, and is a privacy-notice page needed before 2b?
 12. **Audit log retention:** unchanged, never uploaded (recommended).
 13. **Rephrase flag:** accept new aggregator logic and its 5-minute window, or defer.
-14. **Cloudflare plan and zone:** which plan and which domain for the isolated zone (rate-limiting needs one); raw-batch retention (proposed 7 days).
+14. **OPEN: endpoint domain.** Which agentwire-branded domain hosts `t.<agentwire-domain>`, and is it already on Cloudflare DNS (nameservers at Cloudflare)? Not `damage-control.dev` (reserved for #1064). Also the Cloudflare plan and raw-batch retention (proposed 7 days).
+15. **IP wording:** adopt the claim "the Worker does not read, log or persist the client IP; used transiently for rate limiting; Cloudflare's edge handles it transiently" and never "IPs never reach us" (recommended).
+16. **OHTTP later?** Optional post-launch hardening, not in Phase 2; revisit only if an independent relay is available to a small project.
 
 ## Assumptions to verify
 
 - Audit volume (17 MB / 10 days) is from this machine only.
 - Hot-path costs are reasoned; Phase 1a measures them and is a stop condition.
+- *Breyer* (C-582/14) and the CCPA statute text could not be loaded; those legal points are unverified and for counsel. Whether the Remove-visitor-IP-headers transform hides the IP from a Worker is untested.
 - The EDPB letter was read in full text but is about cookie-pledge principles; it supports the consent requirements above, not a claim about identifiers.
 - VS Code's default was not on the page read; row states only the setting.
