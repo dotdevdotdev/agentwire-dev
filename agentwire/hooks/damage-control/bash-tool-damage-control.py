@@ -34,7 +34,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "57b4b51332b966a2b3909acc38577be36ca0424c6bf09c9de3ef5fa27320a578", "generated_at": "2026-10-20T12:30:53Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "30f8fbe9e0d18f7e5afff9a5f8f89577795a27535f260a856753cf5309a1324c", "generated_at": "2026-10-20T12:32:03Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -8931,6 +8931,24 @@ def _mentions_verb(argv: List[str], verb: str) -> bool:
     return "clean" in argv and any(os.path.basename(t) == "git" for t in argv)
 
 
+# A subshell group cannot move the parent's directory or set its variables, so
+# one that holds no cd/assignment/export and never names the verbs being judged
+# adds nothing to the model: ``(npm run start >/dev/null 2>&1 &)``, the usual
+# way to start a server before screenshots. Anything else stays unmodelled.
+_INERT_GROUP_RE = re.compile(r"\(([^()`$]*|[^()`]*\$[A-Za-z_{][^()`]*)\)")
+_GROUP_UNSAFE_RE = re.compile(
+    r"(?:^|[\s;&|])(?:[A-Za-z_]\w*=|(?:cd|pushd|popd|export|eval|source|rm|find|git|xargs|sh|bash|zsh|env|exec)\b)|\.\s"
+)
+
+
+def _replace_inert_groups(command: str) -> str:
+    """``command`` with each harmless one-level subshell group replaced by ``:``."""
+    def sub(m: "re.Match[str]") -> str:
+        inner = m.group(1)
+        return m.group(0) if _GROUP_UNSAFE_RE.search(inner) or "<(" in m.string[max(0, m.start() - 1):m.start() + 1] else ":"
+    return _INERT_GROUP_RE.sub(sub, command)
+
+
 def _parse_rm_command(
     command: str, cwd: Optional[str], verb: str = "rm"
 ) -> Optional[List[Tuple[List[str], List[str], str]]]:
@@ -8947,7 +8965,7 @@ def _parse_rm_command(
     masked, mask_err = _mask_command_substitutions(inert_view(command))
     if mask_err:
         return None
-    segments, split_err = _scope_segments(_newlines_as_separators(masked))
+    segments, split_err = _scope_segments(_newlines_as_separators(_replace_inert_groups(masked)))
     if split_err:
         return None
     current = os.path.abspath(cwd)
