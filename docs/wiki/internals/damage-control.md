@@ -1373,6 +1373,28 @@ The PreToolUse audit row records the decision (`allowed` / `asked` / `blocked`),
 
 Retention is not bounded and there is no copy outside `~/.agentwire/`: a wipe of that directory erases the history (it did on 2026-10-11). See #1068 for the follow-ups.
 
+## Attended-block friction, round 3 (#940)
+
+Corpus: 9 days of audit logs, 255 attended blocks (222 distinct commands; rows repeat). Reviewer / fix / probe sessions netted out by name: 83 distinct commands from real work sessions. Replaying every logged block through the bundled rules: 29 already allow on `main` (rounds 1-2), this round flips 15 more, and **no previously allowed command regressed and none became an ask**. Netted still-blocking: 61 on `main`, 51 after.
+
+- **The "no rule_id" bucket (127 of 255) was six checks, not one.** `protectedControlPlane`, `protectedCommand`, `parserUnavailable` and the three path ladders (`zeroAccessPath`, `readOnlyPath`, `noDeletePath`) built their block result with a `pattern` but no `id`. Every Bash block now carries one (`core.protected-control-plane`, `core.protected-command`, `core.parser-unavailable`, `core.zero-access-path`, `core.read-only-path`, `core.no-delete-path`), so `agentwire safety report` ranks them like any rule. Blocks are not grantable, so the ids change no permission.
+- **Zero-access on stored text.** A quoted heredoc written by `cat` / `tee` (a `.gitignore` listing the env file, a script containing `event.key`) names a secret without reading it. `hide_data_sink_heredocs` hides those bodies from the zero-access check only. Stays visible: the destination path, an unquoted body, any body an interpreter / `xargs` / a pipe could consume, and every command after the body.
+- **`rm` allowances gave up on any group.** `(npm run start >/dev/null 2>&1 &); … rm shot.tmp.mjs` left the whole compound unmodelled, so the scratch / untracked allowances never ran. A one-level subshell group that holds no `cd` / assignment / `export` / `rm` / `find` / `git` / interpreter word is now a no-op for the model. A group that could leak directory or variable state stays unmodelled.
+
+Remaining blocks, by design or out of reach of a text hook:
+
+| Shape | Why it stays |
+|---|---|
+| Real reads of the env file, `~/.pypirc`, `.vercel/project.json` | the rule working |
+| `rm -rf <untracked dir>` (`sites/test-client`), `git rm` | untracked bytes cannot come back; `git rm` is permissioned by owner decision |
+| `rm` behind `cd $VAR` / `cd -` / `cd x; …` | the directory the `rm` runs in is not statically known |
+| `rm <glob>` | the expansion is not known |
+| Prose naming a protected path inside `agentwire send` / `msg send` bodies | control-plane batch, not this round |
+
+Candidates left unbuilt (policy, not mechanism): `rm -rf` of a git-ignored directory with a well-known build-output name (`dist`, `node_modules`, `.next`, `__pycache__`), `rm <file>` directly under `/tmp`, and a final-component glob strictly inside scratch.
+
+**Does an attended hard block need a per-project escape short of the kill switch? Recommendation: not yet.** Every friction class in this corpus was a precision bug (a rule reading text as an operation), fixed by precision, and the kill switch plus the escape hatch already cover a genuine one-off. An escape is a loosening of a control-plane knob that would live in the protected `damagecontrol.yml` (human-only), so each entry is a standing hole that an unattended run inherits. If one is ever built: scope it to `(rule id, path glob, project dir)`, never to a bare rule, refuse the kernel ids (`core.protected-*`, `core.zero-access-path`), and have `doctor` list every active entry. Revisit only if precision fixes stop shrinking the netted count.
+
 ## Usage
 
 ### Testing Commands
