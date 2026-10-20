@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "4efdfb84c3068181ab5144688ddbf6f2684795f620f1f44766e919895dfae4ac", "generated_at": "2026-10-19T13:03:51Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "d122de4f58f405b50c389c9062c8127c1bcf1722a6100b734522b2e1bd2adac2", "generated_at": "2026-10-20T13:47:51Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -8923,6 +8923,52 @@ def _mentions_verb(argv: List[str], verb: str) -> bool:
     return "clean" in argv and any(os.path.basename(t) == "git" for t in argv)
 
 
+# A subshell group cannot move the parent's directory or set its variables, so
+# one that holds no cd/assignment/export and never names the verbs being judged
+# adds nothing to the model: ``(npm run start >/dev/null 2>&1 &)``, the usual
+# way to start a server before screenshots. Only a ``(`` at command position is a
+# group; case-arm patterns, extglobs, array assignments and empty ``()`` are not.
+# Anything else stays unmodelled.
+_INERT_GROUP_RE = re.compile(r"\(([^()`$]*|[^()`]*\$[A-Za-z_{][^()`]*)\)")
+_GROUP_UNSAFE_RE = re.compile(
+    r"(?:^|[\s;&|])(?:[A-Za-z_]\w*=|(?:cd|pushd|popd|export|eval|source|rm|find|git|xargs|sh|bash|zsh|env|exec)\b)|\.\s"
+)
+
+
+_CASE_WORD_RE = re.compile(r"(?<![\w./-])case(?![\w.-])")
+
+
+def _group_in_command_position(prefix: str) -> bool:
+    """Whether a ``(`` that follows ``prefix`` opens a subshell group (not a pattern, array or extglob).
+
+    Only a ``(`` at command position qualifies: after the start of the text, a
+    newline, ``;``, ``&``, ``|`` or a spaced ``!`` (case arms never get here:
+    ``_replace_inert_groups`` leaves any command containing ``case`` alone). Directly after a word character, an assignment, an extglob
+    operator or a ``(``, or after any other word (``in``, ``echo``), it is
+    something else, so it is left alone.
+    """
+    stripped = prefix.rstrip(" \t")
+    if not stripped:
+        return True
+    last = stripped[-1]
+    spaced = len(stripped) != len(prefix)
+    if last in "\n&|;":
+        return True
+    return last == "!" and spaced
+
+
+def _replace_inert_groups(command: str) -> str:
+    """``command`` with each harmless one-level subshell group replaced by ``:``."""
+    if _CASE_WORD_RE.search(command):
+        return command  # case arms are written ``(pat) cmd ;;``: not groups
+    def sub(m: "re.Match[str]") -> str:
+        inner = m.group(1)
+        if not inner.strip() or _GROUP_UNSAFE_RE.search(inner) or not _group_in_command_position(m.string[: m.start()]):
+            return m.group(0)
+        return ":"
+    return _INERT_GROUP_RE.sub(sub, command)
+
+
 def _parse_rm_command(
     command: str, cwd: Optional[str], verb: str = "rm"
 ) -> Optional[List[Tuple[List[str], List[str], str]]]:
@@ -8939,7 +8985,7 @@ def _parse_rm_command(
     masked, mask_err = _mask_command_substitutions(inert_view(command))
     if mask_err:
         return None
-    segments, split_err = _scope_segments(_newlines_as_separators(masked))
+    segments, split_err = _scope_segments(_newlines_as_separators(_replace_inert_groups(masked)))
     if split_err:
         return None
     current = os.path.abspath(cwd)
@@ -9350,6 +9396,7 @@ def _control_plane_verdict_on_timeout(
             "decision": "block",
             "reason": reason,
             "pattern": "protectedControlPlane",
+            "id": "core.protected-control-plane",
             "command": command,
             "protected": True,
         }
@@ -9642,6 +9689,7 @@ def _decide_rules(
             "decision": "block",
             "reason": prot_reason,
             "pattern": "protectedControlPlane",
+            "id": "core.protected-control-plane",
             "command": command,
             "protected": True,
         }
@@ -9655,6 +9703,7 @@ def _decide_rules(
             "decision": "block",
             "reason": cmd_reason,
             "pattern": "protectedCommand",
+            "id": "core.protected-command",
             "command": command,
             "protected": True,
         }
@@ -9680,6 +9729,7 @@ def _decide_rules(
             "decision": "block",
             "reason": str(config["_parser_unavailable"]),
             "pattern": "parserUnavailable",
+            "id": "core.parser-unavailable",
             "command": command,
         }
 
@@ -9839,6 +9889,7 @@ def _decide_rules(
                 "decision": "block",
                 "reason": f"Zero-access path: {path}",
                 "pattern": f"zeroAccessPath: {path}",
+                "id": "core.zero-access-path",
                 "command": command,
             }
 
@@ -9888,6 +9939,7 @@ def _decide_rules(
                 "decision": "block",
                 "reason": f"Read-only path: {path}",
                 "pattern": f"readOnlyPath: {path}",
+                "id": "core.read-only-path",
                 "command": command,
             }
 
@@ -9920,6 +9972,7 @@ def _decide_rules(
                 "reason": f"No-delete path: {path}" + (f" ({moved[1]})" if moved else ""),
                 "pattern": f"noDeletePath: {path}",
                 "command": command,
+                "id": "core.no-delete-path",
             }
         if fed == "possible" and fed_ask is None and not is_command_path_allowed(
             command, guarded_allowlist(allowed, no_delete), "delete"

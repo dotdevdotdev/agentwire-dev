@@ -1373,6 +1373,28 @@ The PreToolUse audit row records the decision (`allowed` / `asked` / `blocked`),
 
 Retention is not bounded and there is no copy outside `~/.agentwire/`: a wipe of that directory erases the history (it did on 2026-10-11). See #1068 for the follow-ups.
 
+## Attended-block friction, round 3 (#940)
+
+Corpus: 9 days of audit logs, 255 attended blocks (222 distinct commands; rows repeat). Reviewer / fix / probe sessions netted out by name: 83 distinct commands from real work sessions. Replaying every logged block through the bundled rules: 29 already allow on `main` (rounds 1-2), this round flips 5 more, and **no previously allowed command regressed and none became an ask**. Netted still-blocking: 61 on `main`, 58 after.
+
+- **The "no rule_id" bucket (127 of 255) was six checks, not one.** `protectedControlPlane`, `protectedCommand`, `parserUnavailable` and the three path ladders (`zeroAccessPath`, `readOnlyPath`, `noDeletePath`) built their block result with a `pattern` but no `id`. Every Bash block now carries one (`core.protected-control-plane`, `core.protected-command`, `core.parser-unavailable`, `core.zero-access-path`, `core.read-only-path`, `core.no-delete-path`), so `agentwire safety report` ranks them like any rule. Blocks are not grantable, so the ids change no permission.
+- **Zero-access on stored text: tried, dropped.** Hiding a quoted `cat` / `tee` heredoc body from the zero-access check (a `.gitignore` listing the env file, a script containing `event.key`) was built twice and review kept finding a way to execute the stored text (process substitution, a later `sh`/`make`/`rake`, a startup file as destination). The sound version needs an inert-extension allow-list for the destination and an inert-command allow-list for everything after the body; replayed on the corpus it flipped 0 of the logged commands, so it was removed rather than shipped. The mention still blocks; the escape hatch covers a genuine case. A file written in one command and executed by a LATER one is outside the hook's view regardless.
+- **`rm` allowances gave up on any group.** `(npm run start >/dev/null 2>&1 &); … rm shot.tmp.mjs` left the whole compound unmodelled, so the scratch / untracked allowances never ran. A parenthesised span is now treated as a no-op only when it opens at COMMAND POSITION (start of text, after a newline, `;`, `&`, `|`, or a spaced `!`) and holds no `cd` / assignment / `export` / `rm` / `find` / `git` / interpreter word. Case-arm patterns (any command containing `case`), extglobs (`!(x)`, `@(a|b)`), array assignments, empty `()` and a paren after a word are not groups and stay as before. A group that could leak directory or variable state stays unmodelled. Known limit, same as the flat form: a deletion verb hidden inside a real group is not separately modelled.
+
+Remaining blocks, by design or out of reach of a text hook:
+
+| Shape | Why it stays |
+|---|---|
+| Real reads of the env file, `~/.pypirc`, `.vercel/project.json` | the rule working |
+| `rm -rf <untracked dir>` (`sites/test-client`), `git rm` | untracked bytes cannot come back; `git rm` is permissioned by owner decision |
+| `rm` behind `cd $VAR` / `cd -` / `cd x; …` | the directory the `rm` runs in is not statically known |
+| `rm <glob>` | the expansion is not known |
+| Prose naming a protected path inside `agentwire send` / `msg send` bodies | control-plane batch, not this round |
+
+Candidates left unbuilt (policy, not mechanism): `rm -rf` of a git-ignored directory with a well-known build-output name (`dist`, `node_modules`, `.next`, `__pycache__`), `rm <file>` directly under `/tmp`, and a final-component glob strictly inside scratch.
+
+**Does an attended hard block need a per-project escape short of the kill switch? Recommendation: not yet.** Every friction class in this corpus was a precision bug (a rule reading text as an operation), fixed by precision, and the kill switch plus the escape hatch already cover a genuine one-off. An escape is a loosening of a control-plane knob that would live in the protected `damagecontrol.yml` (human-only), so each entry is a standing hole that an unattended run inherits. If one is ever built: scope it to `(rule id, path glob, project dir)`, never to a bare rule, refuse the kernel ids (`core.protected-*`, `core.zero-access-path`), and have `doctor` list every active entry. Revisit only if precision fixes stop shrinking the netted count.
+
 ## Usage
 
 ### Testing Commands
