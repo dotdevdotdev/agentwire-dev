@@ -3565,21 +3565,70 @@ def _hide_heredoc_bodies(command: str, keep_programs: bool) -> str:
     return "".join(out)
 
 
-def hide_data_sink_heredocs(command: str) -> str:
-    """``command`` with the quoted heredoc bodies written to a file by ``cat`` / ``tee`` hidden.
+# Words that run, source or build a file: any of them elsewhere in the command
+# line means a stored body may be executed within this very command.
+_RUNNER_WORD_RE = re.compile(
+    r"(?<![\w./-])(?:sh|bash|zsh|dash|ksh|source|eval|exec|env|sudo|xargs|chmod|make|gmake|just|"
+    r"python[\d.]*|node|nodejs|deno|bun|tsx|ruby|perl|php|lua|npm|npx|pnpm|yarn|uv|uvx)(?![\w.-])"
+)
+_SINK_REDIRECT_RE = re.compile(r"(?<![<>&\d])>>?\s*([^\s;&|<>()&]+)")
+_EXECUTABLE_TARGET_RE = re.compile(
+    r"(?:^|/)(?:makefile|gnumakefile|justfile|dockerfile)$|\.(?:sh|bash|zsh|py|js|mjs|cjs|rb|pl|php|lua|command)$",
+    re.IGNORECASE,
+)
 
-    ``cat > f <<'EOF' … EOF`` stores text: a secret's NAME inside it (a
-    ``.gitignore`` line, a script's source, a message) names nothing to read.
-    Only a quoted body (no expansion) whose LAST command is ``cat``/``tee`` with
-    nothing piped after the marker qualifies; a body any interpreter, ``xargs``
-    or loop could consume stays visible, and the command line itself (the
-    destination path) is never touched.
+
+def _data_sink_destination(line: str, head: str) -> Optional[str]:
+    """The single file a ``cat``/``tee`` heredoc line writes, or None when unclear."""
+    if head == "cat":
+        targets = _SINK_REDIRECT_RE.findall(line.split("<<", 1)[0])
+    else:
+        try:
+            words = shlex.split(line.split("<<", 1)[0])
+        except ValueError:
+            return None
+        i = next((k for k, w in enumerate(words) if os.path.basename(w) == "tee"), None)
+        targets = [] if i is None else [w for w in words[i + 1 :] if not w.startswith("-")]
+    return targets[0] if len(targets) == 1 else None
+
+
+def hide_data_sink_heredocs(command: str) -> str:
+    """``command`` with quoted heredoc bodies that only STORE text hidden from the zero-access check.
+
+    ``cat > .gitignore <<'EOF' … .env … EOF`` stores text: a secret's NAME
+    inside it names nothing to read. A body is hidden only when ALL hold, and
+    any doubt keeps it visible: the delimiter is quoted (no expansion); the
+    heredoc's command is ``cat``/``tee`` writing exactly one literal file that
+    is not executable-shaped (a script or interpreter extension, a Makefile, a
+    ``.git/`` or ``/dev/`` path); the line has no pipe and no process
+    substitution (``>(sh)``, ``<(…)``) to hand the body to a consumer; and
+    nothing else in the command line runs, sources or builds anything or
+    names the destination again. LIMIT: a file written here and executed by a
+    LATER command is outside the hook's view; no text check can close that.
     """
     out, pos = [], 0
     for h in _heredocs(command):
         words = _feed_words(h.line)
         last = words[max((i + 1 for i, w in enumerate(words) if w in _WORD_OPERATORS), default=0):]
-        if not h.quoted or "|" in command[h.start : h.body_start] or not last or os.path.basename(last[0]) not in ("cat", "tee"):
+        opening = command[h.start : h.body_start]
+        if not h.quoted or not last or os.path.basename(last[0]) not in ("cat", "tee"):
+            continue
+        if "|" in opening or ">(" in h.line or "<(" in h.line or ">(" in opening or "<(" in opening:
+            continue
+        dest = _data_sink_destination(h.line, os.path.basename(last[0]))
+        if (
+            dest is None
+            or "*" in dest
+            or dest.startswith("/dev/")
+            or "/.git/" in "/" + dest
+            or _EXECUTABLE_TARGET_RE.search(dest)
+        ):
+            continue
+        rest = command[: h.body_start] + command[h.body_end :]
+        rest_outside = rest.replace(h.line, "", 1)
+        if _RUNNER_WORD_RE.search(rest_outside) or re.search(r"(?<![\w.-])\.\s", rest_outside) or (
+            os.path.basename(dest) and os.path.basename(dest) in rest_outside
+        ):
             continue
         out.append(command[pos : h.body_start])
         out.append(_HEREDOC_BODY + "\n")

