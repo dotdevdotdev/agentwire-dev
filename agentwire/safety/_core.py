@@ -8872,18 +8872,50 @@ def _mentions_verb(argv: List[str], verb: str) -> bool:
 # A subshell group cannot move the parent's directory or set its variables, so
 # one that holds no cd/assignment/export and never names the verbs being judged
 # adds nothing to the model: ``(npm run start >/dev/null 2>&1 &)``, the usual
-# way to start a server before screenshots. Anything else stays unmodelled.
+# way to start a server before screenshots. Only a ``(`` at command position is a
+# group; case-arm patterns, extglobs, array assignments and empty ``()`` are not.
+# Anything else stays unmodelled.
 _INERT_GROUP_RE = re.compile(r"\(([^()`$]*|[^()`]*\$[A-Za-z_{][^()`]*)\)")
 _GROUP_UNSAFE_RE = re.compile(
     r"(?:^|[\s;&|])(?:[A-Za-z_]\w*=|(?:cd|pushd|popd|export|eval|source|rm|find|git|xargs|sh|bash|zsh|env|exec)\b)|\.\s"
 )
 
 
+_CASE_WORD_RE = re.compile(r"(?<![\w./-])case(?![\w.-])")
+
+
+def _group_in_command_position(prefix: str) -> bool:
+    """Whether a ``(`` that follows ``prefix`` opens a subshell group (not a pattern, array or extglob).
+
+    Only a ``(`` at command position qualifies: after the start of the text, a
+    newline, ``;`` (but not the ``;;`` of a case arm), ``&``, ``|``, ``{`` or a
+    spaced ``!``. Directly after a word character, an assignment, an extglob
+    operator or a ``(``, or after any other word (``in``, ``echo``), it is
+    something else, so it is left alone.
+    """
+    if "\\" in prefix or prefix.count("'") % 2 or prefix.count('"') % 2:
+        return False
+    stripped = prefix.rstrip(" \t")
+    if not stripped:
+        return True
+    last = stripped[-1]
+    spaced = len(stripped) != len(prefix)
+    if last == "\n" or last in "&|{":
+        return True
+    if last == ";":
+        return not stripped.endswith(";;")
+    return last == "!" and spaced
+
+
 def _replace_inert_groups(command: str) -> str:
     """``command`` with each harmless one-level subshell group replaced by ``:``."""
+    if _CASE_WORD_RE.search(command):
+        return command  # case arms are written ``(pat) cmd ;;``: not groups
     def sub(m: "re.Match[str]") -> str:
         inner = m.group(1)
-        return m.group(0) if _GROUP_UNSAFE_RE.search(inner) or "<(" in m.string[max(0, m.start() - 1):m.start() + 1] else ":"
+        if not inner.strip() or _GROUP_UNSAFE_RE.search(inner) or not _group_in_command_position(m.string[: m.start()]):
+            return m.group(0)
+        return ":"
     return _INERT_GROUP_RE.sub(sub, command)
 
 

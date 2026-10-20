@@ -22,6 +22,7 @@ BLOCKS = {
     "read-only": "echo x > dist/app.js",
     "control-plane": "echo x > ~/.agentwire/damagecontrol.yml",
     "protected-command": "agentwire tasks promote x",
+    "no-delete": "truncate -s0 CLAUDE.md",
 }
 
 
@@ -37,6 +38,7 @@ PATTERN_IDS = {
     "readOnlyPath": "core.read-only-path",
     "protectedControlPlane": "core.protected-control-plane",
     "protectedCommand": "core.protected-command",
+    "noDeletePath": "core.no-delete-path",
 }
 
 
@@ -58,3 +60,8 @@ def test_every_block_carries_a_rule_or_check_id(cfg):
         if r["decision"] != "block" or not r.get("id")
     }
     assert not unlabelled, unlabelled
+
+
+def test_a_missing_parser_block_names_itself(cfg):
+    result = check_command("ls", {**cfg, "_parser_unavailable": "no parser"}, cwd="/tmp")
+    assert (result["decision"], result.get("id")) == ("block", "core.parser-unavailable")

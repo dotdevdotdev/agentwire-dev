@@ -35,6 +35,27 @@ STAYS_UNMODELLED = {
 }
 
 
+# Parentheses that are NOT a subshell group: a case arm, an extglob, an array
+# assignment, an empty pair, a stray paren. Rewriting any of them as a group
+# hides a real cd or turns a glob into a literal, so the rm would be judged
+# against the wrong directory or the wrong file.
+NOT_GROUPS = {
+    "case-arm-cd-home": "case a in (a) cd ~;; esac; rm projects",
+    "case-arm-cd-root": "case a in (a) cd /;; esac; rm -rf bin",
+    "case-arm-alternation": "case a in (a|b) cd sub;; esac; rm ../tracked.txt",
+    "case-arm-multiline": "case a in\n(a) cd ~ ;;\nesac\nrm projects",
+    "extglob-not": "rm -rf ../!(x)",
+    "extglob-at": "rm /Users/u/@(important.txt|y)",
+    "extglob-plus": "rm +(tracked).txt",
+    "extglob-after-shopt": "shopt -s extglob\nrm -rf !(untracked.txt)",
+    "array-assign": "a=(tracked.txt); rm $a",
+    "array-append": "a+=(tracked.txt); rm $a",
+    "empty-parens": "()\nrm f",
+    "paren-after-word": "echo (true); rm f",
+    "paren-in-test": "[[ -d (x) ]]; rm f",
+}
+
+
 @pytest.fixture
 def scratch():
     d = Path(f"/private/tmp/claude-{os.getuid()}") / f"proj-{uuid.uuid4().hex[:8]}" / "sess" / "scratchpad"
@@ -63,3 +84,8 @@ def test_scratch_cleanup_after_a_server_group_is_allowed_but_a_real_file_is_not(
     assert check_command(cmd, cfg, cwd=str(scratch))["decision"] == "allow"
     must_block = "(npm run start >/dev/null 2>&1 &); sleep 4; rm -rf /etc/hosts"
     assert check_command(must_block, cfg, cwd=str(scratch))["decision"] == "block"
+
+
+def test_parentheses_that_are_not_a_group_leave_the_command_unmodelled(scratch):
+    modelled = [n for n, c in NOT_GROUPS.items() if _parse_rm_command(c, str(scratch)) is not None]
+    assert not modelled, modelled
