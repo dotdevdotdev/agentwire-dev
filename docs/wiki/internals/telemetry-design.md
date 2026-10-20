@@ -124,18 +124,20 @@ After an explicit yes, collection is **automatic**: a weekly background send fro
 
 **Decision (2026-10-20):** a Cloudflare Worker with D1, **fully isolated**: its own Cloudflare account or project scope (at minimum its own zone, Worker and D1), no shared secrets, no connection to the website's Supabase or any other store.
 
-**Host:** a dedicated subdomain `t.<agentwire-domain>` on an agentwire-branded domain whose nameservers are at Cloudflare (a zone, which unlocks zone-level rate limiting). **Which domain, and whether it is already on Cloudflare DNS, is an open owner decision (section 8).** `damage-control.dev` is **not** used: it is reserved for a possible standalone damage-control project (#1064). Keep the telemetry host on its own subdomain so the zone can later host other things, and keep the schema and URL path generic (`/v1/ingest`, no product name in the payload) so nothing is hard-wired to one product.
+**Host (decided 2026-10-20): `telemetry.agentwire.dev`.** A dedicated subdomain on its own Worker custom domain, so the zone can later host other things; the schema and URL path stay generic (`/v1/ingest`, no product name in the payload). `damage-control.dev` is **not** used (reserved for #1064). `agentwire.dev` DNS is currently at Vercel (`ns1/ns2.vercel-dns.com`), so a zone move is a **hard prerequisite for 2b**; phases 1a, 1b and 2a (against a local test endpoint) do not depend on it.
 
-Reasons: (1) a public unauthenticated write endpoint is an abuse target, so its blast radius must be zero; (2) near-zero idle cost; (3) rate limiting runs at the edge before our code; (4) the Worker is open source, so the no-IP-storage claim is checkable.
+##### DNS migration checklist (owner, before 2b)
 
-| Option | Verdict |
-|--------|---------|
-| **Cloudflare Worker + D1, isolated** | **Chosen** |
-| PostHog | Rejected: SDK identity model fights the no-persistent-id design; IP-discard and EU hosting unverified |
-| AWS Lambda + API Gateway | Rejected: more ops, no benefit here |
-| Supabase as ingest | Viable **only as its own separate project** (not the website's), with the same validation, size cap and rate limiting written by us; otherwise shared quota and abuse blast radius. The design (schema, validation, no-IP-store, k floor) is backend-independent, so this stays a swap, not a redesign. Cloudflare remains the decision. A separate Supabase project is also acceptable later as an optional analysis store fed aggregates |
+1. **Inventory first.** Export every record from the current Vercel DNS (`vercel dns ls agentwire.dev` or the dashboard) and save it; add the zone to Cloudflare and compare Cloudflare's auto-scan against the export. The scan misses records, so the Vercel export is the source of truth.
+2. **Copy all records, unchanged:** apex `A`/`ALIAS`/`CNAME` and `www` (see 3), **all `MX`**, **all `TXT`** (SPF, DKIM selectors, DMARC `_dmarc`, domain-verification tokens for Vercel/Google/Resend/etc.), `CNAME`s for mail/DKIM, `CAA`, `SRV`, and any others. Preserve TTLs and priorities.
+3. **Apex and `www` stay DNS-only (grey cloud), pointing at Vercel.** Do not proxy them: Vercel terminates TLS and certificate issuance/renewal relies on direct resolution. Only `telemetry` is proxied (orange cloud) through the Worker.
+4. **Mail records are DNS-only by nature** (`MX`, `TXT`, DKIM `CNAME`s must not be proxied); verify none got an orange cloud.
+5. **Wildcards:** check for `*.agentwire.dev`. A wildcard record only answers names with no explicit record, so the new `telemetry` record/Worker custom domain overrides it for that name only; confirm any wildcard is copied as-is and decide whether it should keep covering `telemetry` before the Worker domain exists. Also check for per-deployment/preview subdomains pointed at Vercel.
+6. **Lower TTLs** on the existing records a day before the change; **change the nameservers** at the registrar to the two Cloudflare ones; wait for activation; restore TTLs.
+7. **Add the Worker custom domain** `telemetry.agentwire.dev` (proxied) only after the zone is active and the checks below pass.
+8. **Post-change checks:** `dig` apex, `www`, `telemetry` and each MX/TXT against the saved export (`dig +short` through `@1.1.1.1` and the new Cloudflare nameservers); load the site over HTTPS and confirm the Vercel certificate still serves and renews; send and receive a test email on every mailbox and check SPF/DKIM/DMARC pass in the received headers; confirm Vercel's domain panel still shows the domain as valid. Rollback is restoring the Vercel nameservers at the registrar (keep the export).
 
-Inbound data is **untrusted**: anyone can POST. Aggregates are indicative; nothing auto-acts on them.
+Unverified here: I did not read the Cloudflare or Vercel migration docs for this list; cross-check against both vendors' official guidance before the change.
 
 #### Worker spec
 
@@ -154,7 +156,7 @@ Inbound data is **untrusted**: anyone can POST. Aggregates are indicative; nothi
 
 | Layer | Tool | What it catches | Notes (official docs read) |
 |-------|------|-----------------|----------------------------|
-| 1. Zone | WAF rate-limiting rule on `t.<domain>` | Floods, per-IP bursts, before the Worker runs (and before Worker request quota is spent) | Free plan: 1 rule, IP only, 10 s period and 10 s mitigation; Pro 2 rules, up to 1 min; Business 5 ([docs](https://developers.cloudflare.com/waf/rate-limiting-rules/)). Coarse by design |
+| 1. Zone | WAF rate-limiting rule on `telemetry.agentwire.dev` | Floods, per-IP bursts, before the Worker runs (and before Worker request quota is spent) | Free plan: 1 rule, IP only, 10 s period and 10 s mitigation; Pro 2 rules, up to 1 min; Business 5 ([docs](https://developers.cloudflare.com/waf/rate-limiting-rules/)). Coarse by design |
 | 2. Worker binding | Workers Rate Limiting binding keyed on the **batch token** | Replay of one token; one token sent repeatedly | Period must be 10 or 60 s, `simple` type only; described as "permissive, eventually consistent, and intentionally designed to not be used as an accurate accounting system"; limits are per Cloudflare location; the page recommends **against** keying on IPs; pricing and plan availability not stated on the page ([docs](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)) |
 | 3. Dedupe | D1 unique index on batch token (or a Durable Object) | Exact replay across locations and over days | A DO is accurate (single-threaded per object) but costs requests/duration: SQLite-backed DOs are available on Free (100k requests/day, 13,000 GB-s/day, 100k rows written/day) ([docs](https://developers.cloudflare.com/durable-objects/platform/pricing/)). At about 14k batches/day a DO adds a request per batch and shares the 100k/day budget in spirit; a D1 unique constraint on the token is cheaper and good enough |
 
@@ -172,7 +174,7 @@ Official pages read 2026-10-20 (figures as the pages state them; re-check at bui
 | Analytics Engine | 100k data points/day, 10k queries/day | 10M/mo then $0.25/M; billing currently paused | [pricing](https://developers.cloudflare.com/analytics/analytics-engine/pricing/) |
 | Rate-limiting rules | 1 rule, IP only, 10 s period | Pro 2 rules; Business 5 | [WAF rate limiting](https://developers.cloudflare.com/waf/rate-limiting-rules/) |
 
-Still to confirm before 2b: (a) the chosen domain is (or can be moved) onto Cloudflare nameservers, and the plan's rule count and 10 s period are enough for layer 1; (b) what Cloudflare retains in edge/Worker logs about IPs and how to minimize it; (c) D1 behavior on bursty writes if installs sync on the same weekday (client jitter on the send time mitigates).
+Still to confirm before 2b: (a) the zone move is done and the plan's rule count and 10 s period are enough for layer 1; (b) what Cloudflare retains in edge/Worker logs about IPs and how to minimize it; (c) D1 behavior on bursty writes if installs sync on the same weekday (client jitter on the send time mitigates).
 
 ### IP address
 
@@ -228,7 +230,7 @@ Reading: incumbents mostly opt out with a notice; Go reversed to opt-in under ba
 | **1a** | Local counters: `schema.py`, `record()`, spool write, watchdog aggregator, instrument CLI/MCP/session/scheduler/doctor, derive `dc`/`hook`/`fail`/`rephrased` from audit rows, schema test (mutation: add an unbounded str field, test must fail), coverage test (every subcommand/tool maps to an enum), benchmark | L | hook p99 and `agentwire --version` delta under 0.5 ms |
 | **1b** | Local surfaces: `stats`, `telemetry show/schema`, doctor line, `telemetry_stats` MCP tool, wiki page | S | owner reads two weeks of own data |
 | **2a** | Config block, consent record, onboarding question, `status/preview/export/enable/decline/disable/delete`, protected key, DO_NOT_TRACK, **automatic weekly sender** with backoff/kill-switch handling, per-send token, client-side fold. Built and tested against a **local test endpoint** | M | owner reviews preview payload; no-socket-when-off test |
-| **2b** | Real endpoint: isolated Cloudflare Worker + D1 per the spec, layered rate limiting, daily aggregation with k floor. **Prerequisites:** zone created (agentwire domain on Cloudflare nameservers), endpoint host `t.<agentwire-domain>` chosen, official-limit check done and re-read, IP-header behavior tested | M | counsel answers section 5; consent text approved |
+| **2b** | Real endpoint: isolated Cloudflare Worker + D1 per the spec, layered rate limiting, daily aggregation with k floor. **Prerequisites:** **`agentwire.dev` DNS moved to Cloudflare per the checklist and verified**, official-limit check done and re-read, IP-header behavior tested | M | counsel answers section 5; consent text approved |
 
 1a and 1b are useful without Phase 2 and ship independently.
 
@@ -238,7 +240,7 @@ Reading: incumbents mostly opt out with a notice; Go reversed to opt-in under ba
 1. Sharing is opt-in, default off; onboarding suggests it; no answer / Enter / non-interactive / skipped = off; declined recorded.
 2. Local counters on by default with kill switch and doctor line. Pair events cut.
 3. Collection is automatic after opt-in (weekly watchdog send); `export` is inspection only.
-4. **Endpoint: isolated Cloudflare Worker + D1**, batch-per-row storage with a daily aggregation job, layered rate limiting. No shared secrets or stores with the website or anything else. Supabase stays a viable swap only as its own separate project.
+4. **Endpoint: isolated Cloudflare Worker + D1 at `telemetry.agentwire.dev`**, batch-per-row storage with a daily aggregation job, layered rate limiting. No shared secrets or stores with the website or anything else. Supabase stays a viable swap only as its own separate project.
 
 **Open, with recommendation:**
 5. **Store format:** spool + daily counters (recommended) vs SQLite; accept no-fsync.
@@ -250,7 +252,7 @@ Reading: incumbents mostly opt out with a notice; Go reversed to opt-in under ba
 11. **Legal:** who answers section 5, and is a privacy-notice page needed before 2b?
 12. **Audit log retention:** unchanged, never uploaded (recommended).
 13. **Rephrase flag:** accept new aggregator logic and its 5-minute window, or defer.
-14. **OPEN: endpoint domain.** Which agentwire-branded domain hosts `t.<agentwire-domain>`, and is it already on Cloudflare DNS (nameservers at Cloudflare)? Not `damage-control.dev` (reserved for #1064). Also the Cloudflare plan and raw-batch retention (proposed 7 days).
+14. **Cloudflare plan and raw-batch retention** (proposed 7 days). Host and DNS move are settled above (item 4, checklist in section 5).
 15. **IP wording:** adopt the claim "the Worker does not read, log or persist the client IP; used transiently for rate limiting; Cloudflare's edge handles it transiently" and never "IPs never reach us" (recommended).
 16. **OHTTP later?** Optional post-launch hardening, not in Phase 2; revisit only if an independent relay is available to a small project.
 
