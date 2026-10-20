@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "4efdfb84c3068181ab5144688ddbf6f2684795f620f1f44766e919895dfae4ac", "generated_at": "2026-10-19T13:03:51Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "3030ecde0ea68b0c2475bc7a126b7db9f1bf8da52e8663b266b8518e7ac5af53", "generated_at": "2026-10-20T12:27:30Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -9337,6 +9337,7 @@ def _control_plane_verdict_on_timeout(
             "decision": "block",
             "reason": reason,
             "pattern": "protectedControlPlane",
+            "id": "core.protected-control-plane",
             "command": command,
             "protected": True,
         }
@@ -9629,6 +9630,7 @@ def _decide_rules(
             "decision": "block",
             "reason": prot_reason,
             "pattern": "protectedControlPlane",
+            "id": "core.protected-control-plane",
             "command": command,
             "protected": True,
         }
@@ -9642,6 +9644,7 @@ def _decide_rules(
             "decision": "block",
             "reason": cmd_reason,
             "pattern": "protectedCommand",
+            "id": "core.protected-command",
             "command": command,
             "protected": True,
         }
@@ -9667,6 +9670,7 @@ def _decide_rules(
             "decision": "block",
             "reason": str(config["_parser_unavailable"]),
             "pattern": "parserUnavailable",
+            "id": "core.parser-unavailable",
             "command": command,
         }
 
@@ -9826,6 +9830,7 @@ def _decide_rules(
                 "decision": "block",
                 "reason": f"Zero-access path: {path}",
                 "pattern": f"zeroAccessPath: {path}",
+                "id": "core.zero-access-path",
                 "command": command,
             }
 
@@ -9875,6 +9880,7 @@ def _decide_rules(
                 "decision": "block",
                 "reason": f"Read-only path: {path}",
                 "pattern": f"readOnlyPath: {path}",
+                "id": "core.read-only-path",
                 "command": command,
             }
 
@@ -9907,6 +9913,7 @@ def _decide_rules(
                 "reason": f"No-delete path: {path}" + (f" ({moved[1]})" if moved else ""),
                 "pattern": f"noDeletePath: {path}",
                 "command": command,
+                "id": "core.no-delete-path",
             }
         if fed == "possible" and fed_ask is None and not is_command_path_allowed(
             command, guarded_allowlist(allowed, no_delete), "delete"

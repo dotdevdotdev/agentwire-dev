@@ -9296,6 +9296,7 @@ def _control_plane_verdict_on_timeout(
             "decision": "block",
             "reason": reason,
             "pattern": "protectedControlPlane",
+            "id": "core.protected-control-plane",
             "command": command,
             "protected": True,
         }
@@ -9588,6 +9589,7 @@ def _decide_rules(
             "decision": "block",
             "reason": prot_reason,
             "pattern": "protectedControlPlane",
+            "id": "core.protected-control-plane",
             "command": command,
             "protected": True,
         }
@@ -9601,6 +9603,7 @@ def _decide_rules(
             "decision": "block",
             "reason": cmd_reason,
             "pattern": "protectedCommand",
+            "id": "core.protected-command",
             "command": command,
             "protected": True,
         }
@@ -9626,6 +9629,7 @@ def _decide_rules(
             "decision": "block",
             "reason": str(config["_parser_unavailable"]),
             "pattern": "parserUnavailable",
+            "id": "core.parser-unavailable",
             "command": command,
         }
 
@@ -9785,6 +9789,7 @@ def _decide_rules(
                 "decision": "block",
                 "reason": f"Zero-access path: {path}",
                 "pattern": f"zeroAccessPath: {path}",
+                "id": "core.zero-access-path",
                 "command": command,
             }
 
@@ -9834,6 +9839,7 @@ def _decide_rules(
                 "decision": "block",
                 "reason": f"Read-only path: {path}",
                 "pattern": f"readOnlyPath: {path}",
+                "id": "core.read-only-path",
                 "command": command,
             }
 
@@ -9866,6 +9872,7 @@ def _decide_rules(
                 "reason": f"No-delete path: {path}" + (f" ({moved[1]})" if moved else ""),
                 "pattern": f"noDeletePath: {path}",
                 "command": command,
+                "id": "core.no-delete-path",
             }
         if fed == "possible" and fed_ask is None and not is_command_path_allowed(
             command, guarded_allowlist(allowed, no_delete), "delete"
