@@ -29,7 +29,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "486a1ab932a237a01b4a7bcf6f55a0d3970c462c529737a6f82f92fb0b4734d5", "generated_at": "2026-10-20T12:54:19Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "96bb949b0eded9c1af16bbd8c0f4a0bccb077d511d270d5ae52d418016fbec7e", "generated_at": "2026-10-20T13:13:16Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3591,78 +3591,6 @@ def _hide_heredoc_bodies(command: str, keep_programs: bool) -> str:
     out, pos = [], 0
     for h in _heredocs(command):
         if keep_programs and _stdin_is_program(_feed_words(h.line)):
-            continue
-        out.append(command[pos : h.body_start])
-        out.append(_HEREDOC_BODY + "\n")
-        pos = h.body_end
-    out.append(command[pos:])
-    return "".join(out)
-
-
-# Words that run, source or build a file: any of them elsewhere in the command
-# line means a stored body may be executed within this very command.
-_RUNNER_WORD_RE = re.compile(
-    r"(?<![\w./-])(?:sh|bash|zsh|dash|ksh|source|eval|exec|env|sudo|xargs|chmod|make|gmake|just|"
-    r"python[\d.]*|node|nodejs|deno|bun|tsx|ruby|perl|php|lua|npm|npx|pnpm|yarn|uv|uvx)(?![\w.-])"
-)
-_SINK_REDIRECT_RE = re.compile(r"(?<![<>&\d])>>?\s*([^\s;&|<>()&]+)")
-_EXECUTABLE_TARGET_RE = re.compile(
-    r"(?:^|/)(?:makefile|gnumakefile|justfile|dockerfile)$|\.(?:sh|bash|zsh|py|js|mjs|cjs|rb|pl|php|lua|command)$",
-    re.IGNORECASE,
-)
-
-
-def _data_sink_destination(line: str, head: str) -> Optional[str]:
-    """The single file a ``cat``/``tee`` heredoc line writes, or None when unclear."""
-    if head == "cat":
-        targets = _SINK_REDIRECT_RE.findall(line.split("<<", 1)[0])
-    else:
-        try:
-            words = shlex.split(line.split("<<", 1)[0])
-        except ValueError:
-            return None
-        i = next((k for k, w in enumerate(words) if os.path.basename(w) == "tee"), None)
-        targets = [] if i is None else [w for w in words[i + 1 :] if not w.startswith("-")]
-    return targets[0] if len(targets) == 1 else None
-
-
-def hide_data_sink_heredocs(command: str) -> str:
-    """``command`` with quoted heredoc bodies that only STORE text hidden from the zero-access check.
-
-    ``cat > .gitignore <<'EOF' … .env … EOF`` stores text: a secret's NAME
-    inside it names nothing to read. A body is hidden only when ALL hold, and
-    any doubt keeps it visible: the delimiter is quoted (no expansion); the
-    heredoc's command is ``cat``/``tee`` writing exactly one literal file that
-    is not executable-shaped (a script or interpreter extension, a Makefile, a
-    ``.git/`` or ``/dev/`` path); the line has no pipe and no process
-    substitution (``>(sh)``, ``<(…)``) to hand the body to a consumer; and
-    nothing else in the command line runs, sources or builds anything or
-    names the destination again. LIMIT: a file written here and executed by a
-    LATER command is outside the hook's view; no text check can close that.
-    """
-    out, pos = [], 0
-    for h in _heredocs(command):
-        words = _feed_words(h.line)
-        last = words[max((i + 1 for i, w in enumerate(words) if w in _WORD_OPERATORS), default=0):]
-        opening = command[h.start : h.body_start]
-        if not h.quoted or not last or os.path.basename(last[0]) not in ("cat", "tee"):
-            continue
-        if "|" in opening or ">(" in h.line or "<(" in h.line or ">(" in opening or "<(" in opening:
-            continue
-        dest = _data_sink_destination(h.line, os.path.basename(last[0]))
-        if (
-            dest is None
-            or "*" in dest
-            or dest.startswith("/dev/")
-            or "/.git/" in "/" + dest
-            or _EXECUTABLE_TARGET_RE.search(dest)
-        ):
-            continue
-        rest = command[: h.body_start] + command[h.body_end :]
-        rest_outside = rest.replace(h.line, "", 1)
-        if _RUNNER_WORD_RE.search(rest_outside) or re.search(r"(?<![\w.-])\.\s", rest_outside) or (
-            os.path.basename(dest) and os.path.basename(dest) in rest_outside
-        ):
             continue
         out.append(command[pos : h.body_start])
         out.append(_HEREDOC_BODY + "\n")
@@ -9905,9 +9833,8 @@ def _decide_rules(
     if first_ask is not None and not concealing:
         return first_ask
 
-    zero_haystacks = [hide_data_sink_heredocs(hay) for hay in haystacks]
     for path in zero_access:
-        if any(matches_path_in_command(path, hay) for hay in zero_haystacks):
+        if any(matches_path_in_command(path, hay) for hay in haystacks):
             if is_command_path_allowed(command, guarded_allowlist(allowed, zero_access), "read"):
                 continue
             return {
