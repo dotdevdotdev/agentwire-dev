@@ -3579,7 +3579,7 @@ def hide_data_sink_heredocs(command: str) -> str:
     for h in _heredocs(command):
         words = _feed_words(h.line)
         last = words[max((i + 1 for i, w in enumerate(words) if w in _WORD_OPERATORS), default=0):]
-        if not h.quoted or not last or os.path.basename(last[0]) not in ("cat", "tee"):
+        if not h.quoted or "|" in command[h.start : h.body_start] or not last or os.path.basename(last[0]) not in ("cat", "tee"):
             continue
         out.append(command[pos : h.body_start])
         out.append(_HEREDOC_BODY + "\n")

@@ -34,7 +34,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "30f8fbe9e0d18f7e5afff9a5f8f89577795a27535f260a856753cf5309a1324c", "generated_at": "2026-10-20T12:32:03Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "682a5047373de0d84d031b5fd843b7d6c100564efe1ee236c53fa86d454a3356", "generated_at": "2026-10-20T12:36:35Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -3618,7 +3618,7 @@ def hide_data_sink_heredocs(command: str) -> str:
     for h in _heredocs(command):
         words = _feed_words(h.line)
         last = words[max((i + 1 for i, w in enumerate(words) if w in _WORD_OPERATORS), default=0):]
-        if not h.quoted or not last or os.path.basename(last[0]) not in ("cat", "tee"):
+        if not h.quoted or "|" in command[h.start : h.body_start] or not last or os.path.basename(last[0]) not in ("cat", "tee"):
             continue
         out.append(command[pos : h.body_start])
         out.append(_HEREDOC_BODY + "\n")

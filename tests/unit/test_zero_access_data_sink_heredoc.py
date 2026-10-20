@@ -32,6 +32,7 @@ STILL_BLOCKS = {
     "fed-to-xargs": "xargs cat <<'EOF'\n.env\nEOF",
     "unquoted-body": "cat > f <<EOF\n$(cat .env)\nEOF",
     "command-after-body": "cat > f <<'EOF'\nhi\nEOF\ncat .env",
+    "piped-onward": "cat <<'EOF' | tee notes.txt\n~/.ssh/id_rsa\nEOF",
     "plain-read": "cat .env",
 }
 
