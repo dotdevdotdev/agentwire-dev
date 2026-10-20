@@ -1,225 +1,196 @@
-# Usage Telemetry: Local Counters and Opt-In Sharing (design draft)
+# Usage Telemetry: Local Counters and Opt-In Sharing (design, revised)
 
-Status: **draft for owner decision** (#1068 Phase 1 and Phase 2). No code ships with this document. Phase 0 (damage-control outcome rows) is done (#1074, #1075).
+Status: **owner decisions applied 2026-10-20** (#1068 Phase 1 and 2). No code ships with this document. Phase 0 (damage-control outcome rows) is done (#1074, #1075). **[A]** marks an assumption.
 
-Goal, in the owner's words: know which features get used and how often, locally, with negligible speed cost. Later, let users opt in to sending anonymized data. Default off, explicit question, nothing leaves the machine before consent.
-
-Assumptions are flagged **[A]**. Decisions for the owner are collected in [section 8](#8-owner-decisions).
+Goal: know which features get used, how often and how well, locally, with negligible speed cost. Then let users opt in to anonymous sharing. Nothing leaves the machine without an explicit yes.
 
 ## 0. What exists today (verified 2026-10-20)
 
 | Thing | State |
 |-------|-------|
-| Audit log | `~/.agentwire/logs/damage-control/YYYY-MM-DD.jsonl`, one row per PreToolUse decision (`allowed`/`asked`/`blocked`), written by `hooks/damage-control/audit_logger.py` with a plain `open(..., "a")` and **no fsync** |
-| Outcome rows | `hooks/outcome_logger.py` (PostToolUse, PostToolUseFailure, PermissionDenied), `kind: "outcome"`, same daily file, joined on `tool_use_id` by `safety/audit.py:join_outcomes` |
-| Report | `agentwire safety report --days N [--json]`: tiers, rules, sessions, Outcomes, Friction by rule, Per day |
-| Retention | None. Unbounded. Owner decision 2026-10-12: nothing is deleted; first step if size matters is gzip of old days. No copy outside `~/.agentwire/` |
-| Size | 10 daily files, **17 MB total** since the 2026-10-11 wipe, 0.03 to 3.6 MB/day (about 1.7 MB/day average, not the 0.5 MB/day quoted in #1068; it grows with activity). Rows contain full command text |
-| Hot-path cost already paid | Attribution may spawn `tmux display-message` (timeout 2 s) per hook run when `AGENTWIRE_SESSION_ID` is unset, plus a scan of `sessions/*/metadata.json` |
-| Non-hook usage data | None. No counter of CLI commands, MCP tools, portal windows, or scheduler tasks |
+| Audit log | `~/.agentwire/logs/damage-control/YYYY-MM-DD.jsonl`; one row per PreToolUse decision (`allowed`/`asked`/`blocked`) from `hooks/damage-control/audit_logger.py`: plain `open(..., "a")`, **no fsync**. Rows contain full command text |
+| Outcome rows | `hooks/outcome_logger.py`; `kind: "outcome"`, joined on `tool_use_id` by `safety/audit.py:join_outcomes` into labels (ran / approved / declined-or-abandoned / rule-blocked / classifier-denied / failed). Payload carries `duration_ms` and `prompt_id` |
+| Report | `agentwire safety report` (tiers, rules, Outcomes, Friction by rule, Per day) |
+| Retention | None; owner decision 2026-10-12: keep everything, gzip before ever deleting, no copy outside `~/.agentwire/` |
+| Size | 17 MB in 10 days (about 1.7 MB/day; #1068 said 0.5). Machine-specific |
+| Hot-path cost already paid | attribution may spawn `tmux display-message` (2 s timeout) per hook run |
+| Non-hook usage data | none: no CLI, MCP, portal, scheduler counters |
 
-Consequence: the audit log is a **damage-control decision journal with command text**. It is the wrong container for usage telemetry (content-bearing, per-tool-call volume, only covers hook-matched tools). Reuse its *patterns* (daily JSONL, best-effort, never changes a decision, `tool_use_id` join), not its file.
+The audit log is a content-bearing decision journal and stays local forever. Telemetry reuses its *patterns* and *reads* it for aggregates; it never copies command text out of it.
 
-## 1. Questions the data should answer
+## 1. Questions the data answers
 
-These drive the schema; an event that answers none of them is not collected.
+1. **Adoption:** which CLI commands, MCP tools, roles, topologies, portal windows, and subsystems are used, how often, on how many days? Which are never touched (cut candidates)?
+2. **Mix:** role x topology x rooting x posture of sessions.
+3. **Friction:** per damage-control rule id: tier, outcome (approved / denied / ran), and whether a block was followed by a rephrase.
+4. **Speed:** hook latency and session startup time, as distributions.
+5. **Failure shape:** failure class per command; doctor findings by check id.
+6. **Environment:** agentwire version, OS family, Python minor, install method.
 
-1. **Feature use:** which CLI commands, MCP tools, portal windows/panels, scheduler task types, and optional subsystems (voice, council, briefing, handoff, wiki, packs) are used, how often, on how many days?
-2. **Dead weight:** which of the ~40 CLI modules and ~100 MCP tools are never touched (candidates to cut under the no-backcompat stance)?
-3. **Sequences, coarse:** "X within 5 min after Y" for a short allowlist of pairs (e.g. `new` then `msg send`; `worktree` then `wait --children`). Pairs of enums only, never traces.
-4. **Topology mix:** role x topology x rooting x posture of sessions (the three-axis model, #716), and how many sessions run per day.
-5. **Damage-control friction:** per rule id, asked / approved / declined / blocked counts (already computable from audit rows; this is the shareable aggregate form).
-6. **Failure shape:** exit-code class per command (ok / usage / error / usage_limit / auth_expired), doctor findings by check id.
-7. **Environment:** agentwire version, OS family, Python minor, install method. For "can we drop X" decisions.
-
-Explicit non-questions: what users typed, what agents did, which projects exist.
+Sequence ("X after Y") events are **cut** (owner decision); adoption counts cover the need.
 
 ## 2. Event schema
 
-Rule: **counters and enums only.** Never command text, arguments, paths, prompts, session names, branch names, hostnames, usernames, repo names, error messages, tool input/output. Free text cannot be allowlisted, so there is none.
+Rule: **enums, counters and bucketed numbers only.** Never recorded or shared: command text, arguments, paths, prompts, session/branch/repo names, hostnames, usernames, error message text, tool input/output, **or hashes of any of those** (a hash of a low-entropy string is reversible by dictionary, so a hash is not anonymization). Rule ids and doctor check ids are fixed public vocabulary and **may** be recorded and shared.
 
-### Where it lives (so "what we collect" is checkable)
+### Contract location
 
-One module, `agentwire/telemetry/schema.py`, is the whole contract. Everything is a closed enum; `record()` raises (in tests) or drops (in prod) any value not in the schema.
+`agentwire/telemetry/schema.py` is the whole contract. Every field is a closed enum, an int count, or a histogram bucket index. `record()` drops (prod) or raises (tests) anything outside it. Enum sets derive from existing registries (argparse subcommand names, the MCP tool list, rule ids, `ROLES`), so new commands are covered automatically and unknown values land in `other`, not as text. A test fails if a field is `str` without an enum, or an enum value has a path separator, whitespace or `@`. `agentwire telemetry schema` prints the table below from the same module, which makes "what we collect" checkable.
 
-```python
-# agentwire/telemetry/schema.py  (proposed)
-SCHEMA_VERSION = 1
-EVENTS: dict[str, EventSpec] = {
-    "cli":      EventSpec(fields={"cmd": CLI_COMMANDS, "result": RESULTS}),
-    "mcp":      EventSpec(fields={"tool": MCP_TOOLS, "result": RESULTS}),
-    "ui":       EventSpec(fields={"surface": UI_SURFACES}),
-    "session":  EventSpec(fields={"role": ROLES, "topology": TOPOLOGIES, "rooted": BOOL, "posture": POSTURES}),
-    "dc":       EventSpec(fields={"rule": RULE_IDS, "label": DC_LABELS}),
-    "task":     EventSpec(fields={"kind": TASK_KINDS, "result": RESULTS}),
-    "doctor":   EventSpec(fields={"check": DOCTOR_CHECK_IDS, "grade": GRADES}),
-    "pair":     EventSpec(fields={"first": PAIR_NAMES, "then": PAIR_NAMES}),
-}
-```
+### Events
 
-The enum sets are **derived from the registries that already exist** (argparse subparser names, the MCP tool list, rule ids, `ROLES`), so a new command is covered automatically and a free-form value cannot be added by accident. Anything not in the enum is bucketed as `other` (one counter, no text).
+| Event | Fields | Emitted from | Q |
+|-------|--------|--------------|---|
+| `cli` | `cmd` (e.g. `worktree.remove`), `result` (ok / usage / error / usage_limit / auth_expired), `dur` bucket | `main()` exit | 1,4,5 |
+| `mcp` | `tool`, `result`, `dur` bucket | MCP dispatch wrapper | 1,4,5 |
+| `ui` | `surface` (window kind), server-side only, no client beacons | portal WebSocket handlers | 1 |
+| `session` | `role`, `topology`, `rooted`, `posture`, `startup` bucket | `core.record_session_launch()` | 2,4 |
+| `dc` | `rule`, `tier`, `outcome` (approved / denied / ran), `rephrased` (bool) | **derived by the aggregator from audit rows**, not emitted | 3 |
+| `hook` | `which` (permission / outcome / idle), `dur` bucket | aggregator, from `duration_ms` in outcome rows; the hook itself emits nothing | 4 |
+| `fail` | `where` (cmd/tool/check id), `class` (enum: timeout, not_found, permission, usage_limit, auth_expired, conflict, other) | as above | 5 |
+| `doctor` | `check` id, `grade` | `doctor` run | 5 |
+| `env` (daily) | `version`, `os`, `py`, `install` | day rollover | 6 |
 
-A test enumerates `EVENTS` and fails if any field type is `str` without an enum, or any enum value contains a path separator, whitespace, or `@`. That test is the checkable promise; the docs table below is generated from the same module (`agentwire telemetry schema` prints it).
+**Histogram buckets:** log2 milliseconds, fixed edges (`<1, <2, <4 ... <8192, >=8192`), stored as a counter per bucket. Percentiles are computed from buckets; no raw timings are kept.
 
-### Schema table
+**`rephrased`:** set when, within the same session and 5 minutes of a block, the next call of the same tool class is allowed. The comparison happens locally on audit rows; only the boolean leaves. **[A]** the audit log has no rephrase linkage today, so this is new aggregator logic (the #1068 comment list mentions it as wanted); `prompt_id` is available to scope a turn.
 
-| Event | Fields (all enums/ints) | Source hook point | Answers |
-|-------|-------------------------|-------------------|---------|
-| `cli` | `cmd` (top-level + subcommand id, e.g. `worktree.remove`), `result` | `__main__.main()` exit | Q1, Q2, Q6 |
-| `mcp` | `tool`, `result` | MCP server dispatch wrapper | Q1, Q2 |
-| `ui` | `surface` (window kind: monitor, terminal, artifact, collage, sidebar section, voice) | portal WebSocket events already handled server-side; **no JS analytics** | Q1 |
-| `session` | `role`, `topology`, `rooted`, `posture` | `core.record_session_launch()` (already the one writer, #871) | Q4 |
-| `dc` | `rule` (rule id), `label` (ran/approved/declined/blocked/classifier-denied/failed) | folded from existing audit rows by the aggregator, not re-emitted | Q5 |
-| `task` | `kind` (shell/prompt/pre/post), `result` | scheduler dispatch | Q1, Q6 |
-| `doctor` | `check` (id), `grade` | `doctor` run | Q6 |
-| `pair` | `first`, `then` from a fixed list of about 10 named pairs | derived from `cli`/`mcp` order within a 5 min window, in the aggregator | Q3 |
-| `env` (once per day) | `version`, `os` (darwin/linux/windows), `py` (minor), `install` (uv-tool/pip/dev) | daily rollover | Q7 |
-
-Dimensions attached at **aggregation**, not per event: UTC **day** (no timestamps finer than a day leave the machine), schema version. No per-event timestamp is stored in the shareable form; the local store may keep hour buckets.
-
-Cardinality guard: a field with more than 256 distinct values in the schema is a design smell (rule ids are about 300; send only the top-N by count above a floor, see section 5).
+Granularity: counts per **UTC day** and schema version. No finer timestamp is shareable.
 
 ## 3. Local store
 
-### Options
+| Option | Hot-path cost | Bounded | Concurrency |
+|--------|---------------|---------|-------------|
+| Per-event JSONL | open + write per event | needs rotation | fine, but reader re-aggregates |
+| SQLite | ~1 ms connect, WAL; `SQLITE_BUSY` risk from concurrent hook processes | yes | the wrong thing to risk on a hook |
+| **Spool + daily counters** (recommended) | one `O_APPEND` write at process exit | yes | lock-free |
 
-| Option | Write cost | Bounded | Survives crash | Notes |
-|--------|-----------|---------|----------------|-------|
-| Append-only JSONL per event | one `open("a")` + write per event, ~20 to 50 us | needs rotation | yes | Volume: every CLI call and MCP call. Fine for count, but the reader must re-aggregate |
-| SQLite | connection open ~1 ms, WAL write; lock contention across concurrent hook processes | yes, fixed schema | yes | Multi-process writers from hooks and CLI: `SQLITE_BUSY` handling is exactly the sort of thing that must never delay a hook |
-| **Per-process spool of increments, merged into daily counters** | one small `O_APPEND` write at process exit | yes, by construction | yes (spool is replayed) | Recommended |
+### Recommendation
 
-### Recommendation: daily counter files fed by an O_APPEND spool
+- **Write path:** at exit, one `os.write()` of a line under 100 bytes to `~/.agentwire/telemetry/spool/<day>.jsonl` opened `O_APPEND`. Writes under `PIPE_BUF` (4 KB) don't interleave between processes: no lock, **no fsync**, no extra process spawn, imports limited to `os`/`json`. Cost reasoned at 10 to 30 us; **measured in Phase 1a** with acceptance "p99 hook and `agentwire --version` delta under 0.5 ms". Losing the last seconds on power loss is accepted.
+- **Aggregation:** one new stage on the limits watchdog (60 s tick) renames the spool to `.merging`, folds it plus audit-derived events into `counters/<day>.json` (counter key to int, a few KB), deletes the spool. A leftover `.merging` is folded next tick.
+- **Hot paths:** the damage-control hook adds **zero** work (its audit row is the data). CLI: one `atexit` write. MCP server and portal: in-memory `Counter` flushed every 60 s and on shutdown. Kill switch: `AGENTWIRE_TELEMETRY=0` or `telemetry.local: false` makes `record()` return after one check.
+- **Bounds:** spool capped at 1 MB/day (excess counted as `dropped`); daily counters kept 400 days then folded into `monthly.json`. Footprint about 2 to 3 MB worst case.
+- **Wipe:** counters are disposable and live only under `~/.agentwire/telemetry/`, consistent with the 2026-10-12 no-second-copy decision. A wipe erases them; accepted.
+- **Audit relationship:** audit log unchanged (retention policy as decided 2026-10-12, never uploaded).
 
-- **Write path (every process, including hooks):** at exit, one `os.write()` of a single line (`{"k":"cli","f":["worktree.remove","ok"]}` or a compact form) to `~/.agentwire/telemetry/spool/<day>.jsonl` opened `O_APPEND`. POSIX guarantees small `O_APPEND` writes (under `PIPE_BUF`, 4 KB; our lines are under 100 bytes) do not interleave between processes, so **no lock, no fsync, no extra process spawn, no imports beyond `os`/`json`**. Cost reasoned at 10 to 30 us; to be **measured** in Phase 1 against `agentwire --version` and the hook benchmark (acceptance: p99 hook latency delta under 0.5 ms).
-- **No fsync, by decision.** Losing the last few events on power loss is acceptable for usage counts. This differs from nothing in the audit logger, which is also unsynced.
-- **Aggregation (off the hot path):** the limits watchdog already ticks every 60 s. Add one stage that renames `spool/<day>.jsonl` to `.merging`, folds it into `counters/<day>.json` (`{"cli:worktree.remove:ok": 12, ...}`, a few KB), and deletes the spool. A crash mid-merge is safe: a leftover `.merging` is folded next tick.
-- **Hot paths specifically:**
-  - *PreToolUse damage-control hook:* **emits nothing.** The audit row it already writes is the data; the `dc` events are derived from audit rows by the aggregator. Zero added work on the hottest path.
-  - *CLI startup:* one `atexit` write. No import of the telemetry package unless enabled-for-local (local is on by default, so the module must be import-light: `os`, `json`, a frozenset of allowed ids).
-  - *MCP server:* in-memory `Counter` flushed every 60 s and on shutdown, not per call.
-  - *Portal:* in-memory `Counter`, flushed on the same cadence.
-  - *Kill switch:* `AGENTWIRE_TELEMETRY=0` / `telemetry.local: false` makes `record()` a no-op after one env/attr check.
-- **Bounds:** counter files are tiny (low KB/day); cap spool at 1 MB/day (drop with a counted `dropped` event beyond that); keep `counters/` daily files for **400 days**, then fold into a `monthly.json`. Worst-case footprint about 2 to 3 MB. No deletion of anything else.
-- **Wipe survival:** same stance as owner decision 2026-10-12: it lives under `~/.agentwire/telemetry/` and a wipe erases it. Counters are *derived, low-value* data and the loss is acceptable; stating it plainly rather than building a second copy. **[A]** The 2026-10-11 incident loss was audit history (the more valuable corpus); that decision stands.
-- **Relationship to the audit log:** the audit log stays the system of record for damage-control decisions (content-bearing, local-only forever, never shared). Telemetry reads it for `dc` aggregation and never copies command text. Retention for the audit log remains the existing owner decision (unbounded, gzip first); this doc does not change it.
+Prior art for the same shape: Go keeps only counter names and totals, no event log, per-week files, local by default ([Go telemetry design](https://research.swtch.com/telemetry-design.pdf), read).
 
 ## 4. Local surfaces
 
-- `agentwire stats [--days N] [--json]`: top commands/tools by count, never-used list (Q2), session mix, friction summary. Reads `counters/` only. `telemetry show` is the same data plus the schema version and store paths.
-- `agentwire doctor`: one line, e.g. `[ok] telemetry: local counters on, 14 days, 31 KB, sharing off`; warns if spool backlog is stale (aggregator not running) or the store is unwritable.
-- MCP: `telemetry_stats` (read-only, same JSON as `stats --json`). **No MCP tool to enable sharing or change consent**; consent is human-only, same rule as `safety packs enable` (tty gate + protected-path).
-- Portal: optional later panel; out of scope here (CLI is SSOT, portal would call `agentwire stats --json`).
+- `agentwire stats [--days N] [--json]` / `telemetry show`: top commands/tools, never-used list, session mix, friction, latency percentiles. Reads `counters/` only.
+- `agentwire doctor` line: `telemetry: local on, 14 days, 31 KB, sharing off`; warns on stale spool (aggregator not running) or unwritable store.
+- MCP `telemetry_stats` (read-only). **No MCP tool changes consent**; consent is human-only (tty gate), same rule as `safety packs enable`.
 
 ## 5. Opt-in sharing
 
-### Config
+### Decided
 
-In the protected `~/.agentwire/damagecontrol.yml`? No: that file is for safety knobs. Put it in `config.yaml` and **protect the key** from agent writes the same way the control-plane files are (an agent must not be able to flip consent). **[A]**
+- **Opt-in, default off.** One onboarding question (in `agentwire init` and the first interactive `doctor` after upgrade) **suggests** opting in: it explains what the data is for and shows the exact preview payload and endpoint. **No answer, Enter, non-interactive, or skipped = off.** The declined/skipped state is recorded so it is not re-asked. Nothing leaves before an explicit yes.
+- **Local counters on by default**, kill switch and doctor line.
+
+### Config
 
 ```yaml
 telemetry:
-  local: true          # local counters; default on
-  share: false         # default OFF; only a human-run command sets true
-  consent:             # written by `telemetry enable`, never by hand-edit being sufficient
-    version: 1         # consent text version; bump re-asks
-    at: 2026-10-20
-  endpoint: https://t.example.invalid/v1/ingest   # one URL, in config so it's auditable
+  local: true       # default on; nothing leaves the machine
+  share: false      # default OFF; only a human-run `telemetry enable` sets true
+  consent:          # written by `telemetry enable` / `decline`
+    state: unasked  # unasked | accepted | declined
+    version: 1      # consent text version
+    at: null
+  endpoint: https://t.example.invalid/v1/ingest   # one URL, auditable
 ```
 
-`share: true` without a matching `consent.version` is treated as off.
+`share: true` without `consent.state: accepted` and a matching version is off. The key is protected from agent writes like the control-plane files **[A]** (mechanism for `config.yaml` to be checked in Phase 2a). `DO_NOT_TRACK=1` and `AGENTWIRE_TELEMETRY=0` are hard off regardless of config.
 
-### Onboarding
+### Commands (mutations human-only)
 
-`agentwire init` and the first `doctor` after upgrade ask **once**, as an explicit yes/no with default **No**, showing the preview (below) and the exact endpoint. Non-interactive runs (CI, scheduler, unattended, no tty) never ask and never enable. Declining is recorded so we do not nag; re-asking only happens when the consent text version changes materially, and that is a decision, not an automatism (see section 8).
+`telemetry status` (states, last/next send, queue) / `show` / `preview` (the exact payload, byte-for-byte, same code path as send) / `export [--out f]` (no network) / `enable` (prints preview, endpoint, consent text) / `disable` / `decline` / `delete` (wipes counters and queue).
 
-### Commands (human-only mutations)
+### Identity: none persistent
 
-| Command | Behavior |
-|---------|----------|
-| `agentwire telemetry status` | local on/off, share on/off, install id age, last send, next send, queue size |
-| `agentwire telemetry show` | the local summary (same as `stats`) |
-| `agentwire telemetry preview` | **the exact JSON payload that would be sent now**, byte-for-byte, plus its size. Same code path as send |
-| `agentwire telemetry export [--out f]` | write that payload to a file; no network |
-| `agentwire telemetry enable` / `disable` | tty-gated; `enable` prints preview + endpoint + consent text first |
-| `agentwire telemetry delete` | deletes local counters, rotates the install id, and (if an endpoint supports it) sends a deletion request keyed by the old id |
+- **No install id by default.** Aggregation is per **UTC day + version**.
+- To compute the k floor the server must count distinct contributors without identifying them. Proposal: a **fresh random batch token (uuid4) generated for each weekly send, held only until that send succeeds, never reused**. A server can count distinct tokens per bucket but cannot link two weeks to one install. Weekly cadence follows Go (weekly counters reduce noise and make clear no fine-grained trace exists). **[A]** Alternative if even a per-send token is unwanted: client-side random sampling as Go does, with no token; costs k accuracy.
+- **k floor:** the server publishes or retains a bucket only when at least **k = 10 distinct batch tokens** contributed to it **[A]** value for the owner (section 8). Client-side, any counter under 3 on the machine for a rare rule id is folded into `other` so one user's idiosyncratic behavior does not form a lone bucket.
+- **Nothing that identifies a person or device:** no hardware/hostname/username derivation, no Claude conversation ids, no hashes, no IP storage (the endpoint must discard it).
+- **Why this shape (EU):** the EDPB's reading is that storing or accessing information on a user's terminal equipment needs consent under ePrivacy Art. 5(3) with an affirmative action, before any access or storage, withdrawable as easily as given ([EDPB letter OUT2023-0098, annex, read](https://www.dirittobancario.it/wp-content/uploads/2024/01/EDPB-letter-13-dicembre-2023-OUT2023-0098.pdf)). The design aims to avoid being a consent-requiring or personal-data case at all by sending only aggregates with no persistent identifier, while still collecting explicit opt-in before anything is sent. The letter does not itself say a persistent identifier is personal data; that comes from general GDPR definitions and is exactly a question for counsel.
 
-### What is sent
+### Transport
 
-- **Rotating random install id:** `uuid4`, generated at enable time, **rotated every 90 days and on `delete`**. No derivation from hardware, hostname, username, or the Claude conversation ids. Rotation bounds longitudinal linkage; the cost is that retention/cohort analysis is limited to about 90 days. **[A]** acceptable.
-- **Aggregated before send:** weekly, only completed UTC days, only counts. Events with count under k=5 on the machine are folded into `other` (single-user rare events can be identifying, e.g. a rare rule id). Send top-N (about 200) keys per event kind.
-- **Never sent:** timestamps finer than a day, IP stored server-side (endpoint must drop it, see below), anything from the audit log other than rule-id label counts, any string not in `schema.py`.
-- **Transport:** HTTPS POST of the preview payload, stdlib `urllib`, 5 s timeout, fire-and-forget from the watchdog (not any hot path); failure retries next week; queue capped at 4 weeks. Honors `DO_NOT_TRACK=1` and `AGENTWIRE_TELEMETRY=0` as hard off, regardless of config.
-- **Local before remote:** nothing leaves until `share: true` + matching consent version. The send function reads the same gate as `enable`, and a test asserts no socket is opened when it is false.
+Weekly, completed UTC days only, HTTPS POST of the previewed JSON via stdlib `urllib`, 5 s timeout, from the watchdog (never a hot path). Failure retries next week; queue capped at 4 weeks. A test asserts no socket opens while `share` is false.
 
-### Endpoint options
+### Endpoint
 
-| Option | Cost | Abuse/ops | Privacy | Verdict |
-|--------|------|-----------|---------|---------|
-| **Owned: Cloudflare Worker + D1/KV, or Supabase edge fn** | free tier to a few $/mo at this scale | Needs rate limit per IP (edge), payload size cap (8 KB), schema validation against the same `schema.py` (reject unknown keys), no IP persistence | Full control; can state "we never store IPs" truthfully | **Recommended** |
-| Vendor: PostHog (cloud or self-host), Plausible-style | free tier then per-event pricing; self-host = ops | Vendor handles rate limits | Vendor SDKs tend to add identifiers/geo-IP by default; must be configured off; third-party processor in the legal story | Viable if the owner wants dashboards for free; use the HTTP capture API, not the SDK |
-| GitHub-issue-based "send us your export" | $0 | n/a | Fully manual, fully transparent | A fine Phase 2.0 stopgap: `export` + paste |
+| Option | Cost | Abuse and ops | Privacy | Verdict |
+|--------|------|---------------|---------|---------|
+| **Owned: Cloudflare Worker + D1/KV** **[A]** | free tier to a few $/mo | per-IP + global rate limit, 8 KB body cap, strict validation against `schema.py` (reject unknown keys/enums), drop IP | full control, can state it truthfully | **Recommended** |
+| Vendor (PostHog HTTP capture API, not the SDK) | free tier then per-event; self-host = ops | vendor rate limits | SDKs default to adding ids/geo-IP; third-party processor in the legal story | viable if dashboards for free matter |
+| Manual: `export` and send to us | $0 | n/a | fully transparent | fine stopgap for 2a |
 
-Abuse protection for any owned endpoint: per-IP and global rate limit, 8 KB body cap, strict schema validation, reject unknown event/field/enum values, treat the data as **untrusted** (anyone can POST; aggregates are indicative, not authoritative; never auto-act on them). **[A]** The owner has a Cloudflare account already (not verified here).
+Treat inbound data as **untrusted**: anyone can POST. Aggregates are indicative; nothing auto-acts on them.
 
-### Legal (questions for counsel, not conclusions)
+### Legal: questions for counsel, not conclusions
 
-1. Is a random rotating install id, with IP not stored, "personal data" under GDPR / "information stored on terminal equipment" under ePrivacy Art. 5(3)? Does opt-in consent plus our preview satisfy both, or is a separate banner-style disclosure needed?
-2. What is the lawful basis and controller identity if the project is a one-person open source effort versus a company? Is a privacy notice URL required in the consent text, and where does it live?
-3. CCPA/CPRA: does a random install id count as a "unique identifier" making this "personal information", and does opt-in-only collection with deletion support avoid "sale/share" obligations?
-4. Right to erasure with a rotating id: how do we honor deletion if we cannot link a request to rows? (The draft answer: aggregates are not linkable by design and `delete` removes the queue and rotates the id; counsel to confirm that is enough.)
-5. Cross-border transfer if the endpoint is outside the EU: any additional notice or mechanism needed for aggregate counters?
-6. Do enterprise or employer-managed machines need a policy-level off switch (env var / managed config) to be defensible? (Already designed: `AGENTWIRE_TELEMETRY=0`.)
+1. Is an aggregate-only payload with a per-send random token and no stored IP outside "personal data" (GDPR) and outside Art. 5(3) ePrivacy? If Art. 5(3) still applies, does our onboarding yes + preview satisfy "affirmative action, before access or storage, withdrawable"?
+2. Does the *local* counter store count as "storage of information in terminal equipment" needing consent, given it never leaves the machine and is read only by the user? (Go treats local collection as acceptable by default.)
+3. Controller identity and lawful basis for a one-person open-source project versus a company; is a privacy notice URL required in the consent text?
+4. CCPA/CPRA: does the per-send token count as a "unique identifier"? Does opt-in-only plus deletion avoid "sale/share" duties?
+5. Erasure when nothing links rows to a person: is "aggregates not linkable by design" sufficient?
+6. Cross-border transfer of aggregate counters to a non-EU endpoint: any extra notice?
+7. Do employer-managed machines need a policy-level off switch beyond the env var?
 
 ## 6. Norms for dev-tool telemetry
 
-Summarized from memory of public docs; **the URLs below should be re-checked before the owner quotes any of them** (not re-fetched in this draft; budget).
+Every row below was read at its URL on 2026-10-20.
 
-| Tool | Default | Notes | Source |
-|------|---------|-------|--------|
-| Go toolchain | **Opt-in**, local-only by default | After the 2023 opt-out proposal drew heavy pushback, Go shipped `go telemetry local|on|off` with local collection and uploads only if enabled. The closest precedent to this design (local counters, explicit consent, published counter list) | go.dev/doc/telemetry |
-| Angular CLI | **Opt-in**, interactive prompt on first run | Asks once; decision stored | angular.dev/cli/analytics |
-| VS Code | Opt-out (`telemetry.telemetryLevel`) | Large, established; documents categories | code.visualstudio.com/docs/configure/telemetry |
-| Homebrew | Opt-out (`HOMEBREW_NO_ANALYTICS`) | Notice shown on first run, anonymous | docs.brew.sh/Analytics |
-| Next.js | Opt-out (`next telemetry disable`) | Anonymous, notice at install | nextjs.org/telemetry |
-| .NET CLI | Opt-out (`DOTNET_CLI_TELEMETRY_OPTOUT`) | First-run notice | learn.microsoft.com/dotnet/core/tools/telemetry |
-| Terraform | Opt-out (`CHECKPOINT_DISABLE`) | Version check only | developer.hashicorp.com/terraform |
-| Claude Code | Telemetry/error reporting controllable via env (`DISABLE_TELEMETRY` etc.) | Relevant: agentwire users already run a tool with its own telemetry knobs | docs.claude.com (Claude Code settings) |
-| Console Do Not Track | `DO_NOT_TRACK=1` convention | Cross-tool env signal many CLIs honor | consoledonottrack.com |
+| Tool | Default | What the source says | Source |
+|------|---------|----------------------|--------|
+| Go toolchain | **Opt-in** (shipped in 1.23); default mode `local` collects, does not upload | Original Feb 2023 proposal was opt-out; heavy pushback ("No telemetry in my toolchains", "affirmative consent") and Cox revised to opt-in. Design: counters only, per-week files, random weekly sampling, no event log | [design](https://research.swtch.com/telemetry-design.pdf), [DevClass](https://www.devclass.com/development/2024/08/14/go-123-released-with-telemetry-uploaded-to-google-but-opt-in-after-developer-feedback/1622400), [The Register](https://www.theregister.com/2023/02/10/googles_go_programming_language_telemetry_debate/) |
+| Angular CLI | **Opt-in** | "does not collect usage statistics unless you explicitly opt in"; prompted at install | [angular.dev/cli/analytics](https://angular.dev/cli/analytics) |
+| .NET CLI | **Opt-out** (`DOTNET_CLI_TELEMETRY_OPTOUT=1`) | First-run notice; collects command, OS, SDK version, timing, 3-octet IP; older versions hashed MAC address and cwd | [Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/core/tools/telemetry) |
+| Homebrew | **Opt-out** (`brew analytics off`, `HOMEBREW_NO_ANALYTICS=1`) | Notice shown before first event; no user id or IP field in payload; values stripped from options; 365 d retention | [docs.brew.sh/Analytics](https://docs.brew.sh/Analytics) |
+| Next.js | **Opt-out** (`next telemetry disable`, `NEXT_TELEMETRY_DISABLED=1`) | Command, version, machine info, build duration; `NEXT_TELEMETRY_DEBUG=1` prints payload instead of sending | [nextjs.org/telemetry](https://nextjs.org/telemetry) |
+| GitHub CLI | **Opt-out** (enabled by default, April 2026) | Criticized as quietly enabled, mainly in release notes, no full list of data points | [Techzine](https://www.techzine.eu/news/devops/140736/github-cli-now-collects-usage-data-by-default/) |
+| VS Code | not stated on the page read | Setting `telemetry.telemetryLevel`: all / error / crash / off | [VS Code docs](https://code.visualstudio.com/docs/configure/telemetry) |
 
-Reading: big incumbents mostly opt out with a notice; the newest, most scrutinized precedent (Go) and Angular chose opt-in, and the community reaction to opt-out in CLIs has been consistently negative. For a small project whose users are developers running agents with shell access, opt-in is also the only choice consistent with the owner's "nothing leaves before consent". Expect low opt-in rates (typically single-digit to low double-digit %); the data is directional, which is why the schema favors coarse counts.
+Reading: incumbents mostly opt out with a notice; Go reversed to opt-in under backlash and the GitHub CLI default drew the same criticism. Two borrowable details: Next.js's payload-debug switch (our `telemetry preview`) and Go's counters-only local default. The Go team's stated reason for opt-out was that opt-in yields low adoption ([The Register](https://www.theregister.com/2023/02/10/googles_go_programming_language_telemetry_debate/)), so expect directional data only, which the schema is built for.
 
 ## 7. Phased plan
 
 | Phase | Scope | Size | Gate |
 |-------|-------|------|------|
-| **1a** | `telemetry/schema.py` + `record()` + spool write + aggregator stage + schema test (+ mutation: add a str field, test must fail) | M (about 1 day) | Benchmark: CLI startup and hook p99 delta |
-| **1b** | Instrument CLI exit, MCP dispatch, session launch, scheduler, doctor; `dc` derivation from audit rows | M | Counters appear; coverage test: every registered subcommand maps to an enum value |
-| **1c** | `agentwire stats`, `telemetry show`, doctor line, `telemetry_stats` MCP tool, wiki page | S | Owner reads own 2 weeks of data and decides whether it answers section 1 |
-| **2a** | Config block, consent record, `status/preview/export/enable/disable/delete`, protected key, DO_NOT_TRACK; **no network code** | M | Preview payload reviewed by owner |
-| **2b** | Endpoint (owned worker), sender in watchdog, k-anonymity floor, install-id rotation, rate-limit and validation server-side | M | Legal questions answered; owner approves consent text |
-| **2c** | Onboarding prompt in `init`/`doctor`, announcement via `announcements.json` | S | After 2b has run on the owner's machine for a week |
+| **1a** | `schema.py`, `record()`, spool write, watchdog aggregator, schema test (mutation: add an unbounded str field, test must fail), benchmark | M | hook p99 / CLI startup delta under 0.5 ms |
+| **1b** | Instrument CLI exit, MCP dispatch, session launch, scheduler, doctor; derive `dc`/`hook`/`fail`/`rephrased` from audit rows | M | coverage test: every registered subcommand and MCP tool maps to an enum value |
+| **1c** | `stats`, `telemetry show/schema`, doctor line, `telemetry_stats` MCP tool, wiki page | S | owner reads two weeks of own data |
+| **2a** | Config block, consent record, `status/preview/export/enable/decline/disable/delete`, protected key, DO_NOT_TRACK; **no network code** | M | owner reviews preview payload |
+| **2b** | Endpoint, sender, per-send token, k floor (server and client), rate limiting and validation | M | counsel answers section 5; consent text approved |
+| **2c** | Onboarding question in `init`/`doctor`, announcement | S | 2b run on the owner's machine for a week |
 
-1a to 1c are useful without Phase 2 and ship independently. Phase 2 does not start until the owner reads real Phase 1 output.
+1a to 1c are useful without Phase 2 and ship independently.
 
 ## 8. Owner decisions
 
-1. **Opt-in vs opt-out for sharing.** Draft assumes strict opt-in, default off (matches the brief). Confirm; opt-out is not designed here.
-2. **Local counters on by default?** Draft: yes (nothing leaves the machine), with a visible kill switch and a doctor line. Alternative: also ask for local. Confirm.
-3. **Store format:** O_APPEND spool plus daily counter files (recommended) vs SQLite vs plain JSONL. Accept the no-fsync, may-lose-last-seconds tradeoff?
-4. **Wipe survival:** confirm counters are disposable and live only under `~/.agentwire/telemetry/` (consistent with the 2026-10-12 decision).
-5. **Endpoint:** owned Cloudflare Worker (recommended), vendor (PostHog HTTP API), or manual export-only first?
-6. **Install id rotation period** (draft 90 days) and **k floor** (draft 5): privacy vs. usefulness.
-7. **Where consent lives and who can write it:** protected key outside agent reach (draft) and human-only `enable` via tty gate.
-8. **Re-ask policy** when the schema or consent text changes: automatic re-prompt vs only on material change.
-9. **Legal:** who answers the section 5 questions, and is a privacy-notice page needed before 2b?
-10. **Audit log:** any change to retention now that telemetry exists? Draft: none, it stays local-only forever and is never uploaded.
-11. **Sequence instrumentation (Q3):** ship the `pair` event at all? It is the most identifying-adjacent and the least certain value; draft keeps it behind a fixed allowlist of about 10 named pairs and can be cut.
-12. **Portal UI events (`ui`):** server-side only (draft) vs any client-side beacons (not recommended).
+**Settled (2026-10-20):**
+1. Sharing is opt-in, default off; onboarding suggests it; no answer / Enter / non-interactive / skipped = off; declined recorded.
+2. Local counters on by default with kill switch and doctor line. Pair events cut.
+11. (formerly pair events) cut, see 2.
+
+**Open, with recommendation:**
+3. **Store format:** spool + daily counters (recommended) vs SQLite; accept no-fsync.
+4. **Wipe survival:** counters disposable, `~/.agentwire/telemetry/` only (recommended, matches 2026-10-12).
+5. **Endpoint:** owned Cloudflare Worker (recommended); PostHog HTTP API or manual export as alternatives.
+6. **Identity:** per-send random token, no persistent id (recommended); or no token and Go-style sampling.
+7. **k floor:** 10 server-side contributors, 3 client-side fold (proposed; trade accuracy for privacy).
+8. **Consent key protection:** protected-key mechanism for `config.yaml` (Phase 2a checks how `PROTECTED_COMMAND_PATTERNS` treats it).
+9. **Re-ask policy:** re-prompt only when the consent text changes materially (recommended), never automatically on schema bumps.
+10. **Legal:** who answers section 5, and is a privacy-notice page needed before 2b?
+12. **Audit log retention:** unchanged, never uploaded (recommended).
+13. **Rephrase flag:** accept new aggregator logic and its 5-minute window, or defer.
 
 ## Assumptions to verify
 
-- Audit volume figure (17 MB in 10 days) is from this machine only.
-- Hot-path costs in section 3 are reasoned, not measured; Phase 1a includes the measurement and a stop condition.
-- Norms table is from memory; confirm each source before external use.
-- The `config.yaml` protection mechanism for the consent key needs a look at how `PROTECTED_COMMAND_PATTERNS` handles `config.yaml` today.
+- Audit volume (17 MB / 10 days) is from this machine only.
+- Hot-path costs are reasoned; Phase 1a measures them and is a stop condition.
+- The EDPB letter was read in full text but is about cookie-pledge principles; it supports the consent requirements above, not a claim about identifiers.
+- VS Code's default was not on the page read; row states only the setting.
