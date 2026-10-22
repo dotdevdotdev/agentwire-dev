@@ -29,10 +29,14 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 
-def load_rows(log_dir: Optional[Path] = None, days: Optional[int] = None) -> List[dict]:
+def load_rows(
+    log_dir: Optional[Path] = None, days: Optional[int] = None, stats: Optional[Dict[str, int]] = None
+) -> List[dict]:
     """Every parseable row from the audit log directory, oldest file first.
 
-    ``days`` keeps only the last N daily files (filename-dated).
+    ``days`` keeps only the last N daily files (filename-dated). Anything
+    unreadable (a binary file, a non-JSON or non-object line) is skipped and
+    counted in ``stats["unreadable"]`` when a dict is passed.
     """
     base = log_dir or Path(os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire"))) / "logs" / "damage-control"
     rows: List[dict] = []
@@ -40,15 +44,26 @@ def load_rows(log_dir: Optional[Path] = None, days: Optional[int] = None) -> Lis
     if days is not None:
         cutoff = (datetime.now().date() - timedelta(days=days - 1)).isoformat()
         files = [f for f in files if Path(f).stem >= cutoff]
+
+    def skip() -> None:
+        if stats is not None:
+            stats["unreadable"] = stats.get("unreadable", 0) + 1
+
     for path in files:
-        with open(path) as f:
-            for line in f:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(row, dict):
-                    rows.append(row)
+        try:
+            with open(path) as f:
+                for line in f:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        skip()
+                        continue
+                    if isinstance(row, dict):
+                        rows.append(row)
+                    else:
+                        skip()
+        except (UnicodeDecodeError, OSError):
+            skip()
     return rows
 
 

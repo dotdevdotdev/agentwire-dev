@@ -45,6 +45,11 @@ def cmd_safety_report(args) -> int:
     return safety_commands.safety_report_cmd(args.days, args.json)
 
 
+def cmd_safety_suggest_delete_recursive(args) -> int:
+    """CLI command: agentwire safety suggest-delete-recursive"""
+    return safety_commands.safety_suggest_delete_recursive_cmd(args.days, args.min, args.json)
+
+
 def cmd_safety_install(args) -> int:
     """CLI command: agentwire safety install"""
     return safety_commands.safety_install_cmd(
@@ -127,6 +132,22 @@ def register_safety_parser(subparsers) -> None:
         "--json", action="store_true", help="Machine-readable output"
     )
     safety_report.set_defaults(func=cmd_safety_report)
+
+    # safety suggest-delete-recursive — read-only; prints the policy a human pastes (#1152)
+    safety_suggest = safety_subparsers.add_parser(
+        "suggest-delete-recursive",
+        help="List recurring blocked `rm -rf` of regenerable dirs (dist, node_modules, ...) and print the delete-recursive policy to paste (never writes policy)",
+    )
+    safety_suggest.add_argument(
+        "--days", type=int, default=14, help="Window in days (default 14)"
+    )
+    safety_suggest.add_argument(
+        "--min", type=int, default=2, help="Only targets blocked at least this many times (default 2)"
+    )
+    safety_suggest.add_argument(
+        "--json", action="store_true", help="Machine-readable output"
+    )
+    safety_suggest.set_defaults(func=cmd_safety_suggest_delete_recursive)
 
     # safety install
     safety_install = safety_subparsers.add_parser(

@@ -787,9 +787,9 @@ Pinned by `tests/unit/test_damage_control_producer_fed.py`: a differential (cons
 
 #### 5. allowedPaths (Granular path-based allowlist)
 
-Paths where path-based protections (zeroAccess, readOnly, noDelete) are bypassed. Each entry specifies which operations are permitted. Hard-blocked bash patterns (like `rm -rf`) are **NEVER** bypassed. Bypassable bash patterns (like plain `rm`) can be overridden if the target path has the required operation permission.
+Paths where path-based protections (zeroAccess, readOnly, noDelete) are bypassed. Each entry specifies which operations are permitted. Hard-blocked bash patterns (like `rm -rf`) are never bypassed by `allow: all` — only the explicit `delete-recursive` operation (below) frees the recursive `rm`, and only for the directories it names. Bypassable bash patterns (like plain `rm`) can be overridden if the target path has the required operation permission.
 
-**Operations**: `all`, `read`, `write`, `edit`, `delete`, `move`, `chmod`
+**Operations**: `all`, `read`, `write`, `edit`, `delete`, `move`, `chmod`; plus `delete-recursive`, which `all` does **not** include (below)
 
 **Global** (in any rules YAML — bundled or override):
 ```yaml
@@ -820,12 +820,35 @@ The allowlist is the one knob that overrides the protected-control-plane check, 
 
 Per-project paths are relative to the project root and resolved to absolute paths before matching.
 
-**Bypassable bash patterns**: Some bash patterns (plain `rm`, `rmdir`, `trash`) are marked `bypassable: true` in their rules YAML. When a command matches a bypassable pattern, the system checks if ALL target paths have the required operation permission (e.g., `delete` for `rm`). If all paths match, the command is allowed. Hard-blocked patterns (like `rm -rf`) are never bypassed regardless of permissions.
+**Bypassable bash patterns**: Some bash patterns (plain `rm`, `rmdir`, `trash`) are marked `bypassable: true` in their rules YAML. When a command matches a bypassable pattern, the system checks if ALL target paths have the required operation permission (e.g., `delete` for `rm`). If all paths match, the command is allowed. Hard-blocked patterns (like `rm -rf`) are never bypassed by these permissions (only `delete-recursive`, below, frees them).
 
 **Security**: When checking bypassable patterns, ALL paths in the command must have the required permission. A command like `rm /tmp/safe.txt /etc/passwd` is blocked because `/etc/passwd` is not in the allowlist, even though `/tmp/` has delete permission.
 
+**`delete-recursive` — the user-owned opt-in for `rm -rf <regenerable dir>` (#1152).** `rm -rf dist`, `rm -rf node_modules` and `rm -rf .next` are hard-blocked by default and stay so: nothing ships loosened. A human who wants them can name the operation explicitly, per project (`<repo>/.damagecontrol.yml`) or machine-wide (`~/.agentwire/damagecontrol.yml`) — both protected, human-edited:
+```yaml
+allowed_paths:
+  - path: "dist/*"            # project file: relative to the repo root
+    allow: [delete-recursive]
+  - path: "*/node_modules/*"  # global file: any directory of that name
+    allow: [delete-recursive]
+```
+The recursive/forced `rm` (`-r -R -f -rf -fr`, `--recursive`, `--force`) is then allowed only when **every operand of every `rm` in the command** is covered; `rm -rf dist /etc` blocks. The entry names a *directory* (`dist`), and that directory and everything below it is covered.
+- **`allow: all` does NOT include it.** `all` is the pre-existing set (`read write edit delete move chmod`); `delete-recursive` must be named, so no existing `dist/*: all` entry changes meaning. Pinned.
+- **What no entry can ever cover** (checked per operand, lexically AND by realpath): the home dir, `/`, the repo root or any ancestor of it, the cwd or a directory containing it, anything outside the project (a per-project entry's own root; for a global entry, the git root of the cwd), any `..`, `.`-style operand (`.`, `./*`), a glob/brace/`$`/backtick operand or anything not statically resolvable, `.git` anywhere in the path, and any symlink between the project root and the operand (a covered root that *is* a symlink included). The control plane and zero-access paths are still judged by their own tiers; the read-only/no-delete ladders (`dist/` is read-only in the bundled rules) are lifted only for the operands the entry covered, never for another path in the same command.
+- **Broad entries are refused at load**, not honored: `*`, `**`, `/*`, `~/*`, `*/*`, a glob mid-path, `.git`, a project's own root, anything at or above the home dir. The entry stays in the list marked refused and does nothing; `agentwire doctor` names it. Accepted shapes: a literal directory under an absolute/`~` path or `<project>/name/*`, and `*/<name>/*` for a literal name.
+- **Where each entry shape belongs.** `*/<name>/*` (any directory of that name) is for the **global** file only. A project-file entry is relative to the project (`dist/*`, `packages/web/.next/*`); a project entry written `*/x/*` is refused (its glob would sit mid-path under the project root) and doctor flags it.
+- **Trust model (owner decision, #1153):** a project's own `.damagecontrol.yml` may grant `delete-recursive` for directories strictly inside its own checkout. A cloned repo can therefore loosen deletion for *its own files only* — the same trust as every existing project `allowed_paths` entry; the never-covered set above stays absolute whoever wrote the entry. `agentwire doctor` prints each project entry found in the current repo ("from this repo's .damagecontrol.yml"), so review it after cloning.
+- **A nested repository is never regenerable:** an operand that is, or directly contains, a `.git` is not allowed (one `lexists` of `<operand>/.git`, no tree walk; a repo deeper than that is not detected).
+- **Flags:** only `-r -R -f` combinations, `--recursive`, `--force` and `--` are honored; `--no-preserve-root`, `--one-file-system`, `-i`, `-v`… keep the removal blocked.
+- **Wrappers are never more permissive than the bare command.** The `rm` must be modelled by the same parser the scratch exemption uses, so `sudo`/`env`/`timeout`/`sh -c`/`ssh`/`xargs`/`if … then`/`for … do`/`( )`/`{ }` around a covered `rm -rf` still block (stricter than the bare form, never looser — stated cost: a covered `rm -rf` inside a `for` loop or `sh -c` keeps blocking). `cd <literal> && rm -rf …` is modelled.
+- **Audit:** the allowed row carries `allowed_by: "delete-recursive: <entry path>"`. `agentwire doctor` lists active entries (informational) and flags a refused one `[!!]`.
+- **No newer-hook requirement:** hooks that predate the operation never consult it, so the entry is ignored and the removal stays blocked (verified against the pre-#1152 core).
+- **`agentwire safety suggest-delete-recursive [--days N] [--min N] [--json]`** reads the audit log, counts blocked `rm -rf` of regenerable-looking directories (dist, build, node_modules, .next, .nuxt, target, __pycache__, .pytest_cache, .turbo, coverage, .cache, out) per project, and **prints** the YAML to paste. Read-only; it never writes policy. Agents may *suggest* running it to the user, never edit policy themselves.
+- **Reading the global file:** the global policy file's top-level `allowed_paths` (documented in its template but never read by the hook before) is now merged like the rules-YAML `allowedPaths`. An entry someone wrote there expecting it to work is now live — review that file after upgrading; `agentwire doctor` lists the delete-recursive ones.
+- **Not covered by design:** `rmdir` stays on the existing `delete` operation; `find … -delete` and `git clean` are unchanged. A removal assembled at run time (`rm -rf $d`, `for` loops) blocks as it always did.
+
 **Precedence**:
-1. Hard-blocked `bashToolPatterns` (no `bypassable` flag) — always blocked, NEVER bypassed
+1. Hard-blocked `bashToolPatterns` (no `bypassable` flag) — always blocked, never bypassed by `allow: all` (the one exception: `rm`'s recursive/forced rules, which an explicit `delete-recursive` entry frees for the directories it covers, #1152)
 2. Ask patterns (`ask: true`) — prompt for confirmation when a human is present; **fail closed when unattended** (see below)
 3. Bypassable `bashToolPatterns` (`bypassable: true`) — check allowlist for required operation
 4. `allowedPaths` (global + per-project merged) — if target matches with correct operation, skip path checks, EXCEPT that an entry re-permits a guarded path (control plane, zero-access, read-only, no-delete) only if it names it or its shape covers it at a canonical home (#1121/#1122)
@@ -1434,6 +1457,9 @@ agentwire safety logs --pattern "rm -rf"
 
 # Summarize blocks by tier / rule / session over a window (#940 measurement)
 agentwire safety report --days 14 [--json]
+
+# Recurring blocked `rm -rf dist|node_modules|…` + the delete-recursive policy to paste (#1152; read-only)
+agentwire safety suggest-delete-recursive --days 14 [--min 2] [--json]
 ```
 
 **Audit Log Format**:
