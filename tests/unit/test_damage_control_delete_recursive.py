@@ -9,7 +9,6 @@ offenders and asserts none, so one failure lists them all.
 
 import importlib.util
 import json
-import os
 from pathlib import Path
 
 import pytest
