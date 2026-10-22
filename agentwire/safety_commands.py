@@ -618,6 +618,15 @@ def safety_report_cmd(days: int = 14, json_output: bool = False) -> int:
     return 0
 
 
+def safety_suggest_delete_recursive_cmd(days: int = 14, min_count: int = 2, json_output: bool = False) -> int:
+    """CLI command: ``agentwire safety suggest-delete-recursive`` (read-only; prints the policy to paste)."""
+    from agentwire.safety.suggest import format_suggestions, suggest_delete_recursive
+
+    result = suggest_delete_recursive(days, min_count, LOGS_DIR)
+    print(json.dumps(result, indent=2) if json_output else format_suggestions(result))
+    return 0
+
+
 def safety_tooldefs_list_cmd() -> int:
     """CLI command: ``agentwire safety tooldefs list``."""
     tooldefs_dir = TOOLDEFS_DIR if TOOLDEFS_DIR.exists() else None

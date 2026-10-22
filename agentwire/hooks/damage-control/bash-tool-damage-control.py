@@ -34,7 +34,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "d122de4f58f405b50c389c9062c8127c1bcf1722a6100b734522b2e1bd2adac2", "generated_at": "2026-10-20T13:47:51Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "67ea79a374fc6085be39fbe96eed9ca99b1a7dfca09f2f671c794593ee4ffea3", "generated_at": "2026-10-21T23:41:12Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -63,7 +63,7 @@ import signal
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 try:
     import yaml
@@ -90,6 +90,10 @@ def _rx(pattern: str, flags: int = re.IGNORECASE) -> "re.Pattern[str]":
 # ============================================================================
 
 ALL_OPERATIONS = {"read", "write", "edit", "delete", "move", "chmod"}
+# Recursive/forced removal of a regenerable directory (#1152). Deliberately NOT
+# in ALL_OPERATIONS: ``allow: all`` predates it, and a silent upgrade of every
+# existing ``dist/*: all`` entry is exactly what an opt-in must never be.
+DELETE_RECURSIVE_OP = "delete-recursive"
 
 # Operation pattern tuples: (regex template with {path} placeholder, operation name).
 
@@ -584,9 +588,34 @@ def _find_project_config() -> Tuple[str, List[Any]]:
     return cwd, []
 
 
+def _read_global_allowed_paths() -> List[Any]:
+    """Top-level ``allowed_paths`` of the protected global policy file in ``~/.agentwire/``."""
+    path = Path.home() / ".agentwire" / "damagecontrol.yml"
+    try:
+        if yaml and path.is_file():
+            with open(path, "r") as f:
+                data = yaml.safe_load(f) or {}
+            paths = data.get("allowed_paths", []) if isinstance(data, dict) else []
+            return paths if isinstance(paths, list) else []
+    except Exception as exc:
+        _record_load_failure(path, exc, None)
+    return []
+
+
 def load_allowed_paths(config: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Merge global ``allowedPaths`` from config with per-project ``.damagecontrol.yml`` entries."""
+    """Merge global ``allowedPaths`` (rules YAML + the global policy file) with per-project ``.damagecontrol.yml`` entries.
+
+    A ``delete-recursive`` entry too broad to be safe is marked ``dr_refused``
+    (reason attached) instead of dropped, so the decision ignores it and
+    ``agentwire doctor`` can name it.
+    """
     raw = list(config.get("allowedPaths", []))
+
+    for p in _read_global_allowed_paths():
+        if isinstance(p, dict) and "path" in p:
+            entry = _parse_allowed_entry(p)
+            entry["source"] = "global"
+            raw.append(entry)
 
     project_root, project_paths = _find_project_config()
     for p in project_paths:
@@ -595,16 +624,21 @@ def load_allowed_paths(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         entry = _parse_allowed_entry(p)
         if not os.path.isabs(os.path.expanduser(entry["path"])):
             entry["path"] = os.path.join(project_root, entry["path"])
+        entry["project_root"] = project_root
+        entry["source"] = "project"
         raw.append(entry)
 
     result = []
     for item in raw:
         if not isinstance(item, dict):
             continue
-        if "allow" in item and isinstance(item["allow"], set):
-            result.append(item)
-        else:
-            result.append(_parse_allowed_entry(item))
+        if not ("allow" in item and isinstance(item["allow"], set)):
+            item = _parse_allowed_entry(item)
+        if DELETE_RECURSIVE_OP in item["allow"]:
+            problem = delete_recursive_entry_problem(item["path"], item.get("project_root"))
+            if problem:
+                item = dict(item, dr_refused=problem)
+        result.append(item)
     return result
 
 
@@ -642,6 +676,7 @@ def is_command_path_allowed(
     allowed_paths: List[Dict[str, Any]],
     operation: str = "write",
     guarded_patterns: Optional[List[str]] = None,
+    covered: Optional[Set[str]] = None,
 ) -> bool:
     """ALL paths in ``command`` must have ``operation`` permitted by allowlist.
 
@@ -652,11 +687,18 @@ def is_command_path_allowed(
     With ``guarded_patterns``, a path that falls in a guarded class is judged
     against :func:`guarded_allowlist` (a location entry cannot re-permit it,
     #1126) while every other path keeps the full allowlist.
+
+    ``covered`` (expanded operand tokens) are the operands a ``delete-recursive``
+    entry already vouched for (#1152): they are not judged again, every other
+    path still is.
     """
-    if not allowed_paths:
-        return False
     paths = _extract_command_paths(command)
-    if not paths:
+    if covered:
+        remaining = [p for p in paths if p not in covered]
+        if len(remaining) < len(paths) and not remaining:
+            return True
+        paths = remaining
+    if not allowed_paths or not paths:
         return False
     guarded_entries = guarded_allowlist(allowed_paths, guarded_patterns) if guarded_patterns else allowed_paths
     for p in paths:
@@ -9133,6 +9175,179 @@ def find_delete_only_in_scratch(command: str, cwd: Optional[str]) -> bool:
     return True
 
 
+# ----------------------------------------------------------------------------
+# delete-recursive (#1152): a user-owned opt-in for `rm -rf <regenerable dir>`
+# ----------------------------------------------------------------------------
+#
+# The default is untouched: `rm -rf dist` stays hard-blocked. A human who writes
+# `allow: [delete-recursive]` on an entry in a PROTECTED policy file frees the
+# recursive/forced `rm` for operands that entry covers. Never implied by `all`.
+#
+# An entry names a regenerable directory by its NAME: `<project>/dist/*` (a
+# literal anchor) or `*/node_modules/*` (any directory of that name). The
+# covered root D is the directory itself; D and everything under it is covered.
+_DR_FLAG_RE = re.compile(r"^(?:-[rRf]+|--recursive|--force|--)$")
+_DR_GLOB_RE = re.compile(r"[*?\[\]{}$`\\]")
+_DR_NEVER_NAMES = {".", "..", ".git"}
+
+
+def _dr_split(path: str) -> Tuple[str, str]:
+    """``(prefix, name)`` of an entry path: ``/repo/dist/*`` -> ``("/repo", "dist")``."""
+    p = os.path.expanduser(path.strip())
+    for suffix in ("/**", "/*"):
+        if p.endswith(suffix):
+            p = p[: -len(suffix)]
+            break
+    p = p.rstrip("/")
+    prefix, _, name = p.rpartition("/")
+    if not prefix and p.startswith("/"):
+        prefix = "/"
+    return prefix, name
+
+
+def delete_recursive_entry_problem(path: Any, project_root: Optional[str] = None) -> Optional[str]:
+    """Why a ``delete-recursive`` entry is refused, or None when its shape is safe.
+
+    Safe shapes: a literal absolute (or ``~``) directory, or ``*/<name>/*`` for
+    a literal ``<name>``. Refused: anything whose covered root could be a whole
+    tree (``*``, ``/*``, ``~/*``, ``*/*``, a glob mid-path), ``.git``, a root at
+    or above the home directory, and — for a project entry — the project root.
+    """
+    if not isinstance(path, str) or not path.strip():
+        return "empty path"
+    prefix, name = _dr_split(path)
+    if not name or _DR_GLOB_RE.search(name):
+        return "the covered directory must be a literal name (e.g. dist), not a glob"
+    if name in _DR_NEVER_NAMES:
+        return f"{name!r} can never be covered"
+    if prefix in ("*", "**"):
+        return None
+    if not prefix.startswith("/") or _DR_GLOB_RE.search(prefix):
+        return "anchor it under an absolute path or use */<name>/*"
+    if ".." in prefix.split("/"):
+        return "'..' in the path"
+    root = os.path.normpath(os.path.join(prefix, name))
+    home = os.path.realpath(os.path.expanduser("~"))
+    for candidate in {root, os.path.realpath(root)}:
+        if candidate == "/" or candidate == home or home.startswith(candidate + "/"):
+            return "covers the home directory or an ancestor of it"
+    if project_root:
+        proot = os.path.abspath(project_root)
+        if root == proot or not root.startswith(proot + "/"):
+            return "must be strictly inside the project root"
+    return None
+
+
+def active_delete_recursive_entries(allowed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Entries carrying ``delete-recursive`` that load did not refuse."""
+    return [e for e in allowed if DELETE_RECURSIVE_OP in e["allow"] and not e.get("dr_refused")]
+
+
+def _dr_cover(prefix: str, name: str, target: str, real: bool) -> Optional[str]:
+    """The covered root of ``target`` under ``<prefix>/<name>``, or None."""
+    if prefix in ("*", "**"):
+        parts = target.split("/")
+        for i in range(2, len(parts)):
+            if parts[i] == name:
+                return "/".join(parts[: i + 1])
+        return None
+    anchor = os.path.realpath(prefix) if real else os.path.normpath(prefix)
+    root = os.path.join(anchor, name)
+    return root if target == root or target.startswith(root + "/") else None
+
+
+def _dr_boundary(entry: Dict[str, Any], directory: str) -> Optional[str]:
+    """The project an operand must stay strictly inside: the entry's own root, else the git root of ``directory``."""
+    if entry.get("project_root"):
+        return os.path.abspath(entry["project_root"])
+    current = os.path.abspath(directory)
+    while True:
+        if os.path.exists(os.path.join(current, ".git")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+def _dr_strictly_inside(path: str, root: str) -> bool:
+    return path.startswith(root.rstrip("/") + "/")
+
+
+def _dr_entry_covers(entry: Dict[str, Any], tok: str, directory: str) -> bool:
+    """One operand, one entry: every guard must pass, in lexical AND real form."""
+    if not _operand_is_literal(tok):
+        return False
+    stripped = tok.rstrip("/")
+    if not stripped or os.path.basename(stripped) in (".", "..") or ".." in stripped.split("/"):
+        return False
+    target = _abs_path(tok, directory)
+    boundary = _dr_boundary(entry, directory)
+    if not boundary:
+        return False
+    boundary_real = os.path.realpath(boundary)
+    home_real = os.path.realpath(os.path.expanduser("~"))
+    if boundary_real in ("/", home_real):
+        return False
+    target_real = os.path.join(os.path.realpath(os.path.dirname(target)), os.path.basename(target))
+    if not (_dr_strictly_inside(target, boundary) and _dr_strictly_inside(target_real, boundary_real)):
+        return False
+    # No symlink anywhere between the boundary and the operand (the operand's own
+    # included): a link at the covered root or on the way in is a way out.
+    current = boundary
+    for part in target[len(boundary):].strip("/").split("/"):
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            return False
+        if not os.path.lexists(current):
+            break
+    cwd_real = os.path.realpath(directory)
+    for t, c in ((target, os.path.abspath(directory)), (target_real, cwd_real)):
+        if c == t or c.startswith(t + "/"):
+            return False  # the cwd itself, or removing the directory it sits in
+    for t, b in ((target, boundary), (target_real, boundary_real)):
+        if ".git" in t[len(b):].strip("/").split("/"):
+            return False
+    prefix, name = _dr_split(entry["path"])
+    root_lex = _dr_cover(prefix, name, target, real=False)
+    root_real = _dr_cover(prefix, name, target_real, real=True)
+    if not root_lex or not root_real:
+        return False
+    return _dr_strictly_inside(root_lex, boundary) and _dr_strictly_inside(root_real, boundary_real)
+
+
+def rm_recursive_allowed_by(
+    command: str, cwd: Optional[str], allowed: List[Dict[str, Any]]
+) -> Optional[Tuple[List[str], Set[str]]]:
+    """``(entry paths, covered operand tokens)`` if EVERY `rm` in ``command`` is allowed, else None (blocked as before).
+
+    Every operand of every `rm` must be covered by an active ``delete-recursive``
+    entry; one uncovered operand, any flag outside rRf/--recursive/--force, or
+    any shape ``_parse_rm_command`` will not model (wrappers, openers, a
+    non-literal ``cd``) refuses the whole command. A wrapped command is
+    therefore never MORE permitted than the same command at top level.
+    """
+    entries = active_delete_recursive_entries(allowed)
+    if not entries:
+        return None
+    parsed = _parse_rm_command(command, cwd)
+    if not parsed:
+        return None
+    used: List[str] = []
+    covered: Set[str] = set()
+    for flags, operands, directory in parsed:
+        if not flags or not all(_DR_FLAG_RE.match(f) for f in flags):
+            return None
+        for tok in operands:
+            hit = next((e for e in entries if _dr_entry_covers(e, tok, directory)), None)
+            if hit is None:
+                return None
+            covered.add(os.path.expanduser(tok))
+            if hit["path"] not in used:
+                used.append(hit["path"])
+    return used, covered
+
+
 # A plain sed substitution script is DATA for the path ladders: it names text to
 # rewrite, not a file to touch (the target is the file operand). `s|a|b|` with
 # only the g/p/i/I/number flags can neither write (`w`) nor run (`e`) anything,
@@ -9784,6 +9999,8 @@ def _decide_rules(
         return False
 
     bypassable_matches: List[Tuple[str, str, Optional[str]]] = []
+    recursive_grants: List[str] = []
+    recursive_covered: Set[str] = set()
     # A block match outranks an ask match regardless of rule-file load order:
     # `git -c core.pager="rm -rf /x" log` matches both `git.config-exec-key`
     # (ask) and the rm rule (block), and returning whichever the loop met
@@ -9820,6 +10037,12 @@ def _decide_rules(
                 elif bypassable:
                     bypassable_matches.append((pattern, reason, rule_id))
                 elif reason.startswith("rm with ") and rm_with_flags_only_in_scratch(command, cwd):
+                    continue
+                elif reason.startswith("rm with ") and (
+                    dr := rm_recursive_allowed_by(command, cwd, allowed)
+                ):
+                    recursive_grants.extend(g for g in dr[0] if g not in recursive_grants)
+                    recursive_covered |= dr[1]
                     continue
                 elif reason.startswith("git clean with ") and git_clean_only_explicit_untracked(command, cwd):
                     continue
@@ -9918,7 +10141,10 @@ def _decide_rules(
         ):
             fed_ask = _fed_possible(path)
         if op is not None:
-            if is_command_path_allowed(command, guarded_allowlist(allowed, read_only), op):
+            if is_command_path_allowed(
+                command, guarded_allowlist(allowed, read_only), op,
+                covered=recursive_covered if op == "delete" else None,
+            ):
                 continue
             return {
                 "decision": "block",
@@ -9950,7 +10176,9 @@ def _decide_rules(
             # `>|` (clobber) is read as a pipe by the scanner; it is a redirect.
             for hay in path_ladder_haystacks(command.replace(">|", ">"), path)
         ):
-            if is_command_path_allowed(command, guarded_allowlist(allowed, no_delete), "delete"):
+            if is_command_path_allowed(
+                command, guarded_allowlist(allowed, no_delete), "delete", covered=recursive_covered
+            ):
                 continue
             return {
                 "decision": "block",
@@ -10012,12 +10240,15 @@ def _decide_rules(
             "id": "core.ambiguous-command",
         }
 
-    return {
+    verdict = {
         "decision": "allow",
         "reason": "No patterns matched",
         "pattern": None,
         "command": command,
     }
+    if recursive_grants:
+        verdict["allowed_by"] = "delete-recursive: " + ", ".join(recursive_grants)
+    return verdict
 
 
 def check_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
@@ -10364,7 +10595,10 @@ def main() -> None:
         log_disabled("Bash", command)
         sys.exit(0)
     else:
-        log_allowed("Bash", command, user_approved=False)
+        try:
+            log_allowed("Bash", command, user_approved=False, allowed_by=result.get("allowed_by"))
+        except TypeError:
+            log_allowed("Bash", command, user_approved=False)
         sys.exit(0)
 
 

@@ -81,6 +81,8 @@ When you discover something noteworthy during your work — a technology gotcha,
 
 Core protection is always on; vendor rule packs (aws, gcp, firebase, cloud-hosting, databases, containers, infrastructure, publish) are opt-in and a few default groups can be opted out. When the user's work touches a vendor whose pack is off (`safety_packs_list` shows it), **suggest** `agentwire safety packs enable <name>` and let them run it. Never run `packs|groups enable|disable` yourself — it is human-only and blocked for agents.
 
+`rm -rf dist` / `node_modules` / `.next` stay blocked by default. If the user keeps hitting that, **suggest** `agentwire safety suggest-delete-recursive` (read-only; it prints the `delete-recursive` policy to paste). Never edit the policy files yourself, and don't rephrase a blocked `rm -rf` to dodge the rule.
+
 ## Notifications
 
 | Tool | What it does |

@@ -89,6 +89,31 @@ The blocked-action email names the rule id to add. See
 [`docs/wiki/internals/damage-control.md`](../internals/damage-control.md) for the
 unattended guardrail and [`secrets.md`](secrets.md) for the secret-path policy.
 
+## Opting in to `rm -rf dist` / `node_modules` (#1152)
+
+`rm -rf` of a build directory is blocked by default, and nothing ships
+loosened. If an agent keeps hitting it, ask what it would take:
+
+```bash
+agentwire safety suggest-delete-recursive      # read-only: counts recurring blocks, prints YAML
+```
+
+then paste what fits into the protected policy file yourself — the repo's
+`.damagecontrol.yml` for one project, `~/.agentwire/damagecontrol.yml` for all:
+
+```yaml
+allowed_paths:
+  - path: "dist/*"
+    allow: [delete-recursive]       # `allow: all` does NOT include this
+```
+
+The removal is then allowed only when every operand is inside a covered
+directory — never home, the repo root, the cwd, `.git`, a `..` path, a
+glob/`$VAR`, or anything reached through a symlink. `agentwire doctor` lists
+your active entries and names any that are too broad (those do nothing). An
+agent may suggest this to you; it can never make the edit. Reference:
+[`damage-control.md`](../internals/damage-control.md#5-allowedpaths-granular-path-based-allowlist).
+
 ## Regression coverage & CI
 
 `tests/unit/test_damage_control_bypass.py` loads the real bundled rule YAMLs and

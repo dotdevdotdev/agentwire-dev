@@ -364,6 +364,21 @@ def _render_skill_section() -> int:
     return issues
 
 
+def _report_delete_recursive(allowed_entries) -> int:
+    """List active ``delete-recursive`` entries (informational); flag refused ones (#1152). Returns the issue count."""
+    from .safety._core import DELETE_RECURSIVE_OP
+
+    carrying = [e for e in allowed_entries if DELETE_RECURSIVE_OP in e["allow"]]
+    refused = [e for e in carrying if e.get("dr_refused")]
+    active = [e for e in carrying if not e.get("dr_refused")]
+    for e in active:
+        print(f"  [..] delete-recursive active: {e['path']!r} ({e.get('source', 'rules')}) — rm -rf is allowed there")
+    for e in refused:
+        print(f"  [!!] delete-recursive entry REFUSED: {e['path']!r} ({e.get('source', 'rules')}) — {e['dr_refused']}")
+        print("       It does nothing until narrowed to one directory name (e.g. dist/* or */node_modules/*).")
+    return len(refused)
+
+
 def _render_damage_control_section() -> int:
     """Print the damage-control health block. Returns the count of issues found.
 
@@ -406,7 +421,8 @@ def _render_damage_control_section() -> int:
         )
         from .safety_commands import _resolve_rules_dir, _resolve_tooldefs_dir
         dc_cfg = load_dc_config(_resolve_rules_dir(), _resolve_tooldefs_dir())
-        overlaps = control_plane_allowlist_overlaps(load_allowed_paths(dc_cfg))
+        allowed_entries = load_allowed_paths(dc_cfg)
+        overlaps = control_plane_allowlist_overlaps(allowed_entries)
     except Exception as e:
         print(f"  [..] Could not check allowedPaths against control plane: {e}")
     else:
@@ -421,6 +437,7 @@ def _render_damage_control_section() -> int:
             issues += 1
         else:
             print("  [ok] allowedPaths does not cover the protected control plane")
+        issues += _report_delete_recursive(allowed_entries)
 
     try:
         from . import safety_commands

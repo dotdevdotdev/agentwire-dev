@@ -166,6 +166,7 @@ def log_entry(
     rule_id: Optional[str] = None,
     escape_reason: Optional[str] = None,
     cwd: Optional[str] = None,
+    allowed_by: Optional[str] = None,
 ) -> None:
     """
     Write a log entry to the audit log.
@@ -180,6 +181,8 @@ def log_entry(
         rule_id: Stable identifier of the matched rule (when applicable)
         escape_reason: Reason supplied via "# allow:" escape hatch (when applicable)
         cwd: Working directory where the command would have run
+        allowed_by: The user-owned allowlist entry that allowed a command a rule
+            would otherwise block (e.g. ``delete-recursive: /repo/dist/*``)
     """
     import os
     context = get_session_context()
@@ -202,6 +205,8 @@ def log_entry(
         "tool_use_id": _hook_field("tool_use_id"),
         "permission_mode": _hook_field("permission_mode"),
     }
+    if allowed_by:
+        entry["allowed_by"] = allowed_by
 
     log_file = get_log_file()
 
@@ -300,6 +305,7 @@ def log_allowed(
     tool: str,
     command: str,
     user_approved: bool = False,
+    allowed_by: Optional[str] = None,
 ) -> None:
     """
     Log an allowed operation.
@@ -308,12 +314,14 @@ def log_allowed(
         tool: Tool name (Bash, Edit, Write)
         command: Command or path that was allowed
         user_approved: Whether this was explicitly approved by user (for ask patterns)
+        allowed_by: The allowlist entry that allowed it, when one did
     """
     log_entry(
         tool=tool,
         command=command,
         decision="allowed",
         user_approved=user_approved if user_approved else None,
+        allowed_by=allowed_by,
     )
 
 
