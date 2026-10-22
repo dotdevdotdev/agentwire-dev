@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "67ea79a374fc6085be39fbe96eed9ca99b1a7dfca09f2f671c794593ee4ffea3", "generated_at": "2026-10-21T23:41:12Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "c41c0fbc63b4ba224fea0451ef7b57b1dab691815b77f3390b3581a5532b47b3", "generated_at": "2026-10-22T00:22:38Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -9297,6 +9297,8 @@ def _dr_entry_covers(entry: Dict[str, Any], tok: str, directory: str) -> bool:
             return False
         if not os.path.lexists(current):
             break
+    if os.path.lexists(os.path.join(target, ".git")):
+        return False  # a nested repository is not regenerable
     cwd_real = os.path.realpath(directory)
     for t, c in ((target, os.path.abspath(directory)), (target_real, cwd_real)):
         if c == t or c.startswith(t + "/"):

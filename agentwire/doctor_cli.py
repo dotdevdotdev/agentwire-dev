@@ -372,7 +372,8 @@ def _report_delete_recursive(allowed_entries) -> int:
     refused = [e for e in carrying if e.get("dr_refused")]
     active = [e for e in carrying if not e.get("dr_refused")]
     for e in active:
-        print(f"  [..] delete-recursive active: {e['path']!r} ({e.get('source', 'rules')}) — rm -rf is allowed there")
+        where = f"this repo's .damagecontrol.yml ({e['project_root']})" if e.get("project_root") else e.get("source", "rules")
+        print(f"  [..] delete-recursive active: {e['path']!r} from {where} — rm -rf is allowed there")
     for e in refused:
         print(f"  [!!] delete-recursive entry REFUSED: {e['path']!r} ({e.get('source', 'rules')}) — {e['dr_refused']}")
         print("       It does nothing until narrowed to one directory name (e.g. dist/* or */node_modules/*).")

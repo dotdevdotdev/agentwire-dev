@@ -347,3 +347,66 @@ def test_doctor_lists_active_entries_and_names_a_refused_one(world, bash_hook, b
     assert issues == 1
     assert "active" in out and "dist" in out and "REFUSED" in out and "'" + str(world.repo / "*") + "'" in out
     assert str(world.repo / "node_modules") not in out  # an `all` entry is not a delete-recursive entry
+
+
+def test_only_the_recursive_force_flags_are_honored(world):
+    entries = _entries("dist")
+    commands = [
+        "rm -rf --no-preserve-root dist",
+        "rm -rf --one-file-system dist",
+        "rm -rf --interactive dist",
+        "rm -rf --verbose dist",
+        "rm -rf -i dist",
+        "rm -rfi dist",
+        "rm -rfv dist",
+        "rm -rf dist --no-preserve-root",
+        "rm -rf dist -i",
+        "rm --no-preserve-root -rf dist",
+    ]
+    bad = [c for c in commands if world.decide(c, project=entries)["decision"] == "allow"]
+    assert not bad, bad
+
+
+def test_the_real_path_guard_holds_without_the_symlink_walk(world, bash_hook, monkeypatch):
+    """Defense in depth: a link that slipped past the lexical walk still cannot leave the tree."""
+    (world.repo / "link").symlink_to(world.outside)
+    entry = {"path": "*/dist/*", "allow": {"delete-recursive"}}
+    monkeypatch.setattr(bash_hook.os.path, "islink", lambda p: False)
+    assert bash_hook._dr_entry_covers(entry, "link/dist", str(world.repo)) is False
+    assert bash_hook._dr_entry_covers(entry, "dist", str(world.repo)) is True
+
+
+def test_a_covered_directory_holding_a_nested_repo_is_not_allowed(world):
+    (world.repo / "build" / "vendored" / ".git").mkdir(parents=True)
+    (world.repo / "build" / ".git").mkdir()
+    (world.repo / "dist" / "sub").mkdir()
+    entries = _entries("build", "dist")
+    assert world.decide("rm -rf build", project=entries)["decision"] == "block"
+    assert world.decide("rm -rf dist", project=entries)["decision"] == "allow"
+
+
+def test_a_star_slash_entry_in_a_project_file_is_refused(world, bash_hook, bundled_config):
+    entries = [{"path": "*/node_modules/*", "allow": DR}]
+    assert world.decide("rm -rf node_modules", project=entries)["decision"] == "block"
+    (loaded,) = [e for e in bash_hook.load_allowed_paths(bundled_config) if e.get("source") == "project"]
+    assert loaded.get("dr_refused")
+    assert world.decide("rm -rf node_modules", global_=entries)["decision"] == "allow"
+
+
+def test_suggest_skips_unreadable_rows_and_says_so(tmp_path):
+    from agentwire.safety.suggest import format_suggestions, suggest_delete_recursive
+
+    proj = tmp_path / "p"
+    (proj / ".git").mkdir(parents=True)
+    good = json.dumps(_audit_row("rm -rf dist", str(proj)))
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    lines = [good, good, "not json", json.dumps([1]),
+             json.dumps({"decision": "blocked", "tool": "Bash", "command": ["rm"], "cwd": str(proj)}),
+             json.dumps({"decision": "blocked", "tool": "Bash", "command": 5, "cwd": None})]
+    (log_dir / "2999-01-01.jsonl").write_text("\n".join(lines) + "\n")
+    (log_dir / "2999-01-02.jsonl").write_bytes(b"\xff\xfe\x00\x80 binary")
+    result = suggest_delete_recursive(days=100000, min_count=2, log_dir=log_dir)
+    assert result["suggestions"][0]["targets"] == {"dist": 2}
+    assert result["unreadable"] == 5
+    assert "5 unreadable rows skipped" in format_suggestions(result)

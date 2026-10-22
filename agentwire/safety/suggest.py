@@ -32,14 +32,22 @@ def _project_of(cwd: str) -> str:
         current = parent
 
 
-def blocked_regenerable_targets(rows: List[dict]) -> Counter:
-    """``Counter[(project, name)]`` over blocked Bash `rm` rows aimed at regenerable directories."""
+def blocked_regenerable_targets(rows: List[dict], stats: Optional[Dict[str, int]] = None) -> Counter:
+    """``Counter[(project, name)]`` over blocked Bash `rm` rows aimed at regenerable directories.
+
+    A blocked Bash row whose ``command``/``cwd`` is not a string is skipped and
+    counted in ``stats["unreadable"]``.
+    """
     counts: Counter = Counter()
     for row in rows:
         if row.get("kind") == "outcome" or row.get("decision") != "blocked" or row.get("tool") != "Bash":
             continue
         cwd = row.get("cwd")
-        command = row.get("command") or ""
+        command = row.get("command")
+        if not isinstance(cwd, str) or not isinstance(command, str):
+            if stats is not None:
+                stats["unreadable"] = stats.get("unreadable", 0) + 1
+            continue
         if not cwd or "rm" not in command:
             continue
         try:
@@ -68,7 +76,8 @@ def suggest_delete_recursive(
     days: int = 14, min_count: int = 2, log_dir: Optional[Path] = None
 ) -> Dict[str, Any]:
     """Recurring blocked removals of regenerable directories, per project, with the snippet to paste."""
-    counts = blocked_regenerable_targets(load_rows(log_dir, days))
+    stats: Dict[str, int] = {}
+    counts = blocked_regenerable_targets(load_rows(log_dir, days, stats), stats)
     by_project: Dict[str, Dict[str, int]] = {}
     for (project, name), n in counts.items():
         if n >= min_count:
@@ -82,10 +91,17 @@ def suggest_delete_recursive(
             "targets": {k: names[k] for k in ordered},
             "snippet": snippet_for(ordered),
         })
-    return {"days": days, "min_count": min_count, "suggestions": suggestions}
+    return {"days": days, "min_count": min_count, "suggestions": suggestions, "unreadable": stats.get("unreadable", 0)}
 
 
 def format_suggestions(result: Dict[str, Any]) -> str:
+    text = _format_suggestions(result)
+    if result.get("unreadable"):
+        text += f"\n\n{result['unreadable']} unreadable rows skipped."
+    return text
+
+
+def _format_suggestions(result: Dict[str, Any]) -> str:
     if not result["suggestions"]:
         return (
             f"No regenerable directory was blocked {result['min_count']}+ times "

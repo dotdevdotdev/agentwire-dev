@@ -9262,6 +9262,8 @@ def _dr_entry_covers(entry: Dict[str, Any], tok: str, directory: str) -> bool:
             return False
         if not os.path.lexists(current):
             break
+    if os.path.lexists(os.path.join(target, ".git")):
+        return False  # a nested repository is not regenerable
     cwd_real = os.path.realpath(directory)
     for t, c in ((target, os.path.abspath(directory)), (target_real, cwd_real)):
         if c == t or c.startswith(t + "/"):
