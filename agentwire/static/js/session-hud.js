@@ -109,7 +109,8 @@ class SessionHud {
         // otherwise swallow it before it reached a session running Claude Code.
         // Option+P isn't a macOS dead key (it types a literal π rather than
         // composing), so bindHotkey cleans no accent for it.
-        bindHotkey({ code: 'KeyP', alt: true }, () => this.toggle());
+        // Shift must be up: Alt+Shift+P is the peek-all chord (session-hud-controller.js).
+        bindHotkey({ code: 'KeyP', alt: true, shift: false }, () => this.toggle());
 
         // The vh-based floor/cap move with the viewport (e.g. a resized
         // browser window) — re-run auto-height so a stale px value doesn't
@@ -149,7 +150,7 @@ class SessionHud {
 
         const handle = document.createElement('button');
         handle.className = 'session-hud-handle';
-        handle.title = 'Session HUD (Alt+P)';
+        handle.title = 'Session HUD (Alt+P · Alt+Shift+P expands all)';
         handle.innerHTML = '<span class="session-hud-grip" aria-hidden="true"></span>';
         document.body.appendChild(handle);
         this.handle = handle;
@@ -339,10 +340,8 @@ class SessionHud {
      * Programmatically grow to the half detent (e.g. a HUD card's mini-terminal
      * just opened and needs the room) — remembers whatever detent was active
      * so restoreDetent() can put it back. A no-op if already grown (the
-     * accordion-style switch between two expanded cards collapses the old
-     * one — which calls restoreDetent() — then expands the new one — which
-     * calls this again — within the same tick; only the first grab of a grow
-     * cycle should record what to restore).
+     * several cards can be open at once, and each expand calls this; only the
+     * first grab of a grow cycle should record what to restore).
      */
     growToHalf() {
         if (this._grownFromDetent !== null) return;

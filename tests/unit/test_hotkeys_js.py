@@ -34,4 +34,4 @@ def results():
 def test_hotkey_contract(results):
     failed = [name for name, ok in results.items() if ok is not True]
     assert not failed, failed
-    assert len(results) >= 13, "harness stopped reporting checks"
+    assert len(results) >= 15, "harness stopped reporting checks"

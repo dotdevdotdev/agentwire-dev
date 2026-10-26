@@ -20,7 +20,7 @@ globalThis.window = {
 function dispatch(type, props = {}) {
     const e = {
         type, defaultPrevented: false, stopped: false, immediateStopped: false,
-        repeat: false, altKey: false, metaKey: false, ctrlKey: false,
+        repeat: false, altKey: false, shiftKey: false, metaKey: false, ctrlKey: false,
         preventDefault() { this.defaultPrevented = true; },
         stopPropagation() { this.stopped = true; },
         stopImmediatePropagation() { this.immediateStopped = true; this.stopped = true; },
@@ -119,5 +119,15 @@ bindHotkey({ code: 'BracketRight', alt: true, allowRepeat: true }, () => { cycle
 dispatch('keydown', { code: 'BracketRight', altKey: true });
 dispatch('keydown', { code: 'BracketRight', altKey: true, repeat: true });
 out.allow_repeat = cycled === 2;
+
+// 7. shift: false / true split one physical key into two chords (Alt+P peek vs
+// Alt+Shift+P peek-all) — each fires only for its own, and both claim the key.
+let peek = 0, peekAll = 0;
+bindHotkey({ code: 'KeyP', alt: true, shift: false }, () => { peek++; });
+bindHotkey({ code: 'KeyP', alt: true, shift: true }, () => { peekAll++; });
+const plain = dispatch('keydown', { code: 'KeyP', altKey: true });
+out.shift_up_peeks_only = peek === 1 && peekAll === 0 && plain.defaultPrevented;
+const shifted = dispatch('keydown', { code: 'KeyP', altKey: true, shiftKey: true });
+out.shift_down_peeks_all_only = peek === 1 && peekAll === 1 && shifted.defaultPrevented;
 
 console.log(JSON.stringify(out));

@@ -216,8 +216,6 @@ export class TopologyView {
         this._showLinks = opts.showLinks !== false;
         this._mode = opts.mode === 'shade' ? 'shade' : 'window';
         this._lastSessions = [];
-        /** @type {string|null} name of the currently expanded card, if any (accordion — one at a time) */
-        this._expandedCard = null;
         /** @type {string|null} name of the dimmed, non-interactive "you-are-here" root card, if any */
         this._selfSession = null;
 
@@ -293,7 +291,7 @@ export class TopologyView {
 
     /** Tear down everything TopologyView appended into its container. */
     dispose() {
-        if (this._expandedCard) this._collapseCard(this._expandedCard);
+        this.collapseAll();
         for (const entry of this._cards.values()) {
             if (entry.selfDispose) entry.selfDispose();
             this._closeMenu(entry);
@@ -495,6 +493,16 @@ export class TopologyView {
         const card = document.createElement('div');
         card.className = 'topology-card';
         card.dataset.session = name;
+        card.tabIndex = 0;
+        card.addEventListener('keydown', (e) => {
+            // Only the card itself — keys typed into the mounted terminal,
+            // mic or menu bubble up through here and must not toggle.
+            if (e.target !== card || (e.key !== 'Enter' && e.key !== ' ')) return;
+            const entry = this._cards.get(name);
+            if (!entry || entry.isGhost || name === this._selfSession || !this._onCardExpand) return;
+            e.preventDefault();
+            this._toggleExpand(name);
+        });
         card.addEventListener('click', (e) => {
             // Ghost cards (no live session, #781) are inert outside their two
             // explicit action buttons — there's no session to drill into.
@@ -791,19 +799,12 @@ export class TopologyView {
     _expandCard(name) {
         const entry = this._cards.get(name);
         if (!entry || entry.expanded || !this._onCardExpand) return;
-        // Accordion — only one card's mini-terminal (and its live WS) is open
-        // at a time, to keep resource use and visual noise bounded.
-        if (this._expandedCard && this._expandedCard !== name) {
-            this._collapseCard(this._expandedCard);
-        }
-
         const slot = document.createElement('div');
         slot.className = 'topology-card-expand-slot';
         entry.card.appendChild(slot);
         entry.card.classList.add('topology-card--expanded');
         entry.expanded = true;
         entry.expandSlot = slot;
-        this._expandedCard = name;
 
         const dispose = this._onCardExpand(name, entry.session, slot);
         entry.expandDispose = typeof dispose === 'function' ? dispose : null;
@@ -819,7 +820,6 @@ export class TopologyView {
         entry.expandSlot = null;
         entry.card.classList.remove('topology-card--expanded');
         entry.expanded = false;
-        if (this._expandedCard === name) this._expandedCard = null;
         this._scheduleRedraw();
     }
 
@@ -827,6 +827,40 @@ export class TopologyView {
      * (a mini-terminal) signals its session ended. No-op if not expanded. */
     collapseCard(name) {
         this._collapseCard(name);
+    }
+
+    /** Cards that can host a mini-terminal: live (not ghost), not the
+     * you-are-here self card. Insertion order = render order. */
+    _expandableNames() {
+        return [...this._cards]
+            .filter(([name, e]) => !e.isGhost && name !== this._selfSession)
+            .map(([name]) => name);
+    }
+
+    /** True when there is at least one expandable card and every one is open. */
+    allExpanded() {
+        const names = this._expandableNames();
+        return names.length > 0 && names.every((n) => this._cards.get(n).expanded);
+    }
+
+    /** Expand every expandable card, up to `max` open at once (each is a live
+     * terminal + WebSocket). Already-open cards count toward the cap.
+     * @returns {{expanded: number, skipped: number}} skipped = cards left
+     *   collapsed because of the cap */
+    expandAll(max = Infinity) {
+        let open = this._expandableNames().filter((n) => this._cards.get(n).expanded).length;
+        let skipped = 0;
+        for (const name of this._expandableNames()) {
+            if (this._cards.get(name).expanded) continue;
+            if (open >= max) { skipped++; continue; }
+            this._expandCard(name);
+            open++;
+        }
+        return { expanded: open, skipped };
+    }
+
+    collapseAll() {
+        for (const name of [...this._cards.keys()]) this._collapseCard(name);
     }
 
     _scheduleRedraw() {
