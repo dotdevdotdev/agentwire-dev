@@ -48,6 +48,7 @@
  * focused session when their repo matches).
  */
 
+import { bindHotkey } from './hotkeys.js';
 import { desktop } from './desktop-manager.js';
 import { TopologyView } from './topology-render.js';
 import { getAllSessions, onSessionsChanged, ensureSessionsLoaded } from './sidebar/sessions-section.js';
@@ -56,10 +57,17 @@ import { mountCardTerminal, mountSelfMic } from './card-terminal.js';
 import { sessionHud } from './session-hud.js';
 import { apiFetch } from './api.js';
 import { normalizeMachine } from './session-id.js';
-import { toastSuccess, toastError } from './toast.js';
+import { toast, toastSuccess, toastError } from './toast.js';
 import { projectFromCwd } from './safety-shared.js';
 
 const GHOST_POLL_MS = 20000;
+
+/** Most live mini-terminals Alt+Shift+P opens at once. Each is an xterm plus a
+ * WebSocket, and in the owner's ~1/3-width portal they lay out as 340px
+ * columns scrolling horizontally inside the half-height drawer — past ~8 the
+ * strip is more scrolling than observing. Cards over the cap stay collapsed
+ * (and the toast says so); clicking one still expands it. */
+export const OBSERVE_CAP = 8;
 
 /** Fallback-tier repo name from a filesystem path, for when a session has no
  * entry in `_sessionProject` (the authoritative, server-resolved lookup
@@ -107,6 +115,8 @@ class HudController {
          * scoping (#801) prefers this over guessing from a live pane cwd. */
         this._sessionProject = new Map();
         this._ghostTimer = null;
+        /** @type {number} expanded mini-terminals; the drawer holds the half detent while > 0 */
+        this._expandedCount = 0;
     }
 
     /**
@@ -142,6 +152,10 @@ class HudController {
         // Closing the drawer exits "master" mode, so the next Alt+P open is the
         // normal context-following view again.
         sessionHud.onClose(() => { this._global = false; });
+
+        // Alt+Shift+P ("peek all", beside Alt+P's peek): expand every child's
+        // live terminal. Alt+P itself requires Shift up (session-hud.js).
+        bindHotkey({ code: 'KeyP', alt: true, shift: true }, () => this.toggleObserve());
 
         desktop.on('active_window_changed', ({ id }) => this._applyFocus(id));
         // Closing the focused session's own window (with nothing else taking
@@ -179,6 +193,28 @@ class HudController {
         if (sessionHud.segment !== 'sessions') sessionHud.setSegment('sessions');
         if (!sessionHud.open) sessionHud.toggle(true);
         this._render();
+    }
+
+    /**
+     * Alt+Shift+P. Closed HUD: open it and expand all children. Open HUD: expand
+     * all, or collapse all when every child is already expanded.
+     */
+    toggleObserve() {
+        if (!this._view) return;
+        if (sessionHud.segment !== 'sessions') sessionHud.setSegment('sessions');
+        const wasOpen = sessionHud.open;
+        if (!wasOpen) sessionHud.toggle(true);
+        if (wasOpen && this._view.allExpanded()) {
+            this._view.collapseAll();
+            return;
+        }
+        // Mount terminals only once the drawer has laid out, or they fit to 0 rows.
+        const run = () => {
+            const { skipped } = this._view.expandAll(OBSERVE_CAP);
+            if (skipped) toast(`Showing ${OBSERVE_CAP} live terminals — ${skipped} more left collapsed`);
+        };
+        if (wasOpen) run();
+        else requestAnimationFrame(run);
     }
 
     _render() {
@@ -264,11 +300,14 @@ class HudController {
     }
 
     _expandCard(name, session, slotEl) {
+        // Any number of cards can be open at once; the drawer holds the half
+        // detent until the LAST one closes.
+        this._expandedCount++;
         sessionHud.growToHalf();
         const cleanup = mountCardTerminal(name, session, slotEl, { topologyView: this._view });
         return () => {
             cleanup();
-            sessionHud.restoreDetent();
+            if (--this._expandedCount === 0) sessionHud.restoreDetent();
         };
     }
 
