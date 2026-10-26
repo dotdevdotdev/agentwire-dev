@@ -15,6 +15,7 @@ const doc = { activeElement: null };
 globalThis.document = doc;
 globalThis.window = {
     addEventListener(type, fn) { listeners.push({ type, fn }); },
+    removeEventListener(type, fn) { const i = listeners.findIndex((l) => l.type === type && l.fn === fn); if (i >= 0) listeners.splice(i, 1); },
 };
 
 function dispatch(type, props = {}) {
@@ -129,5 +130,35 @@ const plain = dispatch('keydown', { code: 'KeyP', altKey: true });
 out.shift_up_peeks_only = peek === 1 && peekAll === 0 && plain.defaultPrevented;
 const shifted = dispatch('keydown', { code: 'KeyP', altKey: true, shiftKey: true });
 out.shift_down_peeks_all_only = peek === 1 && peekAll === 1 && shifted.defaultPrevented;
+
+// 8. Hold-to-talk Ctrl/Cmd+Space: claimed on keydown (no NUL/space reaches the
+// focused box), starts once, stops on the key's keyup OR the modifier's keyup
+// (macOS drops the key's keyup while Cmd is held), and unbinds cleanly.
+let started = 0, stopped = 0, gate = true;
+const unbind = bindHotkey({ code: 'Space', mod: true, when: () => gate, onRelease: () => { stopped++; } }, () => { started++; });
+const plainSpace = dispatch('keydown', { code: 'Space' });
+out.ptt_plain_space_untouched = !plainSpace.defaultPrevented && started === 0;
+const alt = dispatch('keydown', { code: 'Space', altKey: true });
+out.ptt_option_space_untouched = !alt.defaultPrevented && started === 0;
+const ctrlDown = dispatch('keydown', { code: 'Space', ctrlKey: true });
+out.ptt_ctrl_claimed = ctrlDown.defaultPrevented && ctrlDown.stopped && started === 1;
+dispatch('keydown', { code: 'Space', ctrlKey: true, repeat: true });
+out.ptt_repeat_not_restarted = started === 1;
+const spaceUp = dispatch('keyup', { code: 'Space', ctrlKey: true });
+out.ptt_keyup_stops = stopped === 1 && spaceUp.defaultPrevented;
+dispatch('keyup', { code: 'Space' });
+out.ptt_release_once = stopped === 1;
+dispatch('keydown', { code: 'Space', metaKey: true });
+dispatch('keyup', { code: 'MetaLeft' });
+out.ptt_modifier_keyup_stops = started === 2 && stopped === 2;
+dispatch('keyup', { code: 'ControlLeft' });
+out.ptt_unheld_modifier_keyup_ignored = stopped === 2;
+gate = false;
+const gated = dispatch('keydown', { code: 'Space', ctrlKey: true });
+out.ptt_when_false_leaves_key = !gated.defaultPrevented && started === 2;
+gate = true;
+unbind();
+const afterUnbind = dispatch('keydown', { code: 'Space', ctrlKey: true });
+out.ptt_unbind = !afterUnbind.defaultPrevented && started === 2;
 
 console.log(JSON.stringify(out));

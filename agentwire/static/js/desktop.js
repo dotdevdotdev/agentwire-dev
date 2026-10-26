@@ -1301,12 +1301,18 @@ function setupGlobalPtt() {
         stopGlobalRecording();
     });
 
-    // Global keyboard shortcut (Ctrl/Cmd + Space)
+    // Global shortcut (Ctrl/Cmd + Space), claimed in the capture phase so a focused
+    // xterm can't swallow it. A focused session window owns its own PTT instead.
+    bindHotkey({
+        code: 'Space',
+        mod: true,
+        when: () => !document.activeElement?.closest('.session-window'),
+        onRelease: stopGlobalRecording,
+    }, () => {
+        if (globalPttState === 'idle') startGlobalRecording();
+    });
+
     document.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.code === 'Space' && globalPttState === 'idle') {
-            e.preventDefault();
-            startGlobalRecording();
-        }
         // Cmd/Ctrl + K opens the command palette on the root list, with
         // "Ask council" as the default selection. xterm.js uses a hidden
         // textarea for terminal input, so we don't skip on tag — Cmd+K is
@@ -1314,12 +1320,6 @@ function setupGlobalPtt() {
         if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
             e.preventDefault();
             if (!isCommandPaletteOpen() && !isHelpOpen()) openCommandPalette();
-        }
-    });
-    document.addEventListener('keyup', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.code === 'Space' && globalPttState === 'recording') {
-            e.preventDefault();
-            stopGlobalRecording();
         }
     });
 }
