@@ -30,6 +30,9 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.2.2",  # >=1.2.2 clears CVE-2026-28684
     "requests>=2.33.0",  # >=2.33.0 clears CVE-2026-25645
+    # Transitive via requests/aiohttp, pinned explicitly: `uv tool install .` ignores
+    # uv.lock, so only a floor here keeps installs off the eMudhra emSign roots.
+    "certifi>=2026.10.23",
     # <2 is load-bearing: MCP SDK 2.x removed `mcp.server.fastmcp`, which
     # agentwire/mcp_core.py imports. Unbounded, any `agentwire rebuild` after
     # the 2.x release resolves it and every mcp__agentwire__* tool silently
