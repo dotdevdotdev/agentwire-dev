@@ -20,6 +20,7 @@ import { PttController } from './ptt.js';
 import * as browserTts from './voice/browser-tts.js';
 import { voicePromptWrap } from './voice/prompt.js';
 import { isAutoSend } from './voice/autosend-prefs.js';
+import { getAudioContext, unlockAudio, installGestureUnlock } from './voice/audio-unlock.js';
 
 const SESSION_KEY = 'agentwire_mobile_session';
 
@@ -331,19 +332,8 @@ function scheduleWsReconnect(name) {
 // the first PTT press (iOS requires a user gesture before audio can play)
 // ---------------------------------------------------------------------------
 
-let audioContext = null;
 const audioQueue = [];
 let audioPlaying = false;
-
-function ensureAudioContext() {
-    if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (audioContext.state === 'suspended') {
-        audioContext.resume().catch(() => {});
-    }
-    return audioContext;
-}
 
 function queueAudio(base64Data) {
     audioQueue.push(base64Data);
@@ -364,7 +354,7 @@ async function playNextAudio() {
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-        const ctx = ensureAudioContext();
+        const ctx = getAudioContext();
         const buffer = await ctx.decodeAudioData(bytes.buffer);
         const source = ctx.createBufferSource();
         source.buffer = buffer;
@@ -385,7 +375,7 @@ function setupPtt() {
     const onDown = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        ensureAudioContext(); // unlock playback while we have a user gesture
+        unlockAudio(); // unlock playback while we have a user gesture
         els.ptt.setPointerCapture?.(e.pointerId);
         startRecording();
     };
@@ -524,6 +514,7 @@ async function loadVoiceStatus() {
 }
 
 async function init() {
+    installGestureUnlock();
     setupPtt();
     setupEditBar();
     setupSwipeCycling();

@@ -12,6 +12,8 @@
 
 import { apiFetch, wsProtocols } from './api.js';
 import * as browserTts from './voice/browser-tts.js';
+import { installGestureUnlock, requestPlayback } from './voice/audio-unlock.js';
+import { toast } from './toast.js';
 
 // Reconnect configuration
 const INITIAL_RECONNECT_DELAY = 1000;
@@ -53,8 +55,8 @@ class DesktopManager {
         /** @type {Map<string, string>} windowId -> zone string for tiled windows */
         this.tileStates = new Map();
 
-        /** @type {AudioContext|null} */
-        this._audioContext = null;
+        /** @type {HTMLElement|null} The "click to enable audio" toast while audio is blocked */
+        this._unlockToast = null;
 
         /** @type {string|null} Device-level audio dedupe */
         this._lastAudioHash = null;
@@ -78,6 +80,7 @@ class DesktopManager {
      * @returns {Promise<void>}
      */
     async connect() {
+        installGestureUnlock();
         this.intentionalDisconnect = false;
 
         if (this.reconnectTimeout) {
@@ -942,6 +945,18 @@ class DesktopManager {
         }
     }
 
+    /** Show a non-blocking prompt so a locked AudioContext is never a silent failure. */
+    _promptAudioUnlock() {
+        if (this._unlockToast && document.body.contains(this._unlockToast)) return;
+        this._unlockToast = toast('Click anywhere to enable audio', { type: 'info', duration: 60000 });
+    }
+
+    _onAudioUnlocked() {
+        this._unlockToast?.click();
+        this._unlockToast = null;
+        if (!this._audioPlaying) this._playNextAudio();
+    }
+
     /**
      * Play the next audio in the queue.
      * Called when audio ends or when first item is queued.
@@ -956,6 +971,16 @@ class DesktopManager {
         const { base64Data, session } = this._audioQueue.shift();
 
         try {
+            // Safari keeps the context suspended until a gesture unlocks it:
+            // park this item (don't drop it) and replay when that happens.
+            const ctx = requestPlayback(() => this._onAudioUnlocked());
+            if (!ctx) {
+                this._audioQueue.unshift({ base64Data, session });
+                this._audioPlaying = false;
+                this._promptAudioUnlock();
+                return;
+            }
+
             // Decode base64 to binary
             const binaryString = atob(base64Data);
             const bytes = new Uint8Array(binaryString.length);
@@ -963,19 +988,11 @@ class DesktopManager {
                 bytes[i] = binaryString.charCodeAt(i);
             }
 
-            // Create or resume AudioContext
-            if (!this._audioContext) {
-                this._audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            if (this._audioContext.state === 'suspended') {
-                await this._audioContext.resume();
-            }
-
             // Decode and play
-            const audioBuffer = await this._audioContext.decodeAudioData(bytes.buffer.slice(0));
-            const source = this._audioContext.createBufferSource();
+            const audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+            const source = ctx.createBufferSource();
             source.buffer = audioBuffer;
-            source.connect(this._audioContext.destination);
+            source.connect(ctx.destination);
 
             // When playback ends, wait 300ms then play next
             source.onended = () => {
