@@ -8,7 +8,6 @@ from agentwire.locking import (
     session_lock,
 )
 
-
 # --- Dead-holder recovery race regression (#491) -------------------------------
 #
 # The waiter path used to unlink a lock file whenever it observed a dead holder

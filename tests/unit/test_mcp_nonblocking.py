@@ -4,7 +4,6 @@ import asyncio
 import threading
 from unittest.mock import patch
 
-
 from agentwire import core, mcp_server  # noqa: F401  (registers every tool)
 from agentwire.mcp_core import mcp
 

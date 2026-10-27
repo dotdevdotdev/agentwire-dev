@@ -9,7 +9,6 @@ the doctor surfacing — without touching any real tmux session or port.
 
 from types import SimpleNamespace
 
-
 from agentwire import tts_cli
 
 # === _shim_session_state: the shared liveness predicate ====================
