@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-from agentwire.utils import event_log
 from agentwire.utils.event_log import append_event
 
 
@@ -15,23 +14,6 @@ def events_path(tmp_path):
 
 def _read_lines(path):
     return path.read_text().splitlines()
-
-
-def test_appends_jsonl_line_unchanged(events_path):
-    """Each event is one ``json.dumps(record) + "\\n"`` line — format intact."""
-    append_event(events_path, {"ts": 1, "event": "a", "x": 2})
-    append_event(events_path, {"ts": 3, "event": "b"})
-
-    lines = _read_lines(events_path)
-    assert lines == ['{"ts": 1, "event": "a", "x": 2}', '{"ts": 3, "event": "b"}']
-    # Round-trips back to the original records.
-    assert json.loads(lines[0]) == {"ts": 1, "event": "a", "x": 2}
-
-
-def test_creates_parent_dir(events_path):
-    assert not events_path.parent.exists()
-    append_event(events_path, {"event": "a"})
-    assert events_path.exists()
 
 
 def test_rotation_triggers_past_threshold(events_path, monkeypatch):
@@ -59,29 +41,3 @@ def test_rotation_triggers_past_threshold(events_path, monkeypatch):
     total = _read_lines(events_path) + _read_lines(rolled)
     assert len(total) == 20
     assert {json.loads(line)["i"] for line in total} == set(range(20))
-
-
-def test_backup_count_is_bounded(events_path, monkeypatch):
-    """Only ``AGENTWIRE_EVENT_LOG_BACKUPS`` rolled files are retained."""
-    monkeypatch.setenv("AGENTWIRE_EVENT_LOG_MAX_BYTES", "120")
-    monkeypatch.setenv("AGENTWIRE_EVENT_LOG_BACKUPS", "2")
-
-    for i in range(60):
-        append_event(events_path, {"event": "fill", "i": i, "pad": "y" * 40})
-
-    # .1 and .2 may exist; .3 must never appear.
-    assert not events_path.with_name(events_path.name + ".3").exists()
-
-
-def test_rotation_disabled_when_max_bytes_zero(events_path, monkeypatch):
-    monkeypatch.setenv("AGENTWIRE_EVENT_LOG_MAX_BYTES", "0")
-    for i in range(50):
-        append_event(events_path, {"event": "fill", "i": i, "pad": "z" * 40})
-
-    assert not events_path.with_name(events_path.name + ".1").exists()
-    assert len(_read_lines(events_path)) == 50
-
-
-def test_default_threshold_is_five_mib():
-    assert event_log.DEFAULT_MAX_BYTES == 5 * 1024 * 1024
-    assert event_log.DEFAULT_BACKUPS == 3

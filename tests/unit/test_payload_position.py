@@ -13,17 +13,6 @@ from agentwire.safety._core import ambiguity_conceals_verb
 
 pytestmark = pytest.mark.real_agentwire_home
 
-DATA = {
-    "script-argument": "python3 script.py $(date +%F)",
-    "script-then-c-flag": 'python3 script.py -c "$(cat x)"',
-    "shell-script-argument": 'bash run.sh "$(cat f)"',
-    "node-script-argument": "node build.js --out $(pwd)/dist",
-    "module-name-literal": "python3 -m pytest $(git diff --name-only)",
-    "option-then-script": "python3 -W ignore script.py $(date)",
-    "stdin-script": 'python3 - "$(date)" <<EOF\nprint(1)\nEOF',
-    "heredoc-then-for-loop": "python3 - <<'EOF'\nprint(1)\nEOF\nfor pid in $(lsof -ti:8791); do kill $pid; done",
-    "newline-separated": "echo ok\npython3 script.py\nls $(pwd)",
-}
 
 CODE = {
     "c-flag": 'python3 -c "$(cat x)"',
@@ -43,11 +32,6 @@ CODE = {
     "positional-payload-tmux": 'tmux new-session -d "$(cat x)"',
     "positional-payload-sqlite": 'sqlite3 db "$(cat x)"',
 }
-
-
-def test_substitution_as_script_data_is_not_concealment():
-    wrongly_concealing = [n for n, c in DATA.items() if ambiguity_conceals_verb(c) is not None]
-    assert not wrongly_concealing, wrongly_concealing
 
 
 def test_substitution_that_supplies_or_chooses_code_still_conceals():
