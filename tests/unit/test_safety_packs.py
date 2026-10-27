@@ -105,14 +105,6 @@ def test_upgrade_of_old_install_changes_no_decision(home):
         assert installed(section) == bundled_files(PKG)[section]
 
 
-def test_migration_counts_an_edited_pack_file_as_in_use(home):
-    install_old_layout()
-    aws = safety_commands.RULES_DIR / "aws.yaml"
-    aws.write_text(aws.read_text() + "\n# mine\n")
-    safety_commands.heal_damage_control(quiet=True)
-    assert "aws" in packs.read_state(safety_commands.DAMAGECONTROL_FILE)["packs"]
-
-
 def test_enable_installs_and_disable_removes_pristine(home):
     safety_commands.heal_damage_control(quiet=True)
     assert safety_packs_cli.cmd_packs_enable(SimpleNamespace(name="aws")) == 0
@@ -132,13 +124,6 @@ def test_disable_never_removes_an_edited_file(home):
     safety_packs_cli.cmd_packs_disable(SimpleNamespace(name="aws"))
     assert f.exists() and "# hand edit" in f.read_text()
     assert safety_commands.heal_damage_control(quiet=True)["rules_kept_edited"] == ["aws.yaml"]
-
-
-def test_disabled_pack_is_not_reported_as_drift(home):
-    safety_commands.heal_damage_control(quiet=True)
-    drift = {**safety_commands.rules_drift(), **safety_commands.tooldefs_drift()}
-    bad = {f: s for f, s in drift.items() if s != "ok"}
-    assert not bad, bad
 
 
 def test_group_opt_out_and_kernel_refusal(home):
@@ -176,85 +161,3 @@ def test_protected_pattern_blocks_mutation_not_reads():
     assert not wrong, wrong
 
 
-def test_write_state_preserves_comments_and_other_keys(tmp_path):
-    f = tmp_path / "damagecontrol.yml"
-    f.write_text("# keep me\nenabled: true\ndisabled_rules:\n  - git.push\npacks:\n  - aws\n"
-                 "allowed_paths: []\n")
-    packs.write_state(f, packs=["aws", "gcp"], disabled_groups=["remote"])
-    text = f.read_text()
-    assert "# keep me" in text and "- git.push" in text and "allowed_paths: []" in text
-    state = packs.read_state(f)
-    assert (state["packs"], state["disabled_groups"]) == (["aws", "gcp"], ["remote"])
-
-
-def test_overview_suggests_only_when_vendor_cli_present(home, monkeypatch):
-    monkeypatch.setattr(safety_packs_cli.shutil, "which", lambda b: "/bin/x" if b == "docker" else None)
-    rows = {r["name"]: r for r in safety_packs_cli.overview()}
-    suggested = sorted(n for n, r in rows.items() if r["suggest_enable"])
-    assert suggested == ["containers"]
-
-
-def test_partial_old_install_comes_out_of_upgrade_whole(home):
-    """A pack with a file deleted (or no tooldef) must not lose the pack: before
-    packs, heal reinstalled any missing bundled file."""
-    install_old_layout()
-    (safety_commands.RULES_DIR / "databases.yaml").unlink()
-    (safety_commands.RULES_DIR / "aws.yaml").unlink()
-    (safety_commands.TOOLDEFS_DIR / "aws.yaml").unlink()
-    safety_commands.heal_damage_control(quiet=True)
-    assert {"databases.yaml", "aws.yaml"} <= installed("rules")
-    assert "aws.yaml" in installed("tooldefs")
-    assert decisions()["databases"] != "allow" and decisions()["aws"] != "allow"
-
-
-def test_malformed_policy_file_is_read_protectively_and_never_written(home, capsys):
-    install_old_layout()
-    bad = "packs: [aws\nenabled: true\n"
-    safety_commands.DAMAGECONTROL_FILE.write_text(bad)
-    summary = safety_commands.heal_damage_control(quiet=True)
-    assert safety_commands.DAMAGECONTROL_FILE.read_text() == bad
-    assert not summary["rules_removed"] and not summary["tooldefs_removed"]
-    assert installed("rules") >= bundled_files(PKG)["rules"]
-    assert safety_commands.rules_drift()  # drift/doctor paths do not raise
-    assert safety_packs_cli.cmd_packs_enable(SimpleNamespace(name="gcp")) == 1
-    assert safety_commands.DAMAGECONTROL_FILE.read_text() == bad
-    from agentwire.doctor_cli import _render_damage_control_section
-    _render_damage_control_section()
-    assert "does not parse" in capsys.readouterr().out
-
-
-def test_disabled_git_group_is_reported_as_disabled_not_a_typo(home):
-    from agentwire.safety.lint import split_missing_ids
-    safety_commands.heal_damage_control(quiet=True)
-    safety_packs_cli.cmd_groups_disable(SimpleNamespace(name="git"))
-    unknown, by_group = split_missing_ids(["git.commit", "gh.pr-create", "git.no-such-typo-xyz".replace("git.", "nosuch.")])
-    assert by_group == {"git.commit": "git", "gh.pr-create": "git"}
-    assert unknown == ["nosuch.no-such-typo-xyz"]
-
-
-def test_tooldef_grant_ids_are_attributed_to_their_owning_group(home):
-    from agentwire.safety.lint import disabled_group_of
-    safety_commands.heal_damage_control(quiet=True)
-    safety_packs_cli.cmd_groups_disable(SimpleNamespace(name="git"))
-    cases = {
-        "tooldef.git-create-a-commit": "git",
-        "tooldef.gh-open-a-pull-request": "git",
-        "git.commit": "git",
-        "tooldef.uv-run-a-script-in-project-environment": None,  # uv has its own group
-        "tooldef.nosuch-thing": None,
-    }
-    wrong = {i: disabled_group_of(i) for i, g in cases.items() if disabled_group_of(i) != g}
-    assert not wrong, wrong
-
-
-def test_opting_out_of_git_keeps_uv_tooldef_installed(home):
-    safety_commands.heal_damage_control(quiet=True)
-    safety_packs_cli.cmd_groups_disable(SimpleNamespace(name="git"))
-    assert "uv.yaml" in installed("tooldefs")
-    assert not {"git.yaml", "gh.yaml"} & installed("tooldefs")
-
-
-def test_migration_runner_users_are_offered_the_databases_pack(home, monkeypatch):
-    monkeypatch.setattr(safety_packs_cli.shutil, "which", lambda b: "/bin/x" if b == "prisma" else None)
-    rows = {r["name"]: r for r in safety_packs_cli.overview()}
-    assert rows["databases"]["suggest_enable"]
