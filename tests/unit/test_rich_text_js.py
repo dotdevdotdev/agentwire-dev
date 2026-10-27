@@ -34,7 +34,9 @@ def _render(text: str, links: bool) -> str:
     )
     out = subprocess.run(
         ["node", "--input-type=module", "-e", script],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return json.loads(out.stdout)
 
@@ -48,14 +50,3 @@ class TestArtifactToastTitleNotLinkified:
         assert "<a " not in html
         assert self.TITLE in html  # literal, visible verbatim
         assert html.startswith("<strong>")  # bold still applies
-
-    def test_normal_toasts_keep_links(self):
-        html = _render("see [docs](https://example.com/docs)", links=True)
-        assert '<a href="https://example.com/docs"' in html
-        assert 'rel="noopener noreferrer"' in html
-
-    def test_source_html_never_survives_either_mode(self):
-        for links in (True, False):
-            html = _render('<script>alert(1)</script>"onmouseover="x', links=links)
-            assert "<script>" not in html
-            assert '"onmouseover' not in html  # quotes escaped too

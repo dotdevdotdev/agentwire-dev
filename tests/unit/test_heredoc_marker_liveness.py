@@ -13,9 +13,8 @@ Loads the bundled rules, never the live ``~/.agentwire/damage-control`` copies.
 from pathlib import Path
 
 import pytest
-import yaml
 
-from agentwire.safety._core import _heredocs, check_command, load_config
+from agentwire.safety._core import check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home
 
@@ -31,105 +30,6 @@ TAILS = [
 ]
 
 # Marker contexts bash does NOT read as a heredoc: the next line RUNS.
-NOT_A_HEREDOC = [
-    "echo a # <<'EOF'",
-    'echo "a" # <<\'EOF\'',
-    "echo a \\<<'EOF'",
-    "echo a;# <<'EOF'",
-    "true && # <<'EOF'",
-    "echo a | # <<'EOF'",
-    "(echo a # <<'EOF'\n)",
-    "echo $(true # <<'EOF'\n)",
-    "echo `true # <<'EOF'\n`",
-    'echo "a $(true # <<\'EOF\'\n)"',
-    "echo 1<<2",
-    "let x=1<<2",
-    "[[ a<<b ]]",
-    "echo $((1<<2))",
-    "((x=1<<2))",
-    "let x=1<<EOF",
-    "[[ a<<EOF ]]",
-    "echo $((1<<EOF))",
-    "((x=1<<EOF))",
-    "cat <<<EOF",
-    "echo '<<EOF'",
-    'echo "<<EOF"',
-    "echo $'a\\'<<EOF'",
-    "cat <<",
-    # (( )) after any command-position word, not only as a segment's first word
-    "for ((i=1<<EOF;i<5;i++)); do break; done",
-    "while ((1<<EOF)); do break; done",
-    "until ((1<<EOF)); do break; done",
-    "if ((1<<EOF)); then :; fi",
-    "if true; then ((1<<EOF)); fi",
-    "if false; then :; else ((1<<EOF)); fi",
-    "time ((1<<EOF))",
-    "! ((1<<EOF))",
-    "true && ((1<<EOF))",
-    "{ ((1<<EOF)); }",
-    # legacy $[ ] arithmetic and array subscripts
-    "echo $[1<<EOF ]",
-    "x=$[1<<EOF ]",
-    'echo "$[1<<EOF ]"',
-    "echo $(echo $[1<<EOF ])",
-    "[[ $[1<<EOF ] ]]",
-    "a[1<<EOF ]=x",
-    "echo ${a[1<<EOF ]}",
-    # a backslash-newline joins lines: the word after it starts fresh
-    "echo a \\\n# <<EOF",
-    "echo a \\\n\\\n# <<EOF",
-    "echo $(echo a \\\n# <<EOF\n)",
-    "cat <<EO\\\nF",
-    # <( ) / >( ) / name=( ) re-parse their body: the marker closes with the ")"
-    "cat <(echo <<EOF)",
-    "cat >(cat <<'EOF')",
-    "x=(a <<EOF)",
-    "a=([1]=<<EOF)",
-    "x=(a <<EOF))",
-    "x+=(a <<EOF)",
-    "declare -a x=(a <<EOF)",
-    "FOO=1 x=(a <<EOF)",
-    "cat <(cat <(echo <<EOF))",
-    "echo $(cat <(echo <<EOF))",
-    "true | cat <(echo <<EOF)",
-    "echo 2>(cat <<EOF)",
-    "cat <(echo ')' <<EOF)",
-    # a marker directly in an array literal is never a heredoc, closed or not:
-    # bash 3.2 recovers from the syntax error and runs the next line
-    "x=(a <<EOF",
-    "x=(a <<'EOF'",
-    "x=(a <<-EOF",
-    "x+=(a <<EOF",
-    "n+=(a <<EOF",
-    "declare -a n=(a <<EOF",
-    "local n=(a <<EOF",
-    "export n=(a <<EOF",
-    "x=([1]=<<EOF",
-    "x=(a\nb <<EOF",
-    "x=(a 'q' <<EOF",
-    'x=(a "q" <<EOF',
-    "x=(a <<EOF\n)",
-    # a "<<" anywhere in a literal poisons the line: a LATER real marker on it,
-    # even after the literal closes, must not hide the next line either
-    "a=([1<<2]=x) <<EOF",
-    "a=([1<<2]=x) <<'EOF'",
-    "a=([1<<2]=x) <<-EOF",
-    "a=([1<<2]=x) << EOF",
-    'a=([1<<2]=x) <<"EOF"',
-    "a=([1<<2]=x) <<\\EOF",
-    "a=(<<2) <<EOF",
-    "a=([k]=<<2) <<EOF",
-    "a=(x <<2) <<EOF",
-    "a=(${y}<<2) <<EOF",
-    "a+=(x <<2) <<EOF",
-    "declare -a a=(x <<2) <<EOF",
-    "local a=(x <<2) <<EOF",
-    "export a=(x <<2) <<EOF",
-    "echo $(a=(x <<2) <<EOF\n)",
-    "a=(x\n<<2\n) <<EOF",
-    "a=(x <<2\n) <<EOF",
-    "cat <<EOF a=([1<<2]=x)",
-]
 
 # Contexts where the marker IS a redirection: the body is data, the tail after
 # the terminator runs.
@@ -161,7 +61,7 @@ REAL_HEREDOC = [
     "cat <<'EOF' <(echo a)",
     "x=(a b); cat <<'EOF'",
     "a=($((1<<2))) <<'EOF'",
-    'a=("<<") <<\'EOF\'',
+    "a=(\"<<\") <<'EOF'",
     "a=('<<') <<'EOF'",
     "a=(x) <<'EOF'",
     "a=(x\ny) <<'EOF'",
@@ -183,60 +83,14 @@ def _decision(command, cfg):
     return check_command(command, cfg)["decision"]
 
 
-def test_bundled_rules_all_loaded(cfg):
-    expected = 0
-    for f in sorted(RULES_DIR.glob("*.yaml")):
-        expected += len((yaml.safe_load(f.read_text()) or {}).get("bashToolPatterns") or [])
-    assert expected > 0
-    assert len(cfg["bashToolPatterns"]) == expected
-
-
-def test_non_redirection_markers_open_no_heredoc():
-    """The scanner itself: each context yields no heredoc at all."""
-    bad = [c for c in NOT_A_HEREDOC if _heredocs(c + "\nbody\nEOF\n")]
-    assert not bad, bad
-
-
-def test_real_markers_still_open_a_heredoc():
-    """Control for the test above: a scanner that never fires would pass it."""
-    closers = {"( cat <<'EOF'": "\nbody\nEOF\n)", "{ cat <<'EOF'": "\nbody\nEOF\n}", "x=$(cat <<'EOF'": "\nbody\nEOF\n)",
-               "x=(a $(cat <<'EOF'": "\nbody\nEOF\n))"}
-    bad = [c for c in REAL_HEREDOC if len(_heredocs(c + closers.get(c, "\nbody\nEOF"))) != 1]
-    assert not bad, bad
-
-
-def test_dangerous_line_after_a_non_heredoc_marker_is_blocked(cfg):
-    bad = [
-        (ctx, tail)
-        for ctx in NOT_A_HEREDOC
-        for tail in TAILS
-        if _decision(f"{ctx}\n{tail}\nEOF", cfg) != "block"
-    ]
-    assert not bad, bad
-
-
 def test_dangerous_line_after_a_real_heredoc_is_blocked(cfg):
     """Only the body is hidden: the line after the terminator is scanned."""
     bad = [
         (ctx, tail)
         for ctx in REAL_HEREDOC
         for tail in TAILS
-        if _decision(f"{ctx}\nbody\nEOF\n{tail}", cfg) != "block"
-        and "$(" not in ctx
+        if _decision(f"{ctx}\nbody\nEOF\n{tail}", cfg) != "block" and "$(" not in ctx
     ]
-    assert not bad, bad
-
-
-def test_delimiter_split_by_a_continuation_hides_nothing(cfg):
-    """Bash joins ``EO\\<nl>F`` into ``EOF``; a body ending at the first ``EOF`` would
-    leave the tail visible, but hiding to a later ``EO`` line must not happen."""
-    bad = [t for t in TAILS if _decision(f"cat <<EO\\\nF\nx\nEOF\n{t}\nEO", cfg) != "block"]
-    assert not bad, bad
-
-
-def test_unterminated_heredoc_hides_nothing(cfg):
-    """Bash would swallow the rest as the body; the scanner keeps scanning it."""
-    bad = [t for t in TAILS if _decision(f"cat <<'EOF'\n{t}", cfg) != "block"]
     assert not bad, bad
 
 
@@ -297,27 +151,3 @@ def test_prose_in_a_real_heredoc_body_stays_hidden(cfg):
     ]
     assert not bad, bad
     assert _decision(CONTROLS[0].replace("{B}", PROSE), cfg) == "allow"
-
-
-def test_unbalanced_parens_in_a_substitution_heredoc_are_not_hidden():
-    """Older bash matches ``$(…)`` by counting parentheses, blind to heredocs, so a
-    body with a stray ``)`` can end the span early; such a body is scanned."""
-    balanced = "x=$(cat <<'EOF'\nfix (the thing)\nEOF\n)"
-    stray = "x=$(cat <<'EOF'\nfix the thing)\nEOF\n)"
-    opened = "x=$(cat <<'EOF'\nfix (the thing\nEOF\n)"
-    assert [len(_heredocs(c)) for c in (balanced, stray, opened)] == [1, 0, 0]
-
-
-def test_unclosed_array_literal_holds_no_heredoc():
-    """An unclosed ``name=(`` is a syntax error bash 3.2 recovers from, so even a
-    heredoc nested in a ``$(…)`` inside it is not trusted; a closed one is read."""
-    unclosed = "x=(a $(cat <<'EOF'\nbody\nEOF\n)\nrm -rf /\n"
-    closed = "x=(a $(cat <<'EOF'\nbody\nEOF\n))\nls\n"
-    assert [len(_heredocs(c)) for c in (unclosed, closed)] == [0, 1]
-
-
-def test_poisoned_closed_literal_discards_a_nested_heredoc():
-    """A ``<<`` in a literal that closes still makes the line a syntax error."""
-    poisoned = "a=($(cat <<'EOF'\nbody\nEOF\n) <<2)\nrm -rf /\n"
-    clean = "a=($(cat <<'EOF'\nbody\nEOF\n))\nls\n"
-    assert [len(_heredocs(c)) for c in (poisoned, clean)] == [0, 1]

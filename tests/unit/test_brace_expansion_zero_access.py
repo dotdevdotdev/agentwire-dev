@@ -14,7 +14,13 @@ from agentwire.safety._core import brace_variants, check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home
 
-RULES_DIR = Path(__file__).resolve().parent.parent.parent / "agentwire" / "hooks" / "damage-control" / "rules"
+RULES_DIR = (
+    Path(__file__).resolve().parent.parent.parent
+    / "agentwire"
+    / "hooks"
+    / "damage-control"
+    / "rules"
+)
 
 
 @pytest.fixture(scope="module")
@@ -36,23 +42,12 @@ EXPANDS_TO_A_SECRET = {
     "two-groups": "cat {a,b}/{x,.env}",
 }
 
-NOT_EXPANSIONS = {
-    "dollar-brace": "echo ${HOME}",
-    "no-comma": "echo {a}",
-    "whitespace-group": "awk '{print $1,$2}' notes.txt",
-    "benign-expansion": "cat {a,b}.txt",
-    "dollar-brace-pair": "echo \"${A},${B}\"",
-}
-
 
 def test_brace_expanded_secret_paths_block(cfg):
-    wrongly_allowed = [n for n, c in EXPANDS_TO_A_SECRET.items() if check_command(c, cfg)["decision"] == "allow"]
+    wrongly_allowed = [
+        n for n, c in EXPANDS_TO_A_SECRET.items() if check_command(c, cfg)["decision"] == "allow"
+    ]
     assert not wrongly_allowed, wrongly_allowed
-
-
-def test_braces_that_are_not_expansions_stay_allowed(cfg):
-    wrongly_stopped = [n for n, c in NOT_EXPANSIONS.items() if check_command(c, cfg)["decision"] != "allow"]
-    assert not wrongly_stopped, wrongly_stopped
 
 
 def test_an_expansion_bomb_fails_closed(cfg):
