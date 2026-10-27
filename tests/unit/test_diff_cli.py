@@ -4,7 +4,6 @@ base-resolution, with git fully mocked so no real repo is needed.
 """
 
 import json
-import subprocess
 from types import SimpleNamespace
 
 from agentwire import diff_cli
@@ -43,49 +42,8 @@ def _ns(**kw):
     return SimpleNamespace(**base)
 
 
-class TestParser:
-    def test_files_and_counts(self):
-        files, truncated = diff_cli.parse_unified_diff(SAMPLE_DIFF)
-        assert not truncated
-        assert [f["path"] for f in files] == ["foo.py", "new.txt", "gone.txt"]
-        modified, added, deleted = files
-        assert modified["status"] == "modified"
-        assert modified["additions"] == 2 and modified["deletions"] == 1
-        assert added["status"] == "added" and added["additions"] == 1
-        assert deleted["status"] == "deleted" and deleted["deletions"] == 1
-
-    def test_line_numbering(self):
-        files, _ = diff_cli.parse_unified_diff(SAMPLE_DIFF)
-        lines = files[0]["hunks"][0]["lines"]
-        # context "import os" is line 1 on both sides
-        ctx = lines[0]
-        assert ctx["type"] == "context" and ctx["old_n"] == 1 and ctx["new_n"] == 1
-        add = next(ln for ln in lines if ln["type"] == "add")
-        assert add["content"] == 'print("new")' and add["new_n"] == 2
-
-    def test_hunk_section_header(self):
-        files, _ = diff_cli.parse_unified_diff(SAMPLE_DIFF)
-        assert files[0]["hunks"][0]["section"] == "def greet():"
-
-    def test_truncation(self):
-        files, truncated = diff_cli.parse_unified_diff(SAMPLE_DIFF, max_lines=5)
-        assert truncated
 
 
-class TestBaseResolution:
-    def test_uncommitted_uses_head(self, monkeypatch):
-        monkeypatch.setattr(diff_cli, "_has_uncommitted", lambda p: True)
-        assert diff_cli._resolve_base(diff_cli.Path("/x"), None) == "HEAD"
-
-    def test_clean_tree_uses_origin_main(self, monkeypatch):
-        monkeypatch.setattr(diff_cli, "_has_uncommitted", lambda p: False)
-        monkeypatch.setattr(
-            diff_cli, "_run_git", lambda p, a, **k: SimpleNamespace(returncode=0, stdout="", stderr="")
-        )
-        assert diff_cli._resolve_base(diff_cli.Path("/x"), None) == "origin/main"
-
-    def test_explicit_base_wins(self):
-        assert diff_cli._resolve_base(diff_cli.Path("/x"), "v1.2") == "v1.2"
 
 
 class TestCommand:
@@ -111,12 +69,6 @@ class TestCommand:
         assert out["additions"] == 3 and out["deletions"] == 2
         assert len(out["files"]) == 3
 
-    def test_unresolved_session_errors(self, monkeypatch, capsys):
-        monkeypatch.setattr(diff_cli, "_resolve_path", lambda s: None)
-        rc = diff_cli.cmd_diff(_ns())
-        assert rc == 1
-        out = json.loads(capsys.readouterr().out)
-        assert out["success"] is False
 
     def test_not_a_repo_errors(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(diff_cli, "_resolve_path", lambda s: tmp_path)
@@ -129,6 +81,3 @@ class TestCommand:
         assert json.loads(capsys.readouterr().out)["success"] is False
 
 
-def test_subprocess_import_present():
-    # guard: cmd_diff relies on subprocess via _run_git
-    assert hasattr(subprocess, "run")

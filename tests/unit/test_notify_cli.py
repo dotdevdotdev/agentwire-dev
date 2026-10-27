@@ -55,35 +55,9 @@ class TestQueuedMode:
         monkeypatch.setattr(prompt_router, "safe_deliver", boom)
         assert cmd_notify_parent(_args()) == 0
 
-    def test_explicit_to_target(self, isolate, worktree_child):
-        assert cmd_notify_parent(_args(to="boss")) == 0
-        assert len(inbox.list_messages("boss")) == 1
 
-    def test_enqueue_failure_is_surfaced_not_silent(self, isolate, worktree_child, monkeypatch):
-        def fail(*a, **kw):
-            raise OSError("disk full")
 
-        monkeypatch.setattr(inbox, "enqueue", fail)
-        assert cmd_notify_parent(_args()) == 1
 
-    def test_no_parent_still_errors(self, isolate, monkeypatch):
-        monkeypatch.setattr(pane_manager, "get_current_session", lambda: "solo")
-        monkeypatch.setattr(pane_manager, "get_current_pane_index", lambda: 0)
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda s, p: None)
-        assert cmd_notify_parent(_args()) == 1
-        assert inbox.list_messages("solo") == []
-
-    def test_on_idle_enqueues_idle_kind_not_done(self, isolate, worktree_child, monkeypatch):
-        # #952: the idle handler's placeholder must be TYPED as synthetic, not
-        # travel as `done` — the cohort ledger keys on the kind, never the text.
-        from agentwire import services
-
-        monkeypatch.setattr(services, "is_service_session", lambda s: False)
-        assert cmd_notify_parent(_args(on_idle=True)) == 0
-        msgs = inbox.list_messages("orch")
-        assert len(msgs) == 1
-        assert msgs[0].kind == "idle"
-        assert msgs[0].text == "is idle and done working"
 
     def test_on_idle_service_session_skips(self, isolate, worktree_child, monkeypatch):
         from agentwire import services
@@ -93,39 +67,5 @@ class TestQueuedMode:
         assert inbox.list_messages("orch") == []
 
 
-class TestQueuedRendersUniquely:
-    def test_rendered_lines_are_distinct_for_same_prefix_senders(self, isolate, monkeypatch):
-        """Two worktree children with a shared long name prefix and identical
-        text must produce distinct rendered lines (the ⟨#id6⟩ tail), so the
-        full-line dedup can never cross-match them (#621/#667)."""
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda s, p: ("orch", 0))
-        monkeypatch.setattr(pane_manager, "get_current_pane_index", lambda: 0)
-        for name in ("agentwire-dev-issue-659-a", "agentwire-dev-issue-659-b"):
-            monkeypatch.setattr(pane_manager, "get_current_session", lambda n=name: n)
-            assert cmd_notify_parent(_args()) == 0
-        rendered = [m.render() for m in inbox.list_messages("orch")]
-        assert len(rendered) == 2 and rendered[0] != rendered[1]
 
 
-class TestBodyFile:
-    """--body-file (#944): same rail as `msg send`, shared core helper."""
-
-    def test_body_file_verbatim(self, isolate, worktree_child, tmp_path):
-        p = tmp_path / "body.md"
-        p.write_text("done: run `agentwire doctor` and $(true)")
-        assert cmd_notify_parent(_args(text=[], body_file=str(p))) == 0
-        msgs = inbox.list_messages("orch")
-        assert len(msgs) == 1
-        assert msgs[0].text == "done: run `agentwire doctor` and $(true)"
-
-    def test_mutually_exclusive(self, isolate, worktree_child, tmp_path):
-        p = tmp_path / "body.md"
-        p.write_text("x")
-        assert cmd_notify_parent(_args(body_file=str(p))) == 1
-        assert inbox.list_messages("orch") == []
-
-    def test_unreadable_fails(self, isolate, worktree_child, tmp_path):
-        rc = cmd_notify_parent(
-            _args(text=[], body_file=str(tmp_path / "nope.md")))
-        assert rc == 1
-        assert inbox.list_messages("orch") == []

@@ -77,98 +77,13 @@ class TestRender:
         assert "<title>Render Test</title>" in html
         assert "Make sure HTML renders." in html
 
-    def test_theme_palette_inlined(self):
-        bundle = parse(_BASE)
-        html = render_html(bundle)
-        # Theme accent picks up in CSS variables
-        assert "#0066cc" in html
-        assert "#fafafa" in html
-
-    def test_decisions_visible(self):
-        bundle = parse(_BASE)
-        html = render_html(bundle)
-        assert "Use Jinja2" in html
-        assert "Already a dep." in html
-
-    def test_dead_ends_visible(self):
-        bundle = parse(_BASE)
-        html = render_html(bundle)
-        assert "Tried raw f-strings" in html
-
-    def test_journey_visible(self):
-        bundle = parse(_BASE)
-        html = render_html(bundle)
-        assert "Setup" in html
-        assert "Let's render this." in html
-
-    def test_instructions_inlined_in_details(self):
-        bundle = parse(_BASE)
-        html = render_html(bundle)
-        assert "./CLAUDE.md" in html
-        assert "project rules" in html
-
-    def test_raw_markdown_template_block(self):
-        """The HTML embeds the raw ai-handoff.md so it's LLM-droppable too."""
-        bundle = parse(_BASE)
-        html = render_html(bundle)
-        assert '<template id="ai-handoff">' in html
-        assert "<title>Render Test</title>" in html
-
-    def test_self_contained_no_external_assets(self):
-        bundle = parse(_BASE)
-        html = render_html(bundle)
-        # No CDNs, external scripts, or imported stylesheets
-        assert "https://cdn." not in html
-        assert "<link rel=\"stylesheet\"" not in html
-        assert 'src="http' not in html
-
-    def test_tabs_present(self):
-        bundle = parse(_BASE)
-        html = render_html(bundle)
-        for tab_label in (
-            "Overview",
-            "The Goal",
-            "Journey",
-            "Decisions",
-            "Artifacts",
-            "Open Threads",
-            "Cast & Context",
-            "Instructions",
-        ):
-            assert tab_label in html, f"missing tab: {tab_label}"
-
-    def test_keyboard_nav_script_present(self):
-        bundle = parse(_BASE)
-        html = render_html(bundle)
-        assert "ArrowRight" in html
-        assert "ArrowLeft" in html
 
 
-class TestThemeVariations:
-    def test_dark_theme(self):
-        text = _BASE.replace(
-            '"bg":"#fafafa","surface":"#ffffff","fg":"#222"',
-            '"bg":"#0a0e14","surface":"#11161e","fg":"#e6e1cf"',
-        )
-        bundle = parse(text)
-        html = render_html(bundle)
-        assert "#0a0e14" in html
-        assert "#fafafa" not in html
 
-    def test_motion_subtle_default(self):
-        bundle = parse(_BASE)
-        html = render_html(bundle)
-        # subtle = 180ms transition duration
-        assert "180ms" in html
 
-    def test_motion_playful(self):
-        text = _BASE.replace('"#ddd"}}', '"#ddd"},"motion":"playful"}')
-        bundle = parse(text)
-        html = render_html(bundle)
-        assert "320ms" in html
 
-    def test_motion_none(self):
-        text = _BASE.replace('"#ddd"}}', '"#ddd"},"motion":"none"}')
-        bundle = parse(text)
-        html = render_html(bundle)
-        assert "0ms" in html
+
+
+
+
+

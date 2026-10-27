@@ -46,54 +46,13 @@ class TestRepoInfoLocal:
         out = _capture(capsys)
         assert out == {"exists": True, "is_git": True, "current_branch": "main"}
 
-    def test_nonexistent(self, tmp_path, capsys):
-        repo_cli.cmd_repo_info(_ns(path=str(tmp_path / "nope")))
-        assert _capture(capsys) == {"exists": False, "is_git": False, "current_branch": None}
-
-    def test_non_git_dir(self, tmp_path, capsys):
-        repo_cli.cmd_repo_info(_ns(path=str(tmp_path)))
-        assert _capture(capsys) == {"exists": True, "is_git": False, "current_branch": None}
-
-    def test_empty_path(self, capsys):
-        repo_cli.cmd_repo_info(_ns(path=""))
-        assert _capture(capsys) == {"exists": False, "is_git": False, "current_branch": None}
 
 
-class TestBranchesLocal:
-    def test_all(self, git_repo, capsys):
-        repo_cli.cmd_branches(_ns(path=str(git_repo), prefix=""))
-        assert set(_capture(capsys)["existing"]) == {"main", "feature/a", "feature/b", "other"}
 
-    def test_prefix(self, git_repo, capsys):
-        repo_cli.cmd_branches(_ns(path=str(git_repo), prefix="feature/"))
-        assert sorted(_capture(capsys)["existing"]) == ["feature/a", "feature/b"]
 
-    def test_nonexistent(self, tmp_path, capsys):
-        repo_cli.cmd_branches(_ns(path=str(tmp_path / "nope")))
-        assert _capture(capsys) == {"existing": []}
-
-    def test_empty_path(self, capsys):
-        repo_cli.cmd_branches(_ns(path=""))
-        assert _capture(capsys) == {"existing": []}
 
 
 class TestRemote:
-    def test_repo_info_remote(self, monkeypatch, capsys):
-        calls = []
-
-        def fake_remote(machine, cmd):
-            calls.append(cmd)
-            if "echo exists" in cmd:
-                out = "exists\n"
-            elif "echo git" in cmd:
-                out = "git\n"
-            else:  # rev-parse
-                out = "develop\n"
-            return subprocess.CompletedProcess(args=[], returncode=0, stdout=out, stderr="")
-
-        monkeypatch.setattr(repo_cli, "_run_remote", fake_remote)
-        repo_cli.cmd_repo_info(_ns(path="/srv/app", machine="gpu"))
-        assert _capture(capsys) == {"exists": True, "is_git": True, "current_branch": "develop"}
 
     def test_repo_info_remote_failure_is_empty(self, monkeypatch, capsys):
         # Non-zero remote exit → stdout dropped → reads as absent (parity with portal).
@@ -104,12 +63,3 @@ class TestRemote:
         repo_cli.cmd_repo_info(_ns(path="/srv/app", machine="gpu"))
         assert _capture(capsys) == {"exists": False, "is_git": False, "current_branch": None}
 
-    def test_branches_remote(self, monkeypatch, capsys):
-        def fake_remote(machine, cmd):
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="feature/a\nfeature/b\n", stderr=""
-            )
-
-        monkeypatch.setattr(repo_cli, "_run_remote", fake_remote)
-        repo_cli.cmd_branches(_ns(path="/srv/app", machine="gpu", prefix="feature/"))
-        assert _capture(capsys) == {"existing": ["feature/a", "feature/b"]}

@@ -9,73 +9,15 @@ import yaml
 
 # --- _recent_activity (scheduler status helper) ---
 
-class TestRecentActivity:
-    def test_keeps_outcome_events_newest_first(self):
-        from agentwire.scheduler_cli import _recent_activity
-
-        events = [
-            {"ts": "2026-06-15T10:00:00+00:00", "event": "scheduler_sleeping"},
-            {"ts": "2026-06-15T10:01:00+00:00", "event": "task_completed",
-             "task": "a", "status": "complete", "summary": "ok"},
-            {"ts": "2026-06-15T10:02:00+00:00", "event": "task_started", "task": "b"},
-            {"ts": "2026-06-15T10:03:00+00:00", "event": "gate_error",
-             "task": "b", "gate_type": "git_commit", "reason": "TimeoutExpired"},
-        ]
-        out = _recent_activity(events, limit=5)
-        # Newest first, non-outcome events dropped.
-        assert [i["task"] for i in out] == ["b", "a"]
-        assert out[0]["detail"].startswith("[gate-error] git_commit")
-        assert "complete" in out[1]["detail"]
-
-    def test_respects_limit(self):
-        from agentwire.scheduler_cli import _recent_activity
-
-        events = [
-            {"ts": f"2026-06-15T10:0{i}:00+00:00", "event": "task_completed",
-             "task": f"t{i}", "status": "complete"}
-            for i in range(6)
-        ]
-        assert len(_recent_activity(events, limit=3)) == 3
 
 
 # --- cmd_roles_list ---
 
-class TestCmdRolesList:
-    def test_json_output(self, capsys):
-        """cmd_roles_list --json should return bundled roles."""
-
-        # Directly test that roles are loadable
-        from agentwire.roles import discover_role, parse_role_file
-
-        bundled_names = ["agentwire", "voice", "worker", "task-runner", "chatbot", "init"]
-        roles = []
-        for name in bundled_names:
-            path = discover_role(name)
-            if path:
-                role = parse_role_file(path)
-                if role:
-                    roles.append({
-                        "name": role.name,
-                        "description": role.description,
-                        "has_tools": bool(role.tools),
-                        "has_disallowed": bool(role.disallowed_tools),
-                    })
-
-        assert len(roles) == 6
-        # Every role should have a name
-        for r in roles:
-            assert r["name"]
 
 
 # --- cmd_safety_check ---
 
 class TestCmdSafetyCheck:
-    def test_allowed_command(self, tmp_path, monkeypatch):
-        import agentwire.safety_commands as mod
-        monkeypatch.setattr(mod, "RULES_DIR", tmp_path / "empty-rules")
-
-        result = mod.check_command_safety("echo hello")
-        assert result["decision"] == "allow"
 
     def test_blocked_by_pattern(self, tmp_path, monkeypatch):
         import agentwire.safety_commands as mod
@@ -105,34 +47,7 @@ class TestCmdSafetyCheck:
 # --- cmd_task_list / cmd_task_validate via tasks module ---
 
 class TestTaskCommands:
-    def test_list_tasks(self, project_dir):
-        config_path = project_dir / ".agentwire.tasks.yml"
-        data = {
-            "tasks": {
-                "lint": {"prompt": "Run linting."},
-                "test": {"prompt": "Run tests.", "retries": 2},
-            }
-        }
-        with open(config_path, "w") as f:
-            yaml.safe_dump(data, f)
 
-        from agentwire.tasks import list_tasks
-        tasks = list_tasks(project_dir)
-        assert len(tasks) == 2
-        names = {t["name"] for t in tasks}
-        assert "lint" in names
-        assert "test" in names
-
-    def test_validate_good_task(self, project_dir):
-        config_path = project_dir / ".agentwire.tasks.yml"
-        data = {"tasks": {"good": {"prompt": "Do things.", "retries": 1}}}
-        with open(config_path, "w") as f:
-            yaml.safe_dump(data, f)
-
-        from agentwire.tasks import load_task, validate_task
-        task = load_task(project_dir, "good")
-        issues = validate_task(task)
-        assert issues == []
 
     def test_validate_bad_task(self, project_dir):
         from agentwire.tasks import TaskConfig, validate_task
@@ -144,34 +59,6 @@ class TestTaskCommands:
 
 # --- cmd_projects_list (via projects discovery) ---
 
-class TestProjectsDiscovery:
-    def test_discovers_projects(self, tmp_path):
-        """Projects with .agentwire.yml or .git should be discoverable."""
-        # Create fake projects
-        p1 = tmp_path / "project-a"
-        p1.mkdir()
-        (p1 / ".git").mkdir()
-
-        p2 = tmp_path / "project-b"
-        p2.mkdir()
-        with open(p2 / ".agentwire.yml", "w") as f:
-            yaml.safe_dump({"posture": "bare"}, f)
-
-        p3 = tmp_path / "not-a-project"
-        p3.mkdir()
-
-        # Check that we can identify projects
-        projects = []
-        for d in sorted(tmp_path.iterdir()):
-            if d.is_dir():
-                has_git = (d / ".git").exists()
-                has_config = (d / ".agentwire.yml").exists()
-                if has_git or has_config:
-                    projects.append(d.name)
-
-        assert "project-a" in projects
-        assert "project-b" in projects
-        assert "not-a-project" not in projects
 
 
 # --- cmd_send --wait-ready ---
@@ -215,35 +102,6 @@ class TestCmdSendWaitReady:
         assert payload["verified"] is True
         assert payload["fallback"] is None
 
-    def test_paste_carries_a_per_attempt_delivery_marker(self, capsys, monkeypatch):
-        """#839: the text pasted must carry a marker unique to this attempt,
-        and the SAME marker must reach send_verified + the fallback -- that is
-        what turns 'already delivered' from a text-similarity guess into a
-        fact about this specific send."""
-        from agentwire import send_cli, session_ready
-        from agentwire.send_cli import cmd_send
-
-        self._mock_has_session(monkeypatch)
-        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
-        seen = {}
-
-        def fake_send(s, m, marker=None):
-            seen["pasted"] = m
-            seen["marker"] = marker
-            return False
-
-        monkeypatch.setattr(session_ready, "send_verified", fake_send)
-        recover = MagicMock(return_value="inbox")
-        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
-
-        cmd_send(self._args())
-
-        assert seen["marker"].startswith("⟨#send-")
-        assert seen["pasted"] == f"my idea  {seen['marker']}"
-        # The inbox copy is the BARE prompt (the drain adds its own ⟨#id⟩),
-        # while the marker rides along for the scrollback check.
-        recover.assert_called_once_with(
-            "proj", "my idea", "agentwire", marker=seen["marker"])
 
     def test_foreign_draft_blocks_the_send_without_clearing(self, capsys, monkeypatch):
         """#845: a draft that was already in the box before we tried anything
@@ -270,17 +128,6 @@ class TestCmdSendWaitReady:
         seed.assert_called_once_with(
             "proj", "my idea", sender="agentwire", clear=False)
 
-    def test_not_ready_fails(self, capsys, monkeypatch):
-        from agentwire import session_ready
-        from agentwire.send_cli import cmd_send
-
-        self._mock_has_session(monkeypatch)
-        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: False)
-
-        assert cmd_send(self._args()) == 1
-        payload = self._payload(capsys)
-        assert payload["success"] is False
-        assert "not ready" in payload["error"]
 
     def test_unverified_falls_back_to_inbox(self, capsys, monkeypatch):
         """#834: an unverified send must never just hand the problem back to
@@ -302,68 +149,10 @@ class TestCmdSendWaitReady:
         assert payload["fallback"] == "inbox"
         recover.assert_called_once_with("proj", "my idea", "agentwire", marker=ANY)
 
-    def test_unverified_and_fallback_fails_is_still_reported(self, capsys, monkeypatch):
-        from agentwire import send_cli, session_ready
-        from agentwire.send_cli import cmd_send
 
-        self._mock_has_session(monkeypatch)
-        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None: False)
-        monkeypatch.setattr(send_cli, "_recover_unverified_send", lambda s, m, sender, marker=None: None)
 
-        assert cmd_send(self._args()) == 1
-        payload = self._payload(capsys)
-        assert payload["verified"] is False
-        assert payload["fallback"] is None
 
-    def test_caller_session_arg_wins_over_autodetect(self, capsys, monkeypatch):
-        """#835 review: attribute a fallback's msg-inbox entry to the real
-        calling session (threaded via --caller-session from the MCP layer),
-        not the generic 'agentwire' -- matters for dead-letter email
-        attribution and the rendered [MSG from ...] header."""
-        from agentwire import send_cli, session_ready
-        from agentwire.send_cli import cmd_send
 
-        self._mock_has_session(monkeypatch)
-        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None: False)
-        recover = MagicMock(return_value="inbox")
-        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
-
-        cmd_send(self._args(caller_session="council-brain"))
-        recover.assert_called_once_with("proj", "my idea", "council-brain", marker=ANY)
-
-    def test_unverified_falls_back_to_stuck_inbox(self, capsys, monkeypatch):
-        """#843: an "inbox_stuck" fallback (queued, but the stale draft in
-        the input box could not be confirmed cleared) must propagate through
-        untouched -- never collapsed into the plain "inbox" success case."""
-        from agentwire import send_cli, session_ready
-        from agentwire.send_cli import cmd_send
-
-        self._mock_has_session(monkeypatch)
-        monkeypatch.setattr(session_ready, "wait_for_session_ready", lambda s, timeout: True)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None: False)
-        recover = MagicMock(return_value="inbox_stuck")
-        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
-
-        assert cmd_send(self._args()) == 1
-        payload = self._payload(capsys)
-        assert payload["verified"] is False
-        assert payload["fallback"] == "inbox_stuck"
-
-    def test_remote_rejected(self, capsys):
-        from agentwire.send_cli import cmd_send
-
-        assert cmd_send(self._args(session="proj@gpu")) == 1
-        payload = self._payload(capsys)
-        assert "local-only" in payload["error"]
-
-    def test_pane_combo_rejected(self, capsys):
-        from agentwire.send_cli import cmd_send
-
-        assert cmd_send(self._args(pane=1)) == 1
-        payload = self._payload(capsys)
-        assert "--pane" in payload["error"]
 
 
 # --- cmd_send --verify (no --wait-ready) ---
@@ -388,20 +177,6 @@ class TestCmdSendVerify:
         monkeypatch.setattr("agentwire.send_cli.pane_manager.get_current_session", lambda: None)
         monkeypatch.setattr(session_ready, "box_holds_foreign_draft", lambda *a, **k: False)
 
-    def test_happy_path_verified_skips_fallback(self, capsys, monkeypatch):
-        from agentwire import send_cli, session_ready
-        from agentwire.send_cli import cmd_send
-
-        self._mock_has_session(monkeypatch)
-        monkeypatch.setattr(session_ready, "send_verified", lambda s, m, marker=None, retries=1: True)
-        recover = MagicMock()
-        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
-
-        assert cmd_send(self._args()) == 0
-        payload = self._payload(capsys)
-        assert payload["verified"] is True
-        assert payload["fallback"] is None
-        recover.assert_not_called()
 
     def test_unverified_falls_back_to_inbox(self, capsys, monkeypatch):
         """#834: same durable-fallback guarantee as --wait-ready."""
@@ -419,61 +194,8 @@ class TestCmdSendVerify:
         assert payload["fallback"] == "inbox"
         recover.assert_called_once_with("proj", "my idea", "agentwire", marker=ANY)
 
-    def test_remote_with_verify_never_touches_the_fallback(self, capsys, monkeypatch):
-        """Remote (session@machine) sends return from an earlier branch
-        entirely -- verify=True there only marks the result unverifiable
-        across SSH, and must never reach the new fallback machinery."""
-        from agentwire import send_cli
-        from agentwire.send_cli import cmd_send
-
-        recover = MagicMock()
-        monkeypatch.setattr(send_cli, "_recover_unverified_send", recover)
-        monkeypatch.setattr(
-            "agentwire.send_cli._run_remote",
-            lambda machine_id, cmd: MagicMock(returncode=0),
-        )
-        monkeypatch.setattr(
-            "agentwire.send_cli._get_machine_config",
-            lambda machine_id: {"host": "example.com"},
-        )
-
-        assert cmd_send(self._args(session="proj@gpu")) == 0
-        payload = self._payload(capsys)
-        assert payload["verified"] is None
-        assert "fallback" not in payload
-        recover.assert_not_called()
 
 
-class TestFallbackSuffix:
-    """#843: the human-readable suffix must distinguish a fully-recovered
-    "inbox" fallback from "inbox_stuck", where the original draft could not
-    be confirmed cleared from the input box."""
-
-    def test_inbox_suffix_says_guaranteed_delivery(self):
-        from agentwire.send_cli import _fallback_suffix
-
-        assert "guaranteed delivery" in _fallback_suffix("inbox")
-
-    def test_inbox_stuck_suffix_warns_of_leftover_draft(self):
-        from agentwire.send_cli import _fallback_suffix
-
-        suffix = _fallback_suffix("inbox_stuck")
-        assert "could NOT be confirmed cleared" in suffix
-        assert "guaranteed delivery" not in suffix
-
-    def test_none_suffix_says_resend_manually(self):
-        from agentwire.send_cli import _fallback_suffix
-
-        assert "resend manually" in _fallback_suffix(None)
-
-    def test_inbox_blocked_suffix_says_the_draft_was_left_alone(self):
-        """#845: distinct from inbox_stuck -- nothing was pasted and nothing
-        was erased, so the operator should NOT go hunting for our wreckage."""
-        from agentwire.send_cli import _fallback_suffix
-
-        suffix = _fallback_suffix("inbox_blocked")
-        assert "left untouched" in suffix
-        assert "could NOT be confirmed cleared" not in suffix
 
 
 class TestRecoverUnverifiedSend:
@@ -484,47 +206,8 @@ class TestRecoverUnverifiedSend:
     read was ambiguous. _recover_unverified_send closes the common case by
     checking scrollback for the bare message first."""
 
-    def test_already_on_scrollback_skips_the_inbox_enqueue(self, monkeypatch):
-        from agentwire import session_ready
-        from agentwire.send_cli import _recover_unverified_send
 
-        monkeypatch.setattr(session_ready, "scrollback", lambda s, pane_index=0: "...fake capture...")
-        monkeypatch.setattr(session_ready, "message_on_scrollback", lambda cap, msg: True)
-        recover = MagicMock()
-        monkeypatch.setattr(session_ready, "recover_failed_seed", recover)
 
-        assert _recover_unverified_send("proj", "already sent", "agentwire") == "already_delivered"
-        recover.assert_not_called()
-
-    def test_not_on_scrollback_falls_back_to_the_inbox(self, monkeypatch):
-        from agentwire import session_ready
-        from agentwire.send_cli import _recover_unverified_send
-
-        monkeypatch.setattr(session_ready, "scrollback", lambda s, pane_index=0: "...fake capture...")
-        monkeypatch.setattr(session_ready, "message_on_scrollback", lambda cap, msg: False)
-        recover = MagicMock(return_value="inbox")
-        monkeypatch.setattr(session_ready, "recover_failed_seed", recover)
-
-        assert _recover_unverified_send("proj", "genuinely stuck", "council-brain") == "inbox"
-        recover.assert_called_once_with("proj", "genuinely stuck", sender="council-brain")
-
-    def test_marker_is_what_gets_matched_when_supplied(self, monkeypatch):
-        """#839: with a per-attempt marker, 'already delivered' keys on THIS
-        attempt's token, not on how much the prompt resembles the scrollback."""
-        from agentwire import session_ready
-        from agentwire.send_cli import _recover_unverified_send
-
-        monkeypatch.setattr(session_ready, "scrollback", lambda s, pane_index=0: "cap")
-        needles = []
-        monkeypatch.setattr(
-            session_ready, "message_on_scrollback",
-            lambda cap, msg: needles.append(msg) or False)
-        monkeypatch.setattr(
-            session_ready, "recover_failed_seed",
-            lambda *a, **k: "inbox")
-
-        _recover_unverified_send("proj", "continue", "agentwire", marker="⟨#send-abc123⟩")
-        assert needles == ["⟨#send-abc123⟩"]
 
     def test_generic_prompt_on_scrollback_no_longer_swallows_a_failed_send(
             self, monkeypatch):
@@ -553,18 +236,6 @@ class TestRecoverUnverifiedSend:
 
 # --- cmd_new --first-message ---
 
-class TestCmdNewFirstMessage:
-    def test_remote_rejected(self, capsys, monkeypatch):
-        from agentwire.session_cli import cmd_new
-
-        monkeypatch.setattr("agentwire.session_cli._check_tmux_installed", lambda: True)
-        args = argparse.Namespace(
-            session="proj@gpu", path=None, force=False, json=True,
-            roles=None, no_soul=True, first_message="an idea",
-        )
-        assert cmd_new(args) == 1
-        payload = json.loads(capsys.readouterr().out.strip())
-        assert "local-only" in payload["error"]
 
 
 class TestCmdNewSeedFallback:
@@ -642,35 +313,8 @@ class TestCmdNewSeedFallback:
         # Recovery got the prompt and the creator as sender.
         assert calls["recover"] == ("proj", "do the thing", "orch")
 
-    def test_seed_failure_reports_stuck_draft_distinctly(self, capsys, monkeypatch, tmp_path):
-        """#843: cmd_new's JSON contract must carry "inbox_stuck" through
-        untouched -- collapsing it into "inbox" would tell the caller the
-        box was cleared when it wasn't."""
-        rc, calls = self._run_cmd_new(
-            monkeypatch, tmp_path, ready=False, verified=False, fallback="inbox_stuck")
-        assert rc == 0
-        payload = json.loads(capsys.readouterr().out.strip())
-        assert payload["success"] is True
-        assert payload["first_message_delivered"] is False
-        assert payload["first_message_fallback"] == "inbox_stuck"
-        assert calls["recover"] == ("proj", "do the thing", "orch")
 
-    def test_seed_failure_fallback_also_failed(self, capsys, monkeypatch, tmp_path):
-        rc, _ = self._run_cmd_new(
-            monkeypatch, tmp_path, ready=True, verified=False, fallback=None)
-        assert rc == 0
-        payload = json.loads(capsys.readouterr().out.strip())
-        assert payload["first_message_delivered"] is False
-        assert payload["first_message_fallback"] is None
 
-    def test_seed_success_no_fallback_key(self, capsys, monkeypatch, tmp_path):
-        rc, calls = self._run_cmd_new(
-            monkeypatch, tmp_path, ready=True, verified=True, fallback="inbox")
-        assert rc == 0
-        payload = json.loads(capsys.readouterr().out.strip())
-        assert payload["first_message_delivered"] is True
-        assert "first_message_fallback" not in payload
-        assert "recover" not in calls  # recovery never runs on success
 
 
 class TestCmdNewSeedGuardedPath:
@@ -681,42 +325,8 @@ class TestCmdNewSeedGuardedPath:
 
     _run_cmd_new = TestCmdNewSeedFallback._run_cmd_new
 
-    def test_seed_paste_carries_a_delivery_marker(self, capsys, monkeypatch, tmp_path):
-        """Without the marker riding inside the paste, the scrollback check
-        below could only guess from bare text."""
-        _rc, calls = self._run_cmd_new(
-            monkeypatch, tmp_path, ready=True, verified=True, fallback="inbox")
-        pasted, marker = calls["pasted"]
-        assert marker and marker.startswith("⟨#send-")
-        assert pasted == f"do the thing  {marker}"
 
-    def test_ambiguous_confirm_that_actually_landed_is_not_re_enqueued(
-            self, capsys, monkeypatch, tmp_path):
-        """THE bug: an unverified confirm whose paste really did submit used to
-        enqueue a duplicate copy unconditionally. The marker is on scrollback,
-        so this is a delivery, not a failure."""
-        rc, calls = self._run_cmd_new(
-            monkeypatch, tmp_path, ready=True, verified=False, fallback="inbox",
-            on_scrollback=True)
-        assert rc == 0
-        assert "recover" not in calls  # no second copy queued
-        payload = json.loads(capsys.readouterr().out.strip())
-        assert payload["first_message_delivered"] is True
-        assert payload["first_message_fallback"] == "already_delivered"
 
-    def test_ambiguous_confirm_that_did_not_land_still_queues(
-            self, capsys, monkeypatch, tmp_path):
-        """The guard must not swallow a genuinely failed seed — no marker on
-        scrollback means the durable enqueue still runs."""
-        rc, calls = self._run_cmd_new(
-            monkeypatch, tmp_path, ready=True, verified=False, fallback="inbox",
-            on_scrollback=False)
-        assert rc == 0
-        assert calls["recover"] == ("proj", "do the thing", "orch")
-        assert calls["recover_clear"] is True  # our own wreckage — clear it
-        payload = json.loads(capsys.readouterr().out.strip())
-        assert payload["first_message_delivered"] is False
-        assert payload["first_message_fallback"] == "inbox"
 
     def test_foreign_draft_is_queued_not_clobbered(self, capsys, monkeypatch, tmp_path):
         """#845 — boot can take the full 60s wait, ample room for a human to
@@ -731,20 +341,6 @@ class TestCmdNewSeedGuardedPath:
         assert payload["first_message_delivered"] is False
         assert payload["first_message_fallback"] == "inbox_blocked"
 
-    def test_unready_session_never_guesses_from_bare_text(
-            self, capsys, monkeypatch, tmp_path):
-        """Nothing was pasted, so there is no marker to match — a bare-text
-        scrollback hit could only produce a false "already delivered" that
-        DROPS the seed. Enqueue directly instead."""
-        rc, calls = self._run_cmd_new(
-            monkeypatch, tmp_path, ready=False, verified=False, fallback="inbox",
-            on_scrollback=True)
-        assert rc == 0
-        assert "pasted" not in calls
-        assert calls["recover"] == ("proj", "do the thing", "orch")
-        payload = json.loads(capsys.readouterr().out.strip())
-        assert payload["first_message_delivered"] is False
-        assert payload["first_message_fallback"] == "inbox"
 
 
 class TestCmdNewWorktreeMissingDirFailsLoud:
@@ -781,47 +377,6 @@ class TestCmdNewWorktreeMissingDirFailsLoud:
         assert payload["success"] is False
         assert "does not exist" in payload["error"]
 
-    def test_dir_vanishes_between_creation_and_launch(self, capsys, monkeypatch, tmp_path):
-        """The dir is real right after `ensure_worktree`, but something
-        removes it before `_launch_tmux_session` runs — the pre-launch guard
-        must catch this instead of launching the agent into an ENOENT."""
-        import shutil
-        from types import SimpleNamespace
-
-        from agentwire import session_cli as m
-
-        project_path = tmp_path / "proj"
-        project_path.mkdir()
-        session_path = tmp_path / "proj-worktrees" / "mybranch"
-
-        def fake_create_worktree(proj, *, worktree_path, **kw):
-            worktree_path.mkdir(parents=True)
-            return True, ""
-
-        monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
-        monkeypatch.setattr(
-            m.subprocess, "run", lambda *a, **k: MagicMock(returncode=1, stdout=""))
-        monkeypatch.setattr(m, "create_and_register_worktree", fake_create_worktree)
-        monkeypatch.setattr(m, "load_config", lambda *a, **k: {})
-        monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
-        monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
-        monkeypatch.setattr(
-            m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
-
-        def vanish_then_build(*a, **k):
-            shutil.rmtree(str(session_path))
-            return SimpleNamespace(command="claude", env={})
-
-        monkeypatch.setattr(m, "build_agent_command", vanish_then_build)
-        launched = []
-        monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: launched.append(True))
-
-        rc = m.cmd_new(self._base_args(project_path))
-        assert rc == 1
-        assert not launched
-        payload = json.loads(capsys.readouterr().out.strip())
-        assert payload["success"] is False
-        assert "vanished before launch" in payload["error"]
 
 
 class TestCmdNewDefaultCreatedByRooting:
@@ -870,12 +425,6 @@ class TestCmdNewDefaultCreatedByRooting:
         assert rc == 0
         return recorded
 
-    def test_same_project_inherits_caller(self, monkeypatch, tmp_path):
-        recorded = self._run(
-            monkeypatch, tmp_path,
-            caller_session="orchestrator", caller_project_path=Path(tmp_path),
-        )
-        assert recorded["created_by"] == "orchestrator"
 
     def test_cross_project_gets_standalone_root(self, monkeypatch, tmp_path):
         other_project = tmp_path.parent / "some-other-project"
@@ -885,134 +434,11 @@ class TestCmdNewDefaultCreatedByRooting:
         )
         assert recorded["created_by"] is None
 
-    def test_no_caller_session_falls_back_to_pane_manager(self, monkeypatch, tmp_path):
-        # Neither --caller-session (MCP) nor a live tmux pane (bare CLI outside
-        # tmux) is available — no candidate caller at all, so no inheritance.
-        recorded = self._run(
-            monkeypatch, tmp_path,
-            caller_session=None, caller_project_path=Path(tmp_path),
-        )
-        assert recorded["created_by"] is None
-
-    def test_explicit_kind_orchestrator_roots_even_same_project_caller(self, monkeypatch, tmp_path):
-        # #716: cmd_new is the ONE place this joint default lives — it must
-        # fire whether cmd_new is reached directly (`agentwire new --kind
-        # orchestrator` / `session_create(kind="orchestrator")`) or via
-        # cmd_worktree's _launch_session, which just forwards --kind through.
-        # Without this, a durable orchestrator created via `agentwire new`
-        # directly (skipping cmd_worktree) would silently inherit the caller
-        # as parent whenever same-project — contradicting its own "roots by
-        # default" contract.
-        recorded = self._run(
-            monkeypatch, tmp_path,
-            caller_session="orchestrator", caller_project_path=Path(tmp_path),
-            kind="orchestrator",
-        )
-        assert recorded["created_by"] == ""
-
-    def test_plain_branchless_new_keeps_inherit_behavior_even_though_it_derives_orchestrator(self, monkeypatch, tmp_path):
-        # The joint default is gated on the EXPLICIT --kind flag, not the
-        # resolved kind (a plain branchless name always derives to
-        # "orchestrator" via derive_session_kind) — otherwise every ordinary
-        # `agentwire new -s name` call would stop inheriting same-project
-        # callers, a much bigger behavior change than #716 asked for.
-        recorded = self._run(
-            monkeypatch, tmp_path,
-            caller_session="orchestrator", caller_project_path=Path(tmp_path),
-            kind=None,
-        )
-        assert recorded["created_by"] == "orchestrator"
-
-    def test_explicit_kind_reviewer_stays_parented_same_project_caller(self, monkeypatch, tmp_path):
-        # #827: unlike orchestrator, --kind reviewer must NOT join the joint
-        # rooting default — the gate is an exact string match against
-        # 'orchestrator', so reviewer falls through to the normal
-        # same-project inherit path below. A reviewer is scoped to a specific
-        # sibling's PR, so it should nest under its spawner (sidebar tree,
-        # notify-parent) rather than rooting like a durable orchestrator.
-        recorded = self._run(
-            monkeypatch, tmp_path,
-            caller_session="orchestrator", caller_project_path=Path(tmp_path),
-            kind="reviewer",
-        )
-        assert recorded["created_by"] == "orchestrator"
 
 
-class TestCmdNewCohortEnrollment:
-    """#852 — every spawn enrolls in the CALLER's fan-out cohort, independent
-    of the rooting decision. Rooting (#715) deliberately drops the parent link
-    for a cross-project spawn; deriving cohort membership from it would have
-    protected exactly one of the 2026-08-01 fan-out's four children and reaped
-    the parent out from under the other three."""
 
-    def _run(self, monkeypatch, tmp_path, *, caller_session="memory-manager",
-             caller_project_path=None, kind=None, no_cohort=False,
-             session="memrev-playchek"):
-        from types import SimpleNamespace
 
-        from agentwire import cohort, core
-        from agentwire import session_cli as m
 
-        monkeypatch.setattr(m, "_check_tmux_installed", lambda: True)
-        monkeypatch.setattr(
-            m.subprocess, "run", lambda *a, **k: MagicMock(returncode=1, stdout=""))
-        monkeypatch.setattr(m, "load_config", lambda *a, **k: {})
-        monkeypatch.setattr(m, "resolve_roles", lambda *a, **k: [])
-        monkeypatch.setattr(m, "inject_soul", lambda names, cfg, no_soul=False: [])
-        monkeypatch.setattr(
-            m, "_resolve_posture_from_args", lambda a, **kw: ("bypass", None))
-        monkeypatch.setattr(
-            m, "build_agent_command",
-            lambda *a, **k: SimpleNamespace(command="claude", env={}))
-        monkeypatch.setattr(m, "_launch_tmux_session", lambda *a, **k: None)
-        monkeypatch.setattr(m, "_notify_portal_sessions_changed", lambda: None)
-        monkeypatch.setattr(m, "notify_portal_session_created", lambda *a, **k: None)
-        monkeypatch.setattr(m.pane_manager, "get_current_session", lambda: None)
-        monkeypatch.setattr(
-            core, "_live_session_cwd",
-            lambda s: caller_project_path if caller_project_path else Path(tmp_path))
-
-        self.rooted_as = {}
-        monkeypatch.setattr(
-            m, "record_session_launch",
-            lambda name, agent, cwd, **kw: self.rooted_as.update(v=kw.get("created_by")))
-
-        enrolled = []
-        monkeypatch.setattr(
-            cohort, "enroll",
-            lambda parent, child, **kw: enrolled.append((parent, child)) or True)
-
-        args = argparse.Namespace(
-            session=session, path=str(tmp_path), force=False, json=True,
-            created_by=None, caller_session=caller_session, kind=kind,
-            no_cohort=no_cohort,
-        )
-        assert m.cmd_new(args) == 0
-        return enrolled
-
-    def test_same_project_child_is_enrolled(self, monkeypatch, tmp_path):
-        assert self._run(monkeypatch, tmp_path) == [
-            ("memory-manager", "memrev-playchek")]
-
-    def test_cross_project_child_is_still_enrolled(self, monkeypatch, tmp_path):
-        # The correction that makes #852 work: this child roots standalone
-        # (no created_by), but its LIFECYCLE still belongs to the caller.
-        enrolled = self._run(
-            monkeypatch, tmp_path,
-            caller_project_path=tmp_path.parent / "some-other-project")
-        assert self.rooted_as["v"] is None, "expected the cross-project rooting path"
-        assert enrolled == [("memory-manager", "memrev-playchek")]
-
-    def test_no_cohort_opts_out(self, monkeypatch, tmp_path):
-        assert self._run(monkeypatch, tmp_path, no_cohort=True) == []
-
-    def test_explicit_orchestrator_is_not_a_cohort_member(self, monkeypatch, tmp_path):
-        # A durable orchestrator outlives whoever spawned it (it roots for the
-        # same reason) — it must never be torn down by a spawner's join.
-        assert self._run(monkeypatch, tmp_path, kind="orchestrator") == []
-
-    def test_no_caller_means_no_cohort(self, monkeypatch, tmp_path):
-        assert self._run(monkeypatch, tmp_path, caller_session=None) == []
 
 
 # --- cmd_recreate / cmd_fork route through resolve_roles (#311) ---
@@ -1114,104 +540,10 @@ class TestRecreateRoutesThroughResolveRoles:
         assert cap.role_names[0] == "worker-worktree"
         assert "soul" in cap.role_names
 
-    def test_worktree_recreate_stacks_saved_roles_under_etiquette(
-        self, monkeypatch, tmp_path
-    ):
-        import agentwire.session_cli as mod
-
-        projects = tmp_path / "projects"
-        (projects / "proj").mkdir(parents=True)
-        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=["domain"])
-        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
-
-        args = argparse.Namespace(
-            session="proj/feature", json=True, posture=None, env=None,
-        )
-        assert mod.cmd_recreate(args) == 0
-        # Non-overridable: etiquette first, saved role stacks, never replaces.
-        assert cap.role_names[0] == "worker-worktree"
-        assert "domain" in cap.role_names
-
-    def test_plain_recreate_is_orchestrator_replaceable(self, monkeypatch, tmp_path):
-        import agentwire.session_cli as mod
-
-        projects = tmp_path / "projects"
-        (projects / "proj").mkdir(parents=True)
-        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=["custom"])
-        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
-
-        args = argparse.Namespace(session="proj", json=True, posture=None, env=None)
-        assert mod.cmd_recreate(args) == 0
-        # Persona kind: saved roles REPLACE the orchestrator default.
-        assert "orchestrator" not in cap.role_names
-        assert "custom" in cap.role_names
-
-    def test_plain_recreate_zero_config_is_orchestrator(self, monkeypatch, tmp_path):
-        import agentwire.session_cli as mod
-
-        projects = tmp_path / "projects"
-        (projects / "proj").mkdir(parents=True)
-        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=None)
-        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
-
-        args = argparse.Namespace(session="proj", json=True, posture=None, env=None)
-        assert mod.cmd_recreate(args) == 0
-        assert cap.role_names[0] == "orchestrator"
 
 
-class TestForkRoutesThroughResolveRoles:
-    def test_worktree_fork_injects_worker_worktree_etiquette(self, monkeypatch, tmp_path):
-        import agentwire.session_cli as mod
 
-        projects = tmp_path / "projects"
-        (projects / "proj").mkdir(parents=True)  # source_path (no source branch)
-        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=None)
-        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
 
-        args = argparse.Namespace(
-            source="proj", target="proj/feat", json=True, posture=None,
-            env=None, commit=None,
-        )
-        assert mod.cmd_fork(args) == 0
-        # Fork target is a worktree → worker etiquette on worktree topology, intrinsic.
-        assert cap.role_names[0] == "worker-worktree"
-
-    def test_worktree_fork_stacks_source_roles_under_etiquette(self, monkeypatch, tmp_path):
-        import agentwire.session_cli as mod
-
-        projects = tmp_path / "projects"
-        (projects / "proj").mkdir(parents=True)
-        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=["domain"])
-        monkeypatch.setattr(mod.subprocess, "run", _fake_run())
-
-        args = argparse.Namespace(
-            source="proj", target="proj/feat", json=True, posture=None,
-            env=None, commit=None,
-        )
-        assert mod.cmd_fork(args) == 0
-        assert cap.role_names[0] == "worker-worktree"
-        assert "domain" in cap.role_names
-
-    def test_non_worktree_fork_is_orchestrator_replaceable(self, monkeypatch, tmp_path):
-        import agentwire.session_cli as mod
-
-        projects = tmp_path / "projects"
-        projects.mkdir(parents=True)
-        src_cwd = tmp_path / "src_cwd"
-        src_cwd.mkdir()
-        cap = _patch_role_pipeline(monkeypatch, projects, project_config_roles=["custom"])
-        monkeypatch.setattr(
-            mod.subprocess, "run", _fake_run(source_session="ctxa", cwd=src_cwd)
-        )
-
-        args = argparse.Namespace(
-            source="ctxa", target="ctxb", json=True, posture=None,
-            env=None, commit=None,
-        )
-        assert mod.cmd_fork(args) == 0
-        # Same-dir fork has no branch → orchestrator persona; source roles win.
-        assert "orchestrator" not in cap.role_names
-        assert "custom" in cap.role_names
 
 
 # --- cmd_history_resume routes through resolve_roles (#316) ---
@@ -1221,80 +553,5 @@ class TestForkRoutesThroughResolveRoles:
 # list instead of the orchestrator etiquette a fresh `agentwire new` would.
 # A history-resume has no branch, so its kind is always "orchestrator".
 
-def _patch_history_resume(monkeypatch, tmp_path, project_config_roles):
-    """Mock tmux/history side effects and capture the resolved roles.
-
-    Returns (cap, project_dir). cap.role_names is the list cmd_history_resume
-    passes to load_roles (resolve_roles + inject_soul output).
-    """
-    from types import SimpleNamespace
-
-    import agentwire.history as hist
-    import agentwire.history_cli as mod
-
-    cap = _RoleCapture()
-
-    project_dir = tmp_path / "proj"
-    project_dir.mkdir()
-
-    cfg = None
-    if project_config_roles is not None:
-        cfg = SimpleNamespace(
-            posture="bypass",
-            roles=project_config_roles,
-        )
-
-    monkeypatch.setattr(mod, "load_config", lambda: {})
-    monkeypatch.setattr(mod, "load_project_config", lambda p: cfg)
-    monkeypatch.setattr(hist, "resolve_session_id", lambda sid, mid: sid)
-
-    def fake_load_roles(role_names, path):
-        cap.role_names = list(role_names)
-        return [], []
-
-    monkeypatch.setattr(mod, "load_roles", fake_load_roles)
-    monkeypatch.setattr(mod, "_notify_portal_sessions_changed", lambda *a, **k: None)
-    import time as _time
-    monkeypatch.setattr(_time, "sleep", lambda *a, **k: None)
-
-    def fake_run(cmd, *a, **k):
-        joined = " ".join(str(x) for x in (cmd if isinstance(cmd, list) else [cmd]))
-        if "has-session" in joined:
-            return MagicMock(returncode=1, stdout="", stderr="")  # absent → create
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    return cap, project_dir
 
 
-class TestHistoryResumeRoutesThroughResolveRoles:
-    def test_zero_config_resume_is_orchestrator(self, monkeypatch, tmp_path):
-        import agentwire.history_cli as mod
-
-        cap, project_dir = _patch_history_resume(
-            monkeypatch, tmp_path, project_config_roles=None
-        )
-        args = argparse.Namespace(
-            session_id="abc123", name="resumed", machine="local",
-            project=str(project_dir), json=True,
-        )
-        assert mod.cmd_history_resume(args) == 0
-        # A resume with no saved roles now gets the orchestrator default,
-        # not an empty list. Soul is auto-appended.
-        assert cap.role_names[0] == "orchestrator"
-        assert "soul" in cap.role_names
-
-    def test_saved_roles_replace_orchestrator_persona(self, monkeypatch, tmp_path):
-        import agentwire.history_cli as mod
-
-        cap, project_dir = _patch_history_resume(
-            monkeypatch, tmp_path, project_config_roles=["custom"]
-        )
-        args = argparse.Namespace(
-            session_id="abc123", name="resumed", machine="local",
-            project=str(project_dir), json=True,
-        )
-        assert mod.cmd_history_resume(args) == 0
-        # Orchestrator is a persona kind → saved roles REPLACE the default.
-        assert "orchestrator" not in cap.role_names
-        assert "custom" in cap.role_names

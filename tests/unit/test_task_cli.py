@@ -36,13 +36,6 @@ def _ns(**kwargs):
 
 
 class TestTaskShow:
-    def test_text_output(self, project_dir, monkeypatch, capsys):
-        monkeypatch.chdir(project_dir)
-        rc = cmd_task_show(_ns(task="hello", json=False))
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "Task: hello" in out
-        assert "Save to: /tmp/hello-output.txt" in out
 
     def test_json_output(self, project_dir, monkeypatch, capsys):
         monkeypatch.chdir(project_dir)

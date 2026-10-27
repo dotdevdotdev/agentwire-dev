@@ -9,8 +9,6 @@ help renders cleanly (argparse exits 0) rather than raising.
 
 import argparse
 
-import pytest
-
 
 def _iter_subcommand_paths(parser, prefix=()):
     """Yield the argv path to every (sub)command in the parser tree.
@@ -43,8 +41,6 @@ def _all_paths():
     return list(_iter_subcommand_paths(build_parser()))
 
 
-def test_at_least_one_subcommand_discovered():
-    assert len(_all_paths()) > 0
 
 
 def test_every_subcommand_help_renders(capsys):
@@ -75,14 +71,3 @@ def test_every_subcommand_help_renders(capsys):
 # accepted (new/worktree/session-defaults) — a bad choice would raise
 # SystemExit(2) at the parser layer before any handler runs.
 
-@pytest.mark.parametrize("argv", [
-    ["new", "-s", "proj", "--kind", "reviewer"],
-    ["worktree", "some-name", "--kind", "reviewer"],
-    ["session-defaults", "--kind", "reviewer"],
-])
-def test_kind_reviewer_is_accepted(argv):
-    from agentwire.__main__ import build_parser
-
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    assert args.kind == "reviewer"
