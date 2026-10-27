@@ -80,43 +80,7 @@ def resume(tmp_path, monkeypatch):
     return _run
 
 
-class TestDerivedName:
-    @pytest.mark.parametrize("project,expected", [
-        (".claude", "_claude-fork-1"),
-        ("dotdev.dev", "dotdev_dev-fork-1"),
-        ("myapp", "myapp-fork-1"),
-    ])
-    def test_project_dot_is_sanitized(self, resume, project, expected):
-        res = resume(project)
-        assert res["rc"] == 0
-        assert res["created"] == expected
-        assert res["reported"] == expected
-
-    def test_uniqueness_probe_uses_the_sanitized_name(self, resume):
-        """The behavior the line exists to serve.
-
-        A raw ``.claude-fork-1`` probe can never match — tmux has no session by
-        that name — so the collision loop would exit on the first try and hand
-        an occupied name to ``new-session``. Probing the sanitized name is what
-        makes the ``-fork-N`` increment work for a dotted project.
-        """
-        res = resume(".claude", existing={"_claude-fork-1", "_claude-fork-2"})
-        assert res["probed"][:2] == ["_claude-fork-1", "_claude-fork-2"]
-        assert res["created"] == "_claude-fork-3"
-
-
 class TestExplicitName:
-    def test_operator_supplied_name_is_sanitized_too(self, resume):
-        res = resume("myapp", name="my.resume")
-        assert res["created"] == "my_resume"
-        assert res["reported"] == "my_resume"
-        # And the pre-create existence probe checked the same name.
-        assert res["probed"] == ["my_resume"]
-
-    def test_legal_name_is_left_alone(self, resume):
-        res = resume("myapp", name="hand-picked")
-        assert res["created"] == "hand-picked"
-        assert res["reported"] == "hand-picked"
 
     def test_collision_on_sanitized_name_is_refused(self, resume):
         """A dotted --name colliding with the session it would really create

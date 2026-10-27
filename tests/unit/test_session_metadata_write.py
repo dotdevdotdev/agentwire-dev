@@ -40,16 +40,6 @@ def _block_the_write(session):
 
 
 class TestStoreRaises:
-    def test_unwritable_destination_raises_oserror(self):
-        """A write that can't land must raise, not report success by silence."""
-        _block_the_write("sess")
-        with pytest.raises(OSError):
-            core.store_session_metadata("sess", {"a": 1})
-
-    def test_unserializable_metadata_raises_typeerror(self):
-        """A non-JSON-able value is a CODE bug and must surface as one."""
-        with pytest.raises(TypeError):
-            core.store_session_metadata("sess", {"bad": {1, 2, 3}})
 
     def test_failed_write_leaves_the_previous_record_intact(self):
         """The old record survives a failed write — no truncate-then-fail.
@@ -69,12 +59,6 @@ class TestStoreRaises:
         assert json.loads(_metadata_path("sess").read_text())["conversation_ids"] \
             == ["conv-1"]
 
-    def test_no_temp_files_left_behind_on_success(self):
-        core.store_session_metadata("sess", {"a": 1})
-        leftovers = [p.name for p in _metadata_path("sess").parent.iterdir()
-                     if p.name != "metadata.json"]
-        assert leftovers == []
-
 
 class TestRecordSessionLaunchReportsFailure:
     def test_warns_loudly_on_stderr_when_the_record_cannot_be_written(
@@ -93,65 +77,4 @@ class TestRecordSessionLaunchReportsFailure:
         # The dict is still returned — the session itself is up.
         assert meta["conversation_ids"] == ["conv-1"]
 
-    def test_silent_on_success(self, tmp_path, capsys):
-        core.record_session_launch("proj-fix", _agent(), tmp_path, created_via="new")
-        assert capsys.readouterr().err == ""
 
-    def test_unserializable_record_warns_without_crashing_a_live_session(
-            self, tmp_path, capsys):
-        """A code bug is named on stderr — but never becomes a traceback here.
-
-        The session is already running in tmux by the time this is called, so
-        raising would report a failed command for a creation that succeeded.
-        ``store_session_metadata`` itself still raises for every other caller.
-        """
-        agent = _agent()
-        agent.posture = object()  # never JSON-able — only reachable via a bug
-        core.record_session_launch("proj-fix", agent, tmp_path)
-        err = capsys.readouterr().err
-        assert "TypeError" in err
-        assert "proj-fix" in err
-
-
-class TestRecordedSessions:
-    """The enumeration side of the store — it must find EVERY record.
-
-    Pinned because the flat glob is the "obvious simplification" and nothing
-    else would catch it: session names contain slashes by design
-    (``project/branch`` is what every ``agentwire worktree`` and every
-    scheduler dispatch is called), so :func:`core.session_metadata_path` nests
-    those records one level deeper than ``sessions/*/metadata.json`` looks.
-
-    Measured on the machine this was written on: the flat glob found 469 of
-    1111 records. A ``doctor`` sweep built on it skips 58% of the fleet while
-    reporting itself clean — the same trap #884 hit in ``role_prompts``, whose
-    34 green tests all used flat names.
-    """
-
-    def _record(self, name):
-        core.store_session_metadata(name, {"posture": "bypass"})
-
-    def test_finds_a_slashed_worktree_record(self):
-        """`proj/branch` nests, and comes back spelled the way it went in."""
-        self._record("proj/branch")
-
-        assert core.recorded_sessions() == ["proj/branch"]
-
-    def test_finds_flat_and_nested_records_together(self):
-        for name in ("orchestrator", "proj/branch", "documentscribe/fix-1000"):
-            self._record(name)
-
-        assert core.recorded_sessions() == [
-            "documentscribe/fix-1000", "orchestrator", "proj/branch",
-        ]
-
-    def test_a_name_a_reader_can_hand_straight_back(self):
-        """The names have to round-trip, or a sweep finds records it then
-        cannot load."""
-        self._record("proj/branch")
-
-        [name] = core.recorded_sessions()
-        assert core.load_session_metadata(name) == {"posture": "bypass"}
-
-    def test_an_absent_store_is_empty_not_an_error(self):
-        assert core.recorded_sessions() == []

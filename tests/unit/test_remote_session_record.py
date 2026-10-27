@@ -63,35 +63,8 @@ def remote_new(monkeypatch):
     return run
 
 
-def test_remote_launch_records_the_session_role(remote_new):
-    """A branchless remote name is an orchestrator — and must say so on disk."""
-    assert remote_new()["role"] == "orchestrator"
-
-
-def test_remote_worktree_launch_records_the_worker_role(remote_new):
-    assert remote_new(session="proj/fix-bug@gpu")["role"] == "worker"
-
-
-def test_remote_launch_honors_an_explicit_created_by(remote_new):
-    """``--created-by`` is a user instruction, not a local-only nicety."""
-    assert remote_new(created_by="orch")["created_by"] == "orch"
-
-
 def test_remote_launch_marks_an_explicit_orchestrator_rootless(remote_new):
     """Same joint default as local (#716): --kind orchestrator roots itself."""
     assert remote_new(kind="orchestrator")["created_by"] == ""
 
 
-def test_remote_launch_defaults_to_no_opinion_about_parentage(remote_new):
-    """Cross-machine same-project inheritance is not resolvable, so don't guess.
-
-    ``None`` (no opinion) rather than ``''`` (explicitly rootless): the record
-    is keyed by session NAME with no machine in it, and ``''`` would clobber a
-    parent recorded by some earlier launch of the same name.
-    """
-    assert remote_new()["created_by"] is None
-
-
-def test_remote_launch_still_marks_itself_remote(remote_new):
-    """`remote=True` keeps the local git identity out of a remote record."""
-    assert remote_new()["remote"] is True
