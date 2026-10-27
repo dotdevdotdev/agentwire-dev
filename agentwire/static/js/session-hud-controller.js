@@ -151,7 +151,12 @@ class HudController {
 
         // Closing the drawer exits "master" mode, so the next Alt+P open is the
         // normal context-following view again.
-        sessionHud.onClose(() => { this._global = false; });
+        // Expanded cards go with it: their terminals are hidden but live, and
+        // their refcount would otherwise outlive the drawer's grow cycle.
+        sessionHud.onClose(() => {
+            this._global = false;
+            this._view.collapseAll();
+        });
 
         // Alt+Shift+P ("peek all", beside Alt+P's peek): expand every child's
         // live terminal. Alt+P itself requires Shift up (session-hud.js).
@@ -205,16 +210,33 @@ class HudController {
         const wasOpen = sessionHud.open;
         if (!wasOpen) sessionHud.toggle(true);
         if (wasOpen && this._view.allExpanded()) {
-            this._view.collapseAll();
+            this._keepFocus(() => this._view.collapseAll());
             return;
         }
         // Mount terminals only once the drawer has laid out, or they fit to 0 rows.
-        const run = () => {
+        const run = () => this._keepFocus(() => {
             const { skipped } = this._view.expandAll(OBSERVE_CAP);
             if (skipped) toast(`Showing ${OBSERVE_CAP} live terminals — ${skipped} more left collapsed`);
-        };
+        });
         if (wasOpen) run();
         else requestAnimationFrame(run);
+    }
+
+    /**
+     * Run `fn` (a bulk expand/collapse) without moving input focus: mounting or
+     * tearing down mini-terminals must not pull it off the element the user was
+     * typing in (#1162). Re-applied after a frame because xterm's own dispose is
+     * deferred one frame and can drop focus after `fn` returns. An element that
+     * `fn` itself removed (focus was inside a collapsed card) can't be restored.
+     */
+    _keepFocus(fn) {
+        const prev = document.activeElement;
+        const restore = () => {
+            if (prev && prev.isConnected && document.activeElement !== prev) prev.focus({ preventScroll: true });
+        };
+        fn();
+        restore();
+        requestAnimationFrame(restore);
     }
 
     _render() {
