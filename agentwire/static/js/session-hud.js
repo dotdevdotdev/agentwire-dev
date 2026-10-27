@@ -455,13 +455,17 @@ class SessionHud {
             this.drawer.classList.remove('open');
             this.handle.classList.remove('drawer-open');
             // A card left expanded (growToHalf'd) when the drawer itself
-            // closes — e.g. Alt+P, or the sidebar/scratchpad's own
-            // mutually-exclusive close — never gets its matching
-            // restoreDetent() (that only fires when the CARD collapses).
-            // Left stale, _applyAutoHeight()'s grown-guard would silently
-            // no-op forever on every future peek-open. Closing the drawer
-            // is a clean boundary to drop that leftover bookkeeping.
-            this._grownFromDetent = null;
+            // closes — e.g. Alt+P, a drag-close, or the sidebar/scratchpad's
+            // own mutually-exclusive close — must hand back the detent it
+            // grew from, not just drop the bookkeeping: `detent` is still
+            // 'half', so the next open (and every expand/collapse cycle
+            // after it, which records THAT as "what to restore") would stay
+            // tall forever (#1162). This runs before the close listeners so
+            // the controller's card teardown finds nothing left to restore.
+            if (this._grownFromDetent !== null) {
+                this.detent = this._grownFromDetent;
+                this._grownFromDetent = null;
+            }
             this._closeListeners.forEach((fn) => fn());
         }
     }

@@ -151,7 +151,12 @@ class HudController {
 
         // Closing the drawer exits "master" mode, so the next Alt+P open is the
         // normal context-following view again.
-        sessionHud.onClose(() => { this._global = false; });
+        // Expanded cards go with it: their terminals are hidden but live, and
+        // their refcount would otherwise outlive the drawer's grow cycle.
+        sessionHud.onClose(() => {
+            this._global = false;
+            this._view.collapseAll();
+        });
 
         // Alt+Shift+P ("peek all", beside Alt+P's peek): expand every child's
         // live terminal. Alt+P itself requires Shift up (session-hud.js).
