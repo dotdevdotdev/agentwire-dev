@@ -10,7 +10,6 @@ help renders cleanly (argparse exits 0) rather than raising.
 import argparse
 
 
-
 def _iter_subcommand_paths(parser, prefix=()):
     """Yield the argv path to every (sub)command in the parser tree.
 

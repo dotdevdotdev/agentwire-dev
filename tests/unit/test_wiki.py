@@ -7,7 +7,6 @@ live wiki at ~/.agentwire/wiki/ is never touched.
 from datetime import date
 from pathlib import Path
 
-
 from agentwire import wiki
 
 # --------------------------------------------------------------------------- #

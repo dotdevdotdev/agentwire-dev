@@ -2,7 +2,6 @@
 
 import subprocess
 
-
 from agentwire.worktree import (
     ensure_worktree,
     is_registered_worktree,

@@ -11,8 +11,6 @@ from unittest.mock import MagicMock
 from agentwire.scheduler import zombie
 
 
-
-
 def _fake_run(sessions_line, panes_by_session):
     """Build a subprocess.run stand-in serving list-sessions / list-panes."""
 

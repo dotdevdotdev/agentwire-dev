@@ -22,10 +22,6 @@ import pytest
 from agentwire.completion import CompletionTimeout, wait_for_completion_signal
 
 
-
-
-
-
 class _Clock:
     """Monotonic fake clock — one tick per call, so the wait can't run real time."""
 

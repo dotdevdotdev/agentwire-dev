@@ -15,12 +15,6 @@ from agentwire.doctor_cli import (
 )
 
 
-
-
-
-
-
-
 class TestRenderSchedulerStalenessSection:
 
 

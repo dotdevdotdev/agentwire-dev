@@ -6,13 +6,6 @@ import pytest
 import yaml
 
 
-
-
-
-
-
-
-
 class TestEmailChannel:
 
 
