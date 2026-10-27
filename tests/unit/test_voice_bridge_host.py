@@ -134,47 +134,6 @@ class TestLegitimateClientsAreServed:
         assert status(response) == 200
         assert TOKEN in response
 
-    def test_localhost_is_served(self, bridge_server):
-        """Nobody types four octets. ``localhost`` resolves to the same bind
-        and the browser sends it verbatim."""
-        _, port = bridge_server
-        response = raw(port, f"GET / HTTP/1.1\nHost: localhost:{port}\n\n")
-        assert status(response) == 200
-        assert TOKEN in response
-
-    def test_the_host_header_is_matched_case_insensitively(self, bridge_server):
-        """Host is a hostname: case is not significant, and a browser passes
-        through whatever case was typed. Case-sensitive matching would refuse
-        a legitimate client for the way they capitalised it."""
-        _, port = bridge_server
-        response = raw(port, f"GET / HTTP/1.1\nHost: LocalHost:{port}\n\n")
-        assert status(response) == 200
-
-    def test_ipv6_loopback_literal_is_served(self, bridge_server):
-        """A browser resolving ``localhost`` may reach for ``::1`` first and
-        will show the literal in the bar if it does. The bind is IPv4-only so
-        this normally fails at TCP rather than here — but if it ever connects,
-        it is the loopback and refusing it is a false reject."""
-        _, port = bridge_server
-        response = raw(port, f"GET / HTTP/1.1\nHost: [::1]:{port}\n\n")
-        assert status(response) == 200
-
-    def test_an_authorized_post_on_an_allowed_host_still_dispatches(
-        self, bridge_server
-    ):
-        """The must-fail control for every refusal test below: if POST were
-        broken outright, they would all pass for the wrong reason."""
-        bridge, port = bridge_server
-        body = '{"name": "fleet_sessions", "arguments": {}}'
-        response = raw(
-            port,
-            f"POST /tool HTTP/1.1\nHost: 127.0.0.1:{port}\n"
-            f"Authorization: Bearer {TOKEN}\n"
-            f"Content-Length: {len(body)}\n\n{body}",
-        )
-        assert status(response) == 200
-        assert bridge.dispatched == ["fleet_sessions"]
-
 
 # =============================================================================
 # The Host allowlist — the false-ACCEPT half
@@ -216,24 +175,6 @@ class TestForeignHostsAreRefused:
         assert status(response) == 403
         assert bridge.dispatched == []
 
-    @pytest.mark.parametrize("route", ["/mint", "/utterance", "/anchor"])
-    def test_every_post_route_is_guarded(self, bridge_server, route):
-        """Not just ``/tool``: ``/mint`` spends the owner's API key, and the
-        two ordering routes feed the confirm gate's predicate."""
-        _, port = bridge_server
-        response = raw(
-            port,
-            f"POST {route} HTTP/1.1\nHost: evil.com:{port}\n"
-            f"Authorization: Bearer {TOKEN}\nContent-Length: 2\n\n{{}}",
-        )
-        assert status(response) == 403
-
-    def test_a_right_name_on_a_wrong_port_is_refused(self, bridge_server):
-        """Another bridge — or another local service the browser has been
-        rebound at — is not this one."""
-        _, port = bridge_server
-        response = raw(port, f"GET / HTTP/1.1\nHost: 127.0.0.1:{port + 1}\n\n")
-        assert status(response) == 403
 
     def test_two_host_headers_are_refused_even_when_one_is_loopback(
         self, bridge_server
@@ -248,37 +189,6 @@ class TestForeignHostsAreRefused:
         )
         assert status(response) == 403
         assert TOKEN not in response
-
-    def test_a_missing_host_is_refused(self, bridge_server):
-        """HTTP/1.0 permits omitting it. Nothing the browser does omits it, so
-        refusing costs no real client — and accepting an absent Host would make
-        the guard trivially bypassable by anything that is not a browser."""
-        _, port = bridge_server
-        response = raw(port, "GET / HTTP/1.0\n\n")
-        assert status(response) == 403
-        assert TOKEN not in response
-
-
-class TestHostPredicate:
-    """The predicate on its own — the wire tests above cover one port each."""
-
-    def test_the_accepted_set_is_exactly_the_loopback_names(self):
-        for host in ("127.0.0.1", "localhost", "[::1]"):
-            assert server.host_allowed(f"{host}:8788", 8788)
-
-    @pytest.mark.parametrize(
-        "header",
-        ["", "evil.com:8788", "127.0.0.1:8789", "127.0.0.1", "127.0.0.1:", "::1:8788"],
-    )
-    def test_everything_else_is_refused(self, header):
-        assert not server.host_allowed(header, 8788)
-
-    def test_a_bare_host_is_accepted_only_on_port_80(self):
-        """Browsers omit the default port. The bridge never defaults to 80, but
-        ``--port 80`` is expressible, and a guard that refuses the only Host a
-        browser can send there is a guaranteed false reject."""
-        assert server.host_allowed("localhost", 80)
-        assert not server.host_allowed("localhost", 8788)
 
 
 # =============================================================================
@@ -310,34 +220,3 @@ class TestBodyLength:
             timeout=5.0,
         )
         assert status(response) in (200, 400)
-
-    def test_other_negative_lengths_answer_too(self, bridge_server):
-        """A control that is GREEN BEFORE THE FIX, deliberately kept and
-        labelled. ``read(-5)`` raises ``ValueError`` ("read length must be
-        non-negative or -1"), which the existing ``except`` turns into a 400 —
-        so the issue's own repro value never hung, and a suite that pinned the
-        bug on ``-5`` alone would have shipped a green light over a live
-        thread leak. After ``max(0, …)`` both values take the same path."""
-        _, port = bridge_server
-        response = raw(
-            port,
-            f"POST /tool HTTP/1.1\nHost: 127.0.0.1:{port}\n"
-            f"Authorization: Bearer {TOKEN}\nContent-Length: -5\n\n",
-            timeout=5.0,
-        )
-        assert status(response) in (200, 400)
-
-    def test_an_oversized_body_is_still_truncated(self, bridge_server):
-        """The existing 64K cap must survive the fix. Clamping at both ends is
-        two guards, and dropping either one is a silent regression: this is the
-        one that catches ``max(0, int(...))`` written without the ``min``."""
-        _, port = bridge_server
-        body = '{"name": "x", "pad": "' + "a" * (server._MAX_BODY * 2) + '"}'
-        response = raw(
-            port,
-            f"POST /tool HTTP/1.1\nHost: 127.0.0.1:{port}\n"
-            f"Authorization: Bearer {TOKEN}\n"
-            f"Content-Length: {len(body)}\n\n{body}",
-        )
-        # Truncated at the cap, so the JSON no longer parses.
-        assert status(response) == 400

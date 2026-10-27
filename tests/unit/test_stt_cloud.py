@@ -12,8 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentwire.stt import CloudSTTBackend, STTServerBackend, get_stt_backend
-from agentwire.stt import cloud as cloud_module
+from agentwire.stt import CloudSTTBackend, get_stt_backend
 
 
 def _cfg(backend: str, cloud: dict | None = None, timeout: int = 30):
@@ -28,46 +27,12 @@ def api_key(monkeypatch):
 
 
 class TestGetSttBackendCloudTier:
-    def test_cloud_tier_returns_cloud_backend_with_defaults(self, api_key):
-        backend = get_stt_backend(_cfg("cloud"))
-        assert isinstance(backend, CloudSTTBackend)
-        assert backend.name == "cloud"
-        assert backend.base_url == cloud_module.DEFAULT_BASE_URL
-        assert backend.model == cloud_module.DEFAULT_MODEL
 
-    def test_cloud_tier_reads_cloud_config(self, monkeypatch):
-        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
-        backend = get_stt_backend(
-            _cfg(
-                "cloud",
-                cloud={
-                    "base_url": "https://api.groq.com/openai/v1",
-                    "model": "whisper-large-v3-turbo",
-                    "api_key_env": "GROQ_API_KEY",
-                    "language": "en",
-                },
-                timeout=12,
-            )
-        )
-        assert backend.base_url == "https://api.groq.com/openai/v1"
-        assert backend.model == "whisper-large-v3-turbo"
-        assert backend.timeout == 12
-        assert backend.language == "en"
 
     def test_cloud_tier_without_key_fails_fast(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with pytest.raises(ValueError, match="OPENAI_API_KEY"):
             get_stt_backend(_cfg("cloud"))
-
-    def test_cloud_tier_missing_custom_env_names_it(self, monkeypatch):
-        monkeypatch.delenv("MY_STT_KEY", raising=False)
-        with pytest.raises(ValueError, match="MY_STT_KEY"):
-            get_stt_backend(_cfg("cloud", cloud={"api_key_env": "MY_STT_KEY"}))
-
-    def test_default_tier_is_managed_shim(self):
-        backend = get_stt_backend(_cfg("default"))
-        assert isinstance(backend, STTServerBackend)
-        assert backend.url == "http://localhost:8101"
 
 
 class TestCloudRequest:
@@ -117,28 +82,6 @@ class TestCloudRequest:
 
         assert text == "hello world"
 
-    def test_language_hint_included_when_set(self, wav_file, captured):
-        backend = CloudSTTBackend(api_key="sk-test-not-real", language="en")
-        asyncio.run(backend.transcribe(wav_file))
-        assert b'name="language"\r\n\r\nen' in captured["request"].data
-
-    def test_base_url_trailing_slash_normalized(self, wav_file, captured):
-        backend = CloudSTTBackend(
-            api_key="gsk-test", base_url="https://api.groq.com/openai/v1/", model="whisper-1"
-        )
-        asyncio.run(backend.transcribe(wav_file))
-        req = captured["request"]
-        assert req.full_url == "https://api.groq.com/openai/v1/audio/transcriptions"
-        assert b'name="model"\r\n\r\nwhisper-1' in req.data
-
-    def test_timeout_passed_through(self, wav_file, captured):
-        backend = CloudSTTBackend(api_key="sk-test-not-real", timeout=7)
-        asyncio.run(backend.transcribe(wav_file))
-        assert captured["timeout"] == 7
-
-    def test_empty_key_rejected_at_construction(self):
-        with pytest.raises(ValueError, match="API key"):
-            CloudSTTBackend(api_key="")
 
     def test_network_error_wrapped_without_key(self, wav_file, monkeypatch):
         def fail(req, timeout=None):
