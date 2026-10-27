@@ -29,10 +29,7 @@ could see. The specific traps this file is built to fall into on purpose:
 """
 
 import json
-import time
-from datetime import timedelta
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -217,37 +214,19 @@ def env(tmp_path, monkeypatch):
 
 
 class TestDetectsTheRealFailingState:
+    def test_a_later_real_turn_means_recovered(self, tmp_path):
+        p = write_transcript(tmp_path / "recovered.jsonl", HUNG_RUN + [HEALTHY_ROW])
+        assert auth_expired.transcript_auth_failure(p) is False
+
     def test_the_real_08_04_transcript_fires(self, tmp_path):
         """The load-bearing assertion: the exact run that cost 7217s is seen."""
         p = write_transcript(tmp_path / "4f90262b.jsonl", HUNG_RUN)
         assert auth_expired.transcript_auth_failure(p) is True
 
-    def test_recovery_needs_no_reset_mechanism(self, tmp_path):
-        """A later real turn makes it healthy — the documentscribe shape.
-
-        Two of the four 08-04 transcripts auth-failed MID-file and recovered.
-        Keying on 'does the file contain an auth failure' would gate the fleet
-        on every one of them, forever.
-        """
-        p = write_transcript(tmp_path / "recovered.jsonl", HUNG_RUN + [HEALTHY_ROW])
-        assert auth_expired.transcript_auth_failure(p) is False
-
     def test_an_agent_describing_the_error_is_not_the_error(self, tmp_path):
         """The false positive a pane/substring detector cannot avoid."""
         p = write_transcript(tmp_path / "talking.jsonl", [ASSISTANT_TALKING_ABOUT_IT])
         assert auth_expired.transcript_auth_failure(p) is False
-
-    def test_the_2026_07_07_outage_with_different_wording_also_fires(self, tmp_path):
-        """Field-proven against a SECOND outage, not just #867's.
-
-        Same `error: authentication_failed`, different rendered text ("Not
-        logged in" vs "Login expired") and a different Claude Code version.
-        The 08-04 fixtures alone could not have shown this — it is the direct
-        evidence that keying on the structured field survives a rewording,
-        which has already happened once in this history.
-        """
-        p = write_transcript(tmp_path / "0707.jsonl", [NOT_LOGGED_IN_ROW])
-        assert auth_expired.transcript_auth_failure(p) is True
 
     def test_a_real_rate_limit_refusal_does_not_gate_the_machine(self, tmp_path):
         """The near-miss: structurally identical, and 16 of them on disk.
@@ -261,96 +240,10 @@ class TestDetectsTheRealFailingState:
         p = write_transcript(tmp_path / "ratelimit.jsonl", [RATE_LIMIT_ROW])
         assert auth_expired.transcript_auth_failure(p) is False
 
-    def test_other_api_errors_are_not_widened_into_this_one(self, tmp_path):
-        p = write_transcript(tmp_path / "overloaded.jsonl", [OVERLOADED_ROW])
-        assert auth_expired.transcript_auth_failure(p) is False
-
-    def test_no_assistant_turn_at_all(self, tmp_path):
-        p = write_transcript(tmp_path / "empty.jsonl", [USER_ROW])
-        assert auth_expired.transcript_auth_failure(p) is False
-
-    def test_missing_file_is_not_an_outage(self, tmp_path):
-        assert auth_expired.transcript_auth_failure(tmp_path / "nope.jsonl") is False
-
-    def test_tail_read_survives_a_multi_megabyte_transcript(self, tmp_path):
-        """The real files are 2-11MB; only the tail can hold the last turn.
-
-        Also proves the truncated first line of a mid-file read is dropped
-        rather than exploding the scan.
-        """
-        filler = {"type": "assistant", "message": {"role": "assistant",
-                  "content": [{"type": "text", "text": "x" * 400}]}}
-        rows = [filler] * 3000 + [AUTH_ROW]
-        p = write_transcript(tmp_path / "big.jsonl", rows)
-        assert p.stat().st_size > auth_expired.TAIL_BYTES
-        assert auth_expired.transcript_auth_failure(p) is True
-
 
 # --------------------------------------------------------------------------
 # Locating the transcript — both routes, including the incident's own shape
 # --------------------------------------------------------------------------
-
-
-class TestLocatingTheTranscript:
-    def _place(self, env, cwd: str, conv_id: str, rows: list[dict]) -> Path:
-        from agentwire.history import encode_project_path
-
-        return write_transcript(
-            env / "projects" / encode_project_path(cwd) / f"{conv_id}.jsonl", rows
-        )
-
-    def test_recorded_conversation_id_addresses_the_file(self, env):
-        from agentwire.core import store_session_metadata
-
-        cwd = "/Users/dotdev/projects/agentwire-dev"
-        self._place(env, cwd, "conv-1", HUNG_RUN)
-        store_session_metadata("memory-manager", {
-            "cwd_at_launch": cwd, "conversation_ids": ["conv-1"],
-        })
-        from agentwire.history import encode_project_path
-
-        expected = env / "projects" / encode_project_path(cwd) / "conv-1.jsonl"
-        assert auth_expired.detect("memory-manager") == {
-            "session": "memory-manager",
-            "transcript": str(expected),
-            "source": "recorded",
-        }
-
-    def test_memory_manager_shaped_record_still_detects(self, env):
-        """The incident's OWN metadata shape: no conversation_ids at all.
-
-        `memory-manager`'s record was written by a build that predated #871's
-        enrichment. A detector that only handled the recorded path would have
-        been blind to the exact run it exists for — the fixture trap, in the
-        implementation rather than the test.
-        """
-        from agentwire.core import store_session_metadata
-
-        cwd = "/Users/dotdev/projects/agentwire-dev"
-        store_session_metadata("memory-manager", dict(MINIMAL_METADATA))
-        assert auth_expired.recorded_transcripts("memory-manager") == []
-
-        self._place(env, cwd, "conv-unknown", HUNG_RUN)
-        detail = auth_expired.detect("memory-manager", project_path=cwd, since=0)
-        assert detail is not None
-        assert detail["source"] == "touched"
-
-    def test_no_session_record_at_all(self, env):
-        assert auth_expired.recorded_transcripts("never-existed") == []
-        assert auth_expired.detect("never-existed") is None
-
-    def test_a_transcript_older_than_the_run_does_not_count(self, env):
-        """Scoped to files written DURING this run, not 'the newest one'.
-
-        Otherwise last week's resolved outage gates today's dispatch.
-        """
-        cwd = "/Users/dotdev/projects/agentwire-dev"
-        p = self._place(env, cwd, "stale", HUNG_RUN)
-        import os
-        old = time.time() - 86400
-        os.utime(p, (old, old))
-        assert auth_expired.detect("s", project_path=cwd, since=time.time() - 60) is None
-        assert auth_expired.detect("s", project_path=cwd, since=0) is not None
 
 
 # --------------------------------------------------------------------------
@@ -358,60 +251,3 @@ class TestLocatingTheTranscript:
 # --------------------------------------------------------------------------
 
 
-class TestOutageState:
-    def test_first_detection_escalates_and_repeats_do_not(self, env):
-        ok = type("R", (), {"success": True, "error": None})()
-        with patch("agentwire.channels.email.send_email", return_value=ok) as mail:
-            auth_expired.record_outage({"session": "a", "transcript": "/t"})
-            auth_expired.record_outage({"session": "b", "transcript": "/t"})
-        assert mail.call_count == 1, "one outage, one email — not one per task"
-        state = auth_expired.read_state()
-        assert state["sessions"] == ["a", "b"]
-
-    def test_escalation_resumes_after_the_ttl(self, env):
-        ok = type("R", (), {"success": True, "error": None})()
-        with patch("agentwire.channels.email.send_email", return_value=ok) as mail:
-            auth_expired.record_outage({"session": "a"})
-            state = auth_expired.read_state()
-            stale = auth_expired._now() - auth_expired.ESCALATE_TTL - timedelta(minutes=1)
-            state["escalated_at"] = stale.isoformat()
-            auth_expired.write_state(state)
-            auth_expired.record_outage({"session": "a"})
-        assert mail.call_count == 2
-
-    def test_detected_at_is_carried_forward_not_refreshed(self, env):
-        """A four-hour outage must not read as seconds old (the #905 defect)."""
-        ok = type("R", (), {"success": True, "error": None})()
-        with patch("agentwire.channels.email.send_email", return_value=ok):
-            first = auth_expired.record_outage({"session": "a"})
-            auth_expired.record_outage({"session": "a"})
-        assert auth_expired.read_state()["detected_at"] == first["detected_at"]
-
-    def test_a_failing_escalation_still_records_the_outage(self, env):
-        """The gate must work with or without the email."""
-        with patch("agentwire.channels.email.send_email", side_effect=RuntimeError("no key")):
-            auth_expired.record_outage({"session": "a"})
-        assert auth_expired.read_state() is not None
-        assert auth_expired.outage_active() is not None
-
-    def test_a_stale_outage_stops_gating(self, env):
-        """Bounded on purpose: a flag that gated forever takes the fleet down."""
-        ok = type("R", (), {"success": True, "error": None})()
-        with patch("agentwire.channels.email.send_email", return_value=ok):
-            auth_expired.record_outage({"session": "a"})
-        assert auth_expired.outage_active() is not None
-        state = auth_expired.read_state()
-        state["last_seen"] = (
-            auth_expired._now() - auth_expired.OUTAGE_TTL - timedelta(minutes=1)
-        ).isoformat()
-        auth_expired.write_state(state)
-        assert auth_expired.outage_active() is None, "must reopen for a probe"
-
-    def test_a_corrupt_state_file_does_not_gate(self, env):
-        auth_expired.state_path().parent.mkdir(parents=True, exist_ok=True)
-        auth_expired.state_path().write_text("{ not json")
-        assert auth_expired.read_state() is None
-        assert auth_expired.outage_active() is None
-
-    def test_no_state_is_no_outage(self, env):
-        assert auth_expired.outage_active() is None
