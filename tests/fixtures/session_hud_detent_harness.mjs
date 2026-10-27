@@ -14,7 +14,7 @@ const stubs = {
     'sidebar/services-section.js': 'export const servicesSection = { mount() {}, refresh() {} };',
     'desktop-manager.js': 'export const desktop = { getActiveWindow: () => null, on() {} };',
     'sidebar/sessions-section.js': 'export const activityStates = new Map(); export const getAllSessions = () => globalThis.__sessions; export const onSessionsChanged = () => {}; export const ensureSessionsLoaded = () => {};',
-    'card-terminal.js': 'export const mountCardTerminal = (name) => { globalThis.__live.add(name); return () => globalThis.__live.delete(name); }; export const mountSelfMic = () => {};',
+    'card-terminal.js': 'export const mountCardTerminal = (name) => { globalThis.__live.add(name); const t = globalThis.__mkTextarea(); t.focus(); return () => { t.remove(); globalThis.__live.delete(name); }; }; export const mountSelfMic = () => {};',
     'api.js': 'export const apiFetch = async () => ({ ok: true, json: async () => ({}) });',
     'toast.js': 'export const toast = () => {}; export const toastSuccess = () => {}; export const toastError = () => {};',
     'safety-shared.js': 'export const projectFromCwd = () => "";',
@@ -61,7 +61,7 @@ class El {
     insertBefore(c) { this.appendChild(c); }
     before() {} after() {}
     removeChild(c) { this.children = this.children.filter((x) => x !== c); }
-    remove() { this.parentElement?.removeChild(this); this.parentElement = null; }
+    remove() { this.parentElement?.removeChild(this); this.parentElement = null; if (globalThis.document.activeElement === this) globalThis.document.activeElement = body; }
     addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }
     removeEventListener() {}
     setAttribute() {}
@@ -70,7 +70,8 @@ class El {
     querySelector(sel) { return this._named[sel] || null; }
     querySelectorAll() { return []; }
     contains(o) { for (let n = o; n; n = n.parentElement) if (n === this) return true; return false; }
-    focus() {} blur() {}
+    focus() { globalThis.document.activeElement = this; } blur() { if (globalThis.document.activeElement === this) globalThis.document.activeElement = body; }
+    get isConnected() { for (let n = this; n; n = n.parentElement) if (n === body) return true; return false; }
     fire(type, props = {}) {
         const e = { type, target: this, preventDefault() {}, stopPropagation() {}, ...props };
         (this.listeners[type] || []).forEach((fn) => fn(e));
@@ -80,8 +81,10 @@ class El {
 const body = new El('body');
 globalThis.document = {
     createElement: (t) => new El(t), createElementNS: (_, t) => new El(t),
-    addEventListener() {}, removeEventListener() {}, body,
+    addEventListener() {}, removeEventListener() {}, body, activeElement: body,
 };
+// Stand-in for a mini xterm: mounting takes focus (xterm.open), like a real terminal would.
+globalThis.__mkTextarea = () => { const t = new El('textarea'); body.appendChild(t); return t; };
 globalThis.window = { addEventListener() {}, removeEventListener() {}, innerHeight: 1000 };
 globalThis.localStorage = { getItem: () => null, setItem() {} };
 globalThis.getComputedStyle = () => ({ paddingTop: '0', paddingBottom: '0', marginTop: '0', marginBottom: '0' });
@@ -104,6 +107,10 @@ const press = (code, shift) => globalThis.__hotkeys.find(([k]) => k.code === cod
 const view = hudController._view;
 const settled = () => { flush(); return { detent: sessionHud.detent, half: sessionHud.drawer.classList.contains('detent-half'), h: sessionHud.drawer.style.height }; };
 
+// The user's own session xterm, focused before any chord.
+const mainXterm = new El('textarea'); body.appendChild(mainXterm); mainXterm.focus();
+const focusKept = () => { flush(); return document.activeElement === mainXterm; };
+
 // Baseline: drawer open at peek, auto-sized to collapsed content.
 sessionHud.toggle(true); hudController._render();
 const base = settled();
@@ -111,9 +118,11 @@ const backToPeek = () => { const s = settled(); return s.detent === 'peek' && !s
 const expandAll = () => { press('KeyP', true); flush(); };
 const out = {};
 
-expandAll();
+mainXterm.focus(); expandAll();
+out.expand_all_keeps_focus = focusKept();
 out.expand_all_goes_half = sessionHud.detent === 'half' && globalThis.__live.size === view._expandableNames().length;
 press('KeyP', true);
+out.collapse_all_keeps_focus = focusKept();
 out.chord_collapse_all_returns_to_peek = backToPeek();
 
 const names = view._expandableNames();

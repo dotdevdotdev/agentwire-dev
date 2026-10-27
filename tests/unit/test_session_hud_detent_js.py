@@ -29,4 +29,4 @@ def test_hud_returns_to_peek_after_every_close_path():
     results = json.loads(proc.stdout)
     failed = [name for name, ok in results.items() if ok is not True]
     assert not failed, failed
-    assert len(results) >= 10, "harness stopped reporting checks"
+    assert len(results) >= 12, "harness stopped reporting checks"
