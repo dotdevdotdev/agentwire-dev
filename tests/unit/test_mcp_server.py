@@ -3,7 +3,6 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
-
 # ---------------------------------------------------------------------------
 # Format functions — empty/missing-key/multi-entry behavior is parametrized;
 # format-specific assertions kept as individual tests below.
