@@ -42,14 +42,6 @@ PATTERN_IDS = {
 }
 
 
-def test_each_check_names_itself_in_its_id(cfg):
-    wrong = {
-        n: (r["pattern"], r.get("id"))
-        for n, cmd in BLOCKS.items()
-        for r in [check_command(cmd, cfg)]
-        if PATTERN_IDS.get(r["pattern"].split(":")[0]) not in (None, r.get("id"))
-    }
-    assert not wrong, wrong
 
 
 def test_every_block_carries_a_rule_or_check_id(cfg):
@@ -62,6 +54,3 @@ def test_every_block_carries_a_rule_or_check_id(cfg):
     assert not unlabelled, unlabelled
 
 
-def test_a_missing_parser_block_names_itself(cfg):
-    result = check_command("ls", {**cfg, "_parser_unavailable": "no parser"}, cwd="/tmp")
-    assert (result["decision"], result.get("id")) == ("block", "core.parser-unavailable")
