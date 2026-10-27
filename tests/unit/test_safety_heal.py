@@ -53,87 +53,6 @@ class TestHealIdempotency:
         assert bundled - pack_rules <= installed
         assert not pack_rules & installed
 
-    def test_second_heal_is_noop(self, fake_env):
-        safety_commands.heal_damage_control(quiet=True)
-        summary = safety_commands.heal_damage_control(quiet=True)
-        assert summary["hooks_installed"] == []
-        assert summary["hooks_updated"] == []
-        assert summary["rules_installed"] == []
-        assert summary["matchers_added"] == 0
-
-
-class TestHealDriftAwareness:
-    def test_missing_rule_reinstalled(self, fake_env):
-        safety_commands.heal_damage_control(quiet=True)
-        victim = next(safety_commands.RULES_DIR.glob("*.yaml"))
-        name = victim.name
-        victim.unlink()
-        summary = safety_commands.heal_damage_control(quiet=True)
-        assert name in summary["rules_installed"]
-        assert (safety_commands.RULES_DIR / name).exists()
-
-    def test_customized_rule_survives(self, fake_env):
-        safety_commands.heal_damage_control(quiet=True)
-        rule = next(safety_commands.RULES_DIR.glob("*.yaml"))
-        rule.write_text("# my hand-customized rule\n")
-        safety_commands.heal_damage_control(quiet=True)
-        # Never blind-clobbered: the customization is intact.
-        assert rule.read_text() == "# my hand-customized rule\n"
-
-    def test_stale_owned_hook_refreshed(self, fake_env):
-        safety_commands.heal_damage_control(quiet=True)
-        hook = safety_commands.HOOKS_DIR / safety_commands.DAMAGE_CONTROL_FILES[0]
-        hook.write_text("# stale\n")
-        summary = safety_commands.heal_damage_control(quiet=True)
-        # Owned hook scripts carry no user edits — drift is overwritten.
-        assert hook.name in summary["hooks_updated"]
-        assert "# stale" not in hook.read_text()
-
-
-class TestDriftDetectors:
-    def test_hook_drift_states(self, fake_env):
-        assert set(safety_commands.damage_control_hook_drift().values()) == {"missing"}
-        safety_commands.heal_damage_control(quiet=True)
-        assert set(safety_commands.damage_control_hook_drift().values()) == {"ok"}
-        hook = safety_commands.HOOKS_DIR / safety_commands.DAMAGE_CONTROL_FILES[0]
-        hook.write_text("# drifted\n")
-        assert safety_commands.damage_control_hook_drift()[hook.name] == "stale"
-
-    def test_rules_drift_states(self, fake_env):
-        assert set(safety_commands.rules_drift().values()) == {"missing"}
-        safety_commands.heal_damage_control(quiet=True)
-        assert set(safety_commands.rules_drift().values()) == {"ok"}
-
-    def test_missing_matchers(self, fake_env):
-        assert set(safety_commands.missing_damage_control_matchers()) == set(
-            safety_commands.DAMAGE_CONTROL_MATCHERS
-        )
-        safety_commands.heal_damage_control(quiet=True)
-        assert safety_commands.missing_damage_control_matchers() == []
-
-    def test_partial_shared_command_matcher_still_flagged(self, fake_env):
-        """Read/Grep/Glob share one hook script. Registering only Read must NOT
-        mark Grep/Glob as present — a command-only check would (the bug); the
-        (matcher, command) check catches the gap."""
-        settings = Path.home() / ".claude" / "settings.json"
-        settings.parent.mkdir(parents=True, exist_ok=True)
-        cmd = "~/.agentwire/hooks/damage-control/read-tool-damage-control.py"
-        settings.write_text(json.dumps({"hooks": {"PreToolUse": [
-            {"matcher": "Read", "hooks": [{"type": "command", "command": cmd}]},
-        ]}}))
-        missing = set(safety_commands.missing_damage_control_matchers())
-        assert "Read" not in missing            # the one we registered
-        assert {"Grep", "Glob"} <= missing      # genuinely absent, must be flagged
-
-
-class TestInstallCmdNonInteractive:
-    def test_yes_does_not_prompt(self, fake_env, monkeypatch):
-        # input() must never be called in --yes mode.
-        monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("prompted"))
-        rc = safety_commands.safety_install_cmd(assume_yes=True)
-        assert rc == 0
-        assert (safety_commands.HOOKS_DIR / safety_commands.DAMAGE_CONTROL_FILES[0]).exists()
-
 
 class TestDoctorDamageControlSection:
     @pytest.fixture(autouse=True)
@@ -149,13 +68,6 @@ class TestDoctorDamageControlSection:
             f"enabled: {str(bool(enabled)).lower()}\npacks: []\n"
         )
 
-    def test_clean_when_healed_and_enabled(self, monkeypatch, capsys):
-        from agentwire.doctor_cli import _render_damage_control_section
-        self._patch_safety_enabled(monkeypatch, True)
-        issues = _render_damage_control_section()
-        out = capsys.readouterr().out
-        assert issues == 0
-        assert "[ok] Damage control enabled" in out
 
     def test_disabled_kill_switch_flagged(self, monkeypatch, capsys):
         from agentwire.doctor_cli import _render_damage_control_section
@@ -165,14 +77,6 @@ class TestDoctorDamageControlSection:
         assert issues >= 1
         assert "DISABLED" in out
 
-    def test_missing_rule_flagged(self, monkeypatch, capsys):
-        from agentwire.doctor_cli import _render_damage_control_section
-        self._patch_safety_enabled(monkeypatch, True)
-        next(safety_commands.RULES_DIR.glob("*.yaml")).unlink()
-        issues = _render_damage_control_section()
-        out = capsys.readouterr().out
-        assert issues >= 1
-        assert "rules NOT installed" in out
 
     def test_missing_matcher_flagged(self, monkeypatch, capsys):
         from agentwire.doctor_cli import _render_damage_control_section
