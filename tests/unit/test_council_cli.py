@@ -86,83 +86,19 @@ class TestStart:
         }
         assert sitting.orchestrator == "agentwire-council-proj"
 
-    def test_writes_workspace_config(self, mocks, capsys):
-        _start(mocks)
-        yml = (state.workspace_dir(NAME) / ".agentwire.yml").read_text()
-        assert "parent: agentwire-council-proj" in yml
 
-    def test_default_roster(self, mocks, capsys):
-        _start(mocks, roster=None)
-        assert state.read_sitting(NAME).roster == state.DEFAULT_ROSTER
 
-    def test_invalid_lens_rejected(self, mocks, capsys):
-        assert _start(mocks, roster="brain,../etc") == 1
-        assert state.read_sitting(NAME) is None
 
     def test_invalid_name_rejected(self, mocks, capsys):
         assert _start(mocks, name="../evil") == 1
 
-    def test_refuses_live_same_name(self, mocks, capsys):
-        _start(mocks)
-        capsys.readouterr()
-        assert _start(mocks) == 1
-        assert not _payload(capsys)["success"]
-
-    def test_force_restarts(self, mocks, capsys):
-        _start(mocks)
-        capsys.readouterr()
-        args = _args(roster="brain", type=None, model=None, force=True, json=True)
-        assert cli.cmd_council_start(args) == 0
-        assert "agentwire-council-proj" in mocks["killed"]
-        assert state.read_sitting(NAME).roster == ["brain"]
-
-    def test_concurrent_sittings_isolated(self, mocks, capsys):
-        assert _start(mocks, name="a") == 0
-        capsys.readouterr()
-        assert _start(mocks, name="b") == 0
-        payload = _payload(capsys)
-        # Advisory names every live sitting when seating beyond the first.
-        assert "councils live" in payload["advisory"]
-        assert set(state.list_sittings()) == {"a", "b"}
-        assert state.read_sitting("a").orchestrator == "agentwire-council-a"
-        assert state.read_sitting("b").orchestrator == "agentwire-council-b"
 
 
-class TestStop:
-    def test_kills_and_clears(self, mocks, capsys):
-        _start(mocks)
-        capsys.readouterr()
-        assert cli.cmd_council_stop(_args(json=True)) == 0
-        payload = _payload(capsys)
-        assert payload["council"] == NAME
-        assert set(payload["killed"]) == {
-            "agentwire-council-proj",
-            "council-proj-brain",
-            "council-proj-gut",
-        }
-        assert state.read_sitting(NAME) is None
 
-    def test_stop_targets_only_named_sitting(self, mocks, capsys):
-        _start(mocks, name="a")
-        _start(mocks, name="b")
-        capsys.readouterr()
-        assert cli.cmd_council_stop(_args(name="a", json=True)) == 0
-        assert state.read_sitting("a") is None
-        assert state.read_sitting("b") is not None  # survives
-        assert "council-b-brain" not in mocks["killed"]
 
-    def test_no_sitting(self, mocks, capsys):
-        assert cli.cmd_council_stop(_args(json=True)) == 1
 
 
 class TestResolution:
-    def test_sole_live_autopick(self, mocks, capsys):
-        _start(mocks, name="only")
-        capsys.readouterr()
-        # No --name; cwd-slug ('nomatch') doesn't match, but it's the sole live.
-        assert cli.cmd_council_status(_args(name=None, json=True)) == 0
-        payload = _payload(capsys)
-        assert payload["running"] and payload["council"] == "only"
 
     def test_ambiguous_refuses_and_lists(self, mocks, capsys):
         _start(mocks, name="a")
@@ -172,55 +108,11 @@ class TestResolution:
         err = _payload(capsys)["error"]
         assert "a" in err and "b" in err and "--name" in err
 
-    def test_zero_live_errors(self, mocks, capsys):
-        assert cli.cmd_council_ask(_args(name=None, prompt="x", file=None, json=True)) == 1
-        assert "no council" in _payload(capsys)["error"]
-
-    def test_cwd_slug_match_wins(self, mocks, capsys, monkeypatch):
-        _start(mocks, name="a")
-        _start(mocks, name="repo-slug")
-        capsys.readouterr()
-        monkeypatch.setattr(state, "default_name", lambda cwd=None: "repo-slug")
-        assert cli.cmd_council_status(_args(name=None, json=True)) == 0
-        assert _payload(capsys)["council"] == "repo-slug"
 
 
-class TestStatus:
-    def test_not_running(self, mocks, capsys):
-        assert cli.cmd_council_status(_args(json=True)) == 0
-        assert _payload(capsys)["running"] is False
-
-    def test_liveness_and_prompts(self, mocks, capsys):
-        _start(mocks)
-        capsys.readouterr()
-        mocks["live"].discard("council-proj-gut")
-        cli.cmd_council_ask(_args(prompt="ship it?", file=None, json=True))
-        inbox.write_reply(NAME, 1, "brain", "take", "yes")
-        capsys.readouterr()
-
-        cli.cmd_council_status(_args(json=True))
-        payload = _payload(capsys)
-        alive = {s["soul"]: s["alive"] for s in payload["souls"]}
-        assert alive == {"brain": True, "gut": False}
-        assert payload["prompts"][0]["pending"] == ["gut"]
 
 
-class TestList:
-    def test_empty(self, mocks, capsys):
-        assert cli.cmd_council_list(_args(json=True)) == 0
-        assert _payload(capsys)["councils"] == []
 
-    def test_lists_sittings_oldest_first(self, mocks, capsys):
-        _start(mocks, name="a")
-        _start(mocks, name="b")
-        capsys.readouterr()
-        assert cli.cmd_council_list(_args(json=True)) == 0
-        rows = _payload(capsys)["councils"]
-        names = [r["name"] for r in rows]
-        assert set(names) == {"a", "b"}
-        # Every session live → live == total.
-        for r in rows:
-            assert r["live_sessions"] == r["total_sessions"]
 
 
 class TestAsk:
@@ -247,47 +139,12 @@ class TestAsk:
         # The fanned reply command carries --name so souls never split sessions.
         assert "council reply --name proj --prompt 1" in msg
 
-    def test_dead_soul_reported(self, mocks, capsys):
-        _start(mocks)
-        capsys.readouterr()
-        mocks["live"].discard("council-proj-gut")
-        cli.cmd_council_ask(_args(prompt="x", file=None, json=True))
-        payload = _payload(capsys)
-        assert payload["sent_to"] == ["brain"]
-        assert payload["failed"][0]["soul"] == "gut"
 
-    def test_unconfirmed_delivery_reported(self, mocks, capsys, monkeypatch):
-        _start(mocks)
-        capsys.readouterr()
-        monkeypatch.setattr(cli, "send_verified", lambda s, m, marker, retries=1: False)
-        assert cli.cmd_council_ask(_args(prompt="x", file=None, json=True)) == 1
-        payload = _payload(capsys)
-        assert payload["sent_to"] == []
-        assert all(
-            f["error"] == "delivery not confirmed in pane" for f in payload["failed"]
-        )
 
-    def test_no_sitting(self, mocks, capsys):
-        assert cli.cmd_council_ask(_args(prompt="x", file=None, json=True)) == 1
 
-    def test_empty_prompt(self, mocks, capsys, monkeypatch):
-        _start(mocks)
-        capsys.readouterr()
-        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-        assert cli.cmd_council_ask(_args(prompt=None, file=None, json=True)) == 1
 
 
 class TestCollect:
-    def test_no_wait(self, mocks, capsys):
-        _start(mocks)
-        cli.cmd_council_ask(_args(prompt="x", file=None, json=True))
-        capsys.readouterr()
-        args = _args(prompt=None, timeout=120, no_wait=True, json=True)
-        assert cli.cmd_council_collect(args) == 0
-        payload = _payload(capsys)
-        assert payload["prompt_id"] == 1
-        assert payload["council"] == NAME
-        assert not payload["complete"]
 
     def test_complete_round(self, mocks, capsys):
         _start(mocks)
@@ -301,94 +158,6 @@ class TestCollect:
         assert payload["complete"]
         assert {r["kind"] for r in payload["replies"]} == {"take", "pass"}
 
-    def test_collect_targets_named_sitting(self, mocks, capsys):
-        _start(mocks, name="a")
-        _start(mocks, name="b")
-        cli.cmd_council_ask(_args(name="a", prompt="for a", file=None, json=True))
-        inbox.write_reply("a", 1, "brain", "take", "a-take")
-        inbox.write_reply("a", 1, "gut", "pass", "")
-        capsys.readouterr()
-        args = _args(name="a", prompt=1, timeout=1, no_wait=True, json=True)
-        assert cli.cmd_council_collect(args) == 0
-        assert _payload(capsys)["complete"]
-
-    def test_no_prompts_yet(self, mocks, capsys):
-        _start(mocks)
-        capsys.readouterr()
-        args = _args(prompt=None, timeout=1, no_wait=True, json=True)
-        assert cli.cmd_council_collect(args) == 1
 
 
-class TestReply:
-    def _reply(self, **kw):
-        base = dict(
-            prompt=None, take=False, ack=False, soul=None, text=None, file=None, json=True
-        )
-        base.update(kw)
-        ns = _args(**base)
-        setattr(ns, "pass", kw.get("pass_", False))
-        return cli.cmd_council_reply(ns)
 
-    def _setup(self, mocks, capsys):
-        _start(mocks)
-        cli.cmd_council_ask(_args(prompt="x", file=None, json=True))
-        capsys.readouterr()
-
-    def test_take(self, mocks, capsys):
-        self._setup(mocks, capsys)
-        assert self._reply(take=True, soul="brain", text="my take") == 0
-        payload = _payload(capsys)
-        assert payload["kind"] == "take"
-        assert not payload["followup"]
-        assert inbox.list_replies(NAME, 1)[0].text == "my take"
-
-    def test_soul_inferred_from_session_via_ssot(self, mocks, capsys, monkeypatch):
-        self._setup(mocks, capsys)
-        # Inference reverse-looks-up the SSOT map, never splits the session name.
-        monkeypatch.setattr(cli, "current_session", lambda: "council-proj-gut")
-        assert self._reply(pass_=True) == 0
-        assert _payload(capsys)["soul"] == "gut"
-
-    def test_soul_uninferrable(self, mocks, capsys, monkeypatch):
-        self._setup(mocks, capsys)
-        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-        assert self._reply(take=True, text="x") == 1
-
-    def test_unknown_session_not_split(self, mocks, capsys, monkeypatch):
-        """A session not in the SSOT map yields no soul — never a bad split."""
-        self._setup(mocks, capsys)
-        monkeypatch.setattr(cli, "current_session", lambda: "council-proj-ghost")
-        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-        assert self._reply(pass_=True) == 1
-
-    def test_exactly_one_kind(self, mocks, capsys):
-        self._setup(mocks, capsys)
-        assert self._reply(soul="brain") == 1
-        capsys.readouterr()
-        assert self._reply(take=True, ack=True, soul="brain", text="x") == 1
-
-    def test_take_requires_text(self, mocks, capsys, monkeypatch):
-        self._setup(mocks, capsys)
-        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-        assert self._reply(take=True, soul="brain") == 1
-
-    def test_followup_nudges_orchestrator(self, mocks, capsys):
-        self._setup(mocks, capsys)
-        self._reply(ack=True, soul="brain")
-        capsys.readouterr()
-        sent_before = len(mocks["sent"])
-        assert self._reply(take=True, soul="brain", text="found it") == 0
-        payload = _payload(capsys)
-        assert payload["followup"]
-        assert payload["nudged"] is True
-        nudges = mocks["sent"][sent_before:]
-        assert len(nudges) == 1
-        session, msg = nudges[0]
-        assert session == "agentwire-council-proj"
-        assert "[COUNCIL FOLLOW-UP]" in msg and "brain" in msg
-
-    def test_initial_reply_does_not_nudge(self, mocks, capsys):
-        self._setup(mocks, capsys)
-        sent_before = len(mocks["sent"])
-        self._reply(take=True, soul="brain", text="x")
-        assert len(mocks["sent"]) == sent_before

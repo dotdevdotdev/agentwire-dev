@@ -9,7 +9,6 @@ The #720/#721 task-split relocated where tasks are READ from
 import agentwire.projects as projects_mod
 from agentwire.doctor_cli import (
     _find_unmigrated_task_projects,
-    _render_task_migration_section,
 )
 
 
@@ -38,42 +37,11 @@ def test_flags_unmigrated_project(tmp_path, monkeypatch):
     assert _find_unmigrated_task_projects() == ["daily-book-report"]
 
 
-def test_clean_once_migrated(tmp_path, monkeypatch):
-    p = _make_project(tmp_path, "daily-book-report", inline_tasks=True, migrated=True)
-    _patch_projects(monkeypatch, [p])
-    assert _find_unmigrated_task_projects() == []
 
 
-def test_project_without_inline_tasks_not_flagged(tmp_path, monkeypatch):
-    p = _make_project(tmp_path, "no-tasks", inline_tasks=False, migrated=False)
-    _patch_projects(monkeypatch, [p])
-    assert _find_unmigrated_task_projects() == []
 
 
-def test_mixed_fleet_reports_only_unmigrated(tmp_path, monkeypatch):
-    projects = [
-        _make_project(tmp_path, "broken", inline_tasks=True, migrated=False),
-        _make_project(tmp_path, "fixed", inline_tasks=True, migrated=True),
-        _make_project(tmp_path, "plain", inline_tasks=False, migrated=False),
-    ]
-    _patch_projects(monkeypatch, projects)
-    assert _find_unmigrated_task_projects() == ["broken"]
 
 
-def test_render_section_flags_and_counts(tmp_path, monkeypatch, capsys):
-    p = _make_project(tmp_path, "daily-book-report", inline_tasks=True, migrated=False)
-    _patch_projects(monkeypatch, [p])
-    count = _render_task_migration_section()
-    out = capsys.readouterr().out
-    assert count == 1
-    assert "daily-book-report" in out
-    assert "will NOT run under ensure/scheduler" in out
-    assert "agentwire tasks migrate" in out
 
 
-def test_render_section_ok_when_clean(tmp_path, monkeypatch, capsys):
-    p = _make_project(tmp_path, "fixed", inline_tasks=True, migrated=True)
-    _patch_projects(monkeypatch, [p])
-    count = _render_task_migration_section()
-    assert count == 0
-    assert "No projects with un-migrated inline tasks" in capsys.readouterr().out

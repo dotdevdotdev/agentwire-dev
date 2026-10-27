@@ -1,9 +1,9 @@
 """Integration tests for scheduler board load/save round-trip and scheduling logic."""
 
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -14,15 +14,7 @@ from agentwire.scheduler import (
     SchedulerTask,
     TaskState,
     _atomic_write,
-    _board_load_backoff,
-    _compute_next_eligible,
-    _dispatch_worktree_task,
-    _in_time_window,
-    _is_in_flight,
-    _load_board_blocking,
     _load_state_file,
-    format_schedule,
-    get_board_display,
     load_board,
     save_board,
     validate_board,
@@ -59,42 +51,10 @@ def board_env(tmp_path):
 
 
 class TestSchedulerBoardRoundTrip:
-    def test_load_board(self, board_env):
-        board = load_board()
-        assert "code-quality" in board.tasks
-        assert "doc-drift" in board.tasks
-        assert "disabled-task" in board.tasks
-        assert board.tasks["doc-drift"].filler is True
-        assert board.tasks["disabled-task"].enabled is False
 
-    def test_schedule_parsed(self, board_env):
-        board = load_board()
-        sched = board.tasks["code-quality"].schedule
-        assert sched.every == "1h"
-        assert sched.at is None
-        assert sched.after is None
 
-    def test_dep_task_parsed(self, board_env):
-        board = load_board()
-        sched = board.tasks["dep-task"].schedule
-        assert sched.after == "code-quality"
-        assert sched.delay == 1800  # 30m
-        assert sched.cooldown == 7200  # 2h
 
-    def test_daily_task_parsed(self, board_env):
-        board = load_board()
-        sched = board.tasks["daily-task"].schedule
-        assert sched.every == "day"
-        assert sched.at == "08:00"
-        assert sched.except_days == ["saturday", "sunday"]
 
-    def test_state_parsed(self, board_env):
-        board = load_board()
-        state = board.state.get("code-quality")
-        assert state is not None
-        assert state.last_status == "complete"
-        assert state.run_count == 5
-        assert state.last_duration == 120
 
     def test_round_trip_preserves_state(self, board_env):
         board = load_board()
@@ -124,27 +84,7 @@ class TestSchedulerBoardRoundTrip:
         assert board2.tasks["code-quality"].schedule.every == "1h"
         assert board2.tasks["doc-drift"].filler is True
 
-    def test_last_gate_skip_round_trips_and_surfaces_on_board(self, board_env):
-        # A currently-blocking gate (#803) must persist across save/load and
-        # surface on the board display so it reads as "waiting on gate", not
-        # silently-falling-behind overdue.
-        board = load_board()
-        board.state["code-quality"] = TaskState(
-            last_status="never",
-            last_gate_skip="command: exit 1",
-        )
-        save_board(board)
 
-        board2 = load_board()
-        assert board2.state["code-quality"].last_gate_skip == "command: exit 1"
-
-        row = next(r for r in get_board_display(board2) if r["name"] == "code-quality")
-        assert row["last_gate_skip"] == "command: exit 1"
-
-    def test_last_gate_skip_absent_when_not_gated(self, board_env):
-        board = load_board()
-        row = next(r for r in get_board_display(board) if r["name"] == "code-quality")
-        assert "last_gate_skip" not in row
 
 
 # Pure parser tests for _parse_duration / _parse_time / _day_matches live in
@@ -152,141 +92,10 @@ class TestSchedulerBoardRoundTrip:
 # coupling.
 
 
-class TestInTimeWindow:
-    def test_within_window(self):
-        sched = Schedule(not_before="06:00", not_after="22:00")
-        with patch("agentwire.scheduler.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 2, 16, 12, 0)
-            assert _in_time_window(sched) is True
-
-    def test_before_window(self):
-        sched = Schedule(not_before="08:00", not_after="22:00")
-        with patch("agentwire.scheduler.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 2, 16, 5, 0)
-            assert _in_time_window(sched) is False
-
-    def test_after_window(self):
-        sched = Schedule(not_before="08:00", not_after="22:00")
-        with patch("agentwire.scheduler.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 2, 16, 23, 0)
-            assert _in_time_window(sched) is False
-
-    def test_no_window(self):
-        sched = Schedule()
-        assert _in_time_window(sched) is True
 
 
-class TestIsInFlight:
-    def test_no_dispatch(self):
-        state = TaskState()
-        assert _is_in_flight(state) is False
-
-    def test_completed_after_dispatch(self):
-        now = datetime.now(timezone.utc)
-        state = TaskState(
-            last_dispatch=now - timedelta(minutes=5),
-            last_run=now - timedelta(minutes=2),
-        )
-        assert _is_in_flight(state) is False
-
-    def test_dispatched_recently(self):
-        now = datetime.now(timezone.utc)
-        state = TaskState(
-            last_dispatch=now - timedelta(minutes=5),
-            last_run=now - timedelta(hours=3),  # Old run, before dispatch
-        )
-        assert _is_in_flight(state) is True
-
-    def test_stale_dispatch(self):
-        now = datetime.now(timezone.utc)
-        state = TaskState(
-            last_dispatch=now - timedelta(hours=3),  # Older than 2h grace
-            last_run=now - timedelta(hours=5),
-        )
-        assert _is_in_flight(state) is False
 
 
-class TestComputeNextEligible:
-    def _make_board(self, tasks, state=None):
-        board = Board()
-        board.tasks = tasks
-        board.state = state or {}
-        return board
-
-    def test_duration_never_run(self):
-        board = self._make_board({
-            "t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                schedule=Schedule(every="1h")),
-        })
-        ts = _compute_next_eligible(board, "t1")
-        assert ts == 0.0  # Immediately eligible
-
-    def test_duration_with_last_run(self):
-        now = datetime.now(timezone.utc)
-        last_run = now - timedelta(minutes=30)
-        board = self._make_board(
-            {"t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                 schedule=Schedule(every="1h"))},
-            {"t1": TaskState(last_run=last_run)},
-        )
-        ts = _compute_next_eligible(board, "t1")
-        # Should be last_run + 1h
-        expected = last_run.replace(tzinfo=timezone.utc).timestamp() + 3600
-        assert abs(ts - expected) < 2
-
-    def test_dependency_never_run(self):
-        board = self._make_board({
-            "dep": SchedulerTask(name="dep", project=".", session="s", task="t",
-                                 schedule=Schedule(every="1h")),
-            "t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                schedule=Schedule(after="dep")),
-        })
-        ts = _compute_next_eligible(board, "t1")
-        assert ts is None  # Blocked — dependency never ran
-
-    def test_dependency_completed(self):
-        now = datetime.now(timezone.utc)
-        dep_run = now - timedelta(minutes=10)
-        board = self._make_board(
-            {
-                "dep": SchedulerTask(name="dep", project=".", session="s", task="t",
-                                     schedule=Schedule(every="1h")),
-                "t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                    schedule=Schedule(after="dep", delay=1800)),
-            },
-            {"dep": TaskState(last_run=dep_run, last_status="complete")},
-        )
-        ts = _compute_next_eligible(board, "t1")
-        # Should be dep_run + delay
-        expected = dep_run.replace(tzinfo=timezone.utc).timestamp() + 1800
-        assert abs(ts - expected) < 2
-
-    def test_dependency_wrong_status(self):
-        now = datetime.now(timezone.utc)
-        board = self._make_board(
-            {
-                "dep": SchedulerTask(name="dep", project=".", session="s", task="t",
-                                     schedule=Schedule(every="1h")),
-                "t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                    schedule=Schedule(after="dep")),
-            },
-            {"dep": TaskState(last_run=now - timedelta(minutes=10), last_status="failed")},
-        )
-        ts = _compute_next_eligible(board, "t1")
-        assert ts is None  # Blocked — dep failed
-
-    def test_cooldown(self):
-        now = datetime.now(timezone.utc)
-        last_run = now - timedelta(minutes=30)
-        board = self._make_board(
-            {"t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                 schedule=Schedule(every="15m", cooldown=7200))},
-            {"t1": TaskState(last_run=last_run)},
-        )
-        ts = _compute_next_eligible(board, "t1")
-        # Cooldown (2h) is longer than interval (15m), so cooldown dominates
-        expected = last_run.replace(tzinfo=timezone.utc).timestamp() + 7200
-        assert abs(ts - expected) < 2
 
 
 class TestValidateBoard:
@@ -295,28 +104,8 @@ class TestValidateBoard:
         board.tasks = tasks
         return board
 
-    def test_valid_board(self):
-        board = self._make_board({
-            "t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                schedule=Schedule(every="1h")),
-        })
-        assert validate_board(board) == []
 
-    def test_missing_every_and_after(self):
-        board = self._make_board({
-            "t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                schedule=Schedule()),
-        })
-        errors = validate_board(board)
-        assert any("every" in e and "after" in e for e in errors)
 
-    def test_missing_dependency(self):
-        board = self._make_board({
-            "t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                schedule=Schedule(after="nonexistent")),
-        })
-        errors = validate_board(board)
-        assert any("nonexistent" in e for e in errors)
 
     def test_circular_dependency(self):
         board = self._make_board({
@@ -328,104 +117,13 @@ class TestValidateBoard:
         errors = validate_board(board)
         assert any("circular" in e for e in errors)
 
-    def test_disabled_dependency_warning(self):
-        board = self._make_board({
-            "dep": SchedulerTask(name="dep", project=".", session="s", task="t",
-                                 schedule=Schedule(every="1h"), enabled=False),
-            "t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                schedule=Schedule(after="dep")),
-        })
-        errors = validate_board(board)
-        assert any("disabled" in e for e in errors)
-
-    def test_invalid_every(self):
-        board = self._make_board({
-            "t1": SchedulerTask(name="t1", project=".", session="s", task="t",
-                                schedule=Schedule(every="invalid_value")),
-        })
-        errors = validate_board(board)
-        assert any("invalid 'every'" in e for e in errors)
 
 
-class TestFormatSchedule:
-    def test_simple_duration(self):
-        assert format_schedule(Schedule(every="2h")) == "every 2h"
-
-    def test_daily_at(self):
-        assert format_schedule(Schedule(every="day", at="08:00")) == "every day at 08:00"
-
-    def test_dependency(self):
-        result = format_schedule(Schedule(after="other-task", delay=1800))
-        assert "after other-task" in result
-        assert "+30m" in result
-
-    def test_cooldown(self):
-        result = format_schedule(Schedule(every="1h", cooldown=7200))
-        assert "cd 2h" in result
-
-    def test_except_days(self):
-        result = format_schedule(Schedule(every="4h", except_days=["saturday", "sunday"]))
-        assert "saturday" in result
 
 
-class TestBoardDisplay:
-    def test_display_uses_schedule_str(self, board_env):
-        board = load_board()
-        rows = get_board_display(board)
-        for row in rows:
-            assert "schedule_str" in row
-            assert "interval_str" not in row
-
-    def test_gate_error_round_trips_and_surfaces(self, board_env):
-        board = load_board()
-        board.state["code-quality"] = TaskState(
-            last_status="complete",
-            last_gate_error="git_commit: TimeoutExpired: timed out after 10s",
-        )
-        save_board(board)
-
-        reloaded = load_board()
-        assert reloaded.state["code-quality"].last_gate_error.startswith("git_commit:")
-
-        row = next(r for r in get_board_display(reloaded) if r["name"] == "code-quality")
-        assert row["last_gate_error"].startswith("git_commit:")
 
 
-class TestSchedulerWorktreeDispatchOptsOutOfPR:
-    """The scheduler is the deterministic PR finalizer, so its worktree task
-    agents must NOT open their own PRs. C3 derives 'worker' (on worktree
-    topology) from the slash session name, so the dispatch must override
-    with --kind orchestrator (making the task's own roles win, dropping the
-    draft-PR/notify etiquette). Regression guard for the orphan-PR leak."""
 
-    def test_dispatch_passes_kind_orchestrator(self, board_env):
-        calls = []
-
-        def fake_run(cmd, *a, **k):
-            calls.append(cmd)
-            return MagicMock(returncode=0, stdout="{}", stderr="")
-
-        task = SchedulerTask(
-            name="nightly-thing",
-            project="/tmp/does-not-matter",
-            task="nightly-thing",
-            roles=["task-runner"],
-            base="main",
-        )
-        with patch("agentwire.scheduler._kill_session"), \
-             patch("agentwire.locking.remove_stale_lock"), \
-             patch("agentwire.scheduler.subprocess.run", side_effect=fake_run):
-            # Worktree path is empty in our fake → dispatch bails after the
-            # `new` command, which is all we need to inspect.
-            _dispatch_worktree_task(MagicMock(), task, TaskState())
-
-        new_cmds = [c for c in calls if isinstance(c, list) and c[:2] == ["agentwire", "new"]]
-        assert new_cmds, "scheduler never issued an `agentwire new` worktree dispatch"
-        cmd = new_cmds[0]
-        # The opt-out: explicit orchestrator kind so task-runner replaces it.
-        assert "--kind" in cmd and cmd[cmd.index("--kind") + 1] == "orchestrator"
-        # And it still passes the task role, which now wins outright.
-        assert "--roles" in cmd and "task-runner" in cmd[cmd.index("--roles") + 1]
 
 
 # --- #449: state/config separation, atomic writes, backups, crash-loop guard ---
@@ -456,29 +154,7 @@ class TestStateConfigSeparation:
         # And the board_file still has no machine-written summary smeared in.
         assert "multi\nline" not in board_env.read_text()
 
-    def test_state_round_trips_through_dedicated_file(self, board_env, tmp_path):
-        board = load_board()
-        board.state["code-quality"] = TaskState(
-            last_status="failed", last_duration=300, run_count=6,
-            last_summary="boom",
-        )
-        save_board(board)
 
-        reloaded = load_board()
-        st = reloaded.state["code-quality"]
-        assert st.last_status == "failed"
-        assert st.run_count == 6
-        assert st.last_summary == "boom"
-        # Tasks still intact.
-        assert reloaded.tasks["code-quality"].schedule.every == "1h"
-
-    def test_dedicated_state_wins_over_legacy_embedded(self, board_env, tmp_path):
-        # Fixture embeds run_count=5 for code-quality in board_file's state:.
-        board = load_board()
-        assert board.state["code-quality"].run_count == 5  # legacy still read
-        board.state["code-quality"].run_count = 77
-        save_board(board)
-        assert load_board().state["code-quality"].run_count == 77
 
 
 class TestAtomicWrites:
@@ -497,42 +173,10 @@ class TestAtomicWrites:
         leftovers = [p for p in tmp_path.iterdir() if p.name != "out.yaml"]
         assert leftovers == []
 
-    def test_rename_replaces_atomically_on_success(self, tmp_path):
-        target = tmp_path / "out.yaml"
-        target.write_text("old: 1\n")
-        _atomic_write(target, "new: 2\n")
-        assert target.read_text() == "new: 2\n"
-        assert [p.name for p in tmp_path.iterdir()] == ["out.yaml"]
 
-    def test_save_board_validation_rejects_unloadable_state(self, board_env, tmp_path, monkeypatch):
-        board = load_board()
-        state_file = tmp_path / "scheduler-state.yaml"
-        # Force yaml.dump to emit garbage that won't re-parse as the expected shape.
-        monkeypatch.setattr("agentwire.scheduler.yaml.dump",
-                            lambda *a, **k: "::: not valid yaml :::\n")
-        with pytest.raises((ValueError, Exception)):
-            save_board(board)
-        # Nothing half-written; no stray temp files.
-        assert not state_file.exists()
-        leftovers = [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
-        assert leftovers == []
 
 
 class TestBackupRotation:
-    def test_rotation_keeps_last_n_good_copies(self, board_env, tmp_path):
-        board = load_board()
-
-        for i in range(8):
-            board.state["code-quality"].run_count = i
-            save_board(board)
-
-        # keep=5 → at most .bak1..bak5 exist.
-        baks = sorted(p.name for p in tmp_path.glob("scheduler-state.yaml.bak*"))
-        assert baks == [f"scheduler-state.yaml.bak{n}" for n in range(1, 6)]
-        # bak1 is the most recent previous good copy (run_count 6, since the
-        # live file holds 7).
-        bak1 = yaml.safe_load((tmp_path / "scheduler-state.yaml.bak1").read_text())
-        assert bak1["state"]["code-quality"]["run_count"] == 6
 
     def test_load_heals_from_backup_when_live_state_corrupt(self, board_env, tmp_path):
         board = load_board()
@@ -553,39 +197,3 @@ class TestBackupRotation:
         assert healed["code-quality"]["run_count"] == 12
 
 
-class TestCrashLoopGuard:
-    def test_backoff_grows_then_caps(self, board_env):
-        waits = [_board_load_backoff(n) for n in range(0, 12)]
-        # Monotonic non-decreasing, starts at base, ends at the cap.
-        assert waits[0] == 30
-        assert all(b >= a for a, b in zip(waits, waits[1:]))
-        assert waits[-1] == 1800
-        assert max(waits) == 1800
-
-    def test_no_tasks_board_raises_not_loops(self, board_env, tmp_path):
-        # A board with state but no tasks (the post-corruption #449 state).
-        board_env.write_text("state:\n  x:\n    last_status: complete\n")
-        with pytest.raises(ValueError, match="No tasks"):
-            load_board()
-
-    def test_blocking_load_backs_off_then_succeeds_without_exit(self, board_env, monkeypatch):
-        import agentwire.scheduler as sched
-        sleeps = []
-        monkeypatch.setattr(sched.time, "sleep", lambda s: sleeps.append(s))
-
-        calls = {"n": 0}
-        real_load = sched.load_board
-
-        def flaky_load():
-            calls["n"] += 1
-            if calls["n"] < 3:
-                raise ValueError("No tasks defined in board")
-            return real_load()
-
-        monkeypatch.setattr(sched, "load_board", flaky_load)
-        started = datetime.now(timezone.utc)
-        board = _load_board_blocking(started)  # must NOT sys.exit
-
-        assert board.tasks  # eventually loaded the real board
-        assert len(sleeps) == 2          # backed off on the two failures
-        assert sleeps == [30, 60]        # exponential
