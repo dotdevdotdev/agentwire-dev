@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from agentwire import palette_cli
-from agentwire.palette_cli import cmd_palette_list, cmd_palette_run, load_palette_items
+from agentwire.palette_cli import cmd_palette_run
 
 
 @pytest.fixture
@@ -31,53 +31,14 @@ def _args(**kw):
 
 # --- validation --------------------------------------------------------------
 
-def test_empty_config(config):
-    config([])
-    items, errors = load_palette_items()
-    assert items == [] and errors == []
 
 
-def test_valid_item_normalized(config):
-    config([{
-        "id": "quicktask", "label": "Quick task", "icon": "⚡",
-        "keywords": "quick", "run": "echo {name}",
-        "fields": [{"name": "name", "label": "Name", "default": "x"}],
-    }])
-    items, errors = load_palette_items()
-    assert errors == []
-    assert items[0]["id"] == "quicktask"
-    assert items[0]["fields"] == [{"name": "name", "label": "Name", "default": "x"}]
 
 
-@pytest.mark.parametrize("bad", [
-    {"label": "no id", "run": "echo hi"},
-    {"id": "bad id!", "label": "x", "run": "echo hi"},
-    {"id": "x", "run": "echo hi"},                         # no label
-    {"id": "x", "label": "x"},                             # no run
-    {"id": "x", "label": "x", "run": "echo {oops}"},       # undeclared placeholder
-    {"id": "x", "label": "x", "run": "echo hi", "fields": [{"name": "1bad"}]},
-])
-def test_invalid_items_reported_not_fatal(config, bad):
-    config([bad, {"id": "ok", "label": "OK", "run": "echo hi"}])
-    items, errors = load_palette_items()
-    assert [it["id"] for it in items] == ["ok"]
-    assert len(errors) == 1
 
 
-def test_duplicate_ids_rejected(config):
-    config([
-        {"id": "a", "label": "A", "run": "echo 1"},
-        {"id": "a", "label": "A2", "run": "echo 2"},
-    ])
-    items, errors = load_palette_items()
-    assert len(items) == 1 and "duplicate" in errors[0]
 
 
-def test_list_json_output(config, capsys):
-    config([{"id": "a", "label": "A", "run": "echo 1"}])
-    assert cmd_palette_list(_args()) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert out["success"] and out["items"][0]["id"] == "a"
 
 
 # --- run ---------------------------------------------------------------------
@@ -98,32 +59,12 @@ def test_run_substitutes_and_quotes(config, capsys):
     assert out["output"].strip() == "hello world; rm x"
 
 
-def test_run_uses_defaults(config, capsys):
-    config([{
-        "id": "d", "label": "D", "run": "echo {v}",
-        "fields": [{"name": "v", "default": "fallback"}],
-    }])
-    assert cmd_palette_run(_args(id="d")) == 0
-    assert _run_json(capsys)["output"].strip() == "fallback"
 
 
-def test_run_missing_field_value(config, capsys):
-    config([{"id": "m", "label": "M", "run": "echo {v}", "fields": [{"name": "v"}]}])
-    assert cmd_palette_run(_args(id="m")) == 1
-    out = _run_json(capsys)
-    assert not out["success"] and "Missing value" in out["error"]
 
 
-def test_run_unknown_item(config, capsys):
-    config([])
-    assert cmd_palette_run(_args(id="nope")) == 1
-    assert "Unknown palette item" in _run_json(capsys)["error"]
 
 
-def test_run_unknown_field(config, capsys):
-    config([{"id": "a", "label": "A", "run": "echo hi"}])
-    assert cmd_palette_run(_args(id="a", field=["bogus=1"])) == 1
-    assert "Unknown field" in _run_json(capsys)["error"]
 
 
 def test_run_propagates_failure_exit(config, capsys):

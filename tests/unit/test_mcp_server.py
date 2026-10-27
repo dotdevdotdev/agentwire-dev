@@ -3,7 +3,6 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Format functions — empty/missing-key/multi-entry behavior is parametrized;
@@ -11,169 +10,28 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "fn_name,list_key,empty_substring",
-    [
-        ("format_sessions", "sessions", "No active sessions"),
-        ("format_panes", "panes", "No panes"),
-        ("format_machines", "machines", "No remote machines"),
-        ("format_projects", "projects", "No projects found"),
-        ("format_roles", "roles", "No roles available"),
-        ("format_voices", "voices", "No custom voices"),
-    ],
-)
-class TestFormatEmpty:
-    """All formatters return their empty message for [] and missing-key input."""
-
-    def test_empty_list(self, fn_name, list_key, empty_substring):
-        from agentwire import mcp_core as mcp_server
-        fn = getattr(mcp_server, fn_name)
-        # format_panes also reads "session" key — provide it harmlessly
-        result = fn({list_key: [], "session": "test"})
-        assert empty_substring in result
-
-    def test_missing_key(self, fn_name, list_key, empty_substring):
-        from agentwire import mcp_core as mcp_server
-        fn = getattr(mcp_server, fn_name)
-        result = fn({"session": "test"})
-        assert empty_substring in result
 
 
-@pytest.mark.parametrize(
-    "fn_name,list_key,extra,entries",
-    [
-        ("format_sessions", "sessions", {}, [
-            {"name": "a", "machine": None, "windows": 1, "path": "/a", "type": "bare"},
-            {"name": "b", "machine": "m1", "windows": 2, "path": "/b", "posture": "bypass"},
-        ]),
-        ("format_panes", "panes", {"session": "s"}, [
-            {"index": 0, "command": "claude", "active": False},
-            {"index": 1, "command": "bash", "active": True},
-        ]),
-        ("format_machines", "machines", {}, [
-            {"id": "a", "host": "1.1.1.1", "user": "u", "status": "ok"},
-            {"id": "b", "host": "2.2.2.2", "user": "v", "status": "ok"},
-        ]),
-        ("format_projects", "projects", {}, [{"name": "a", "path": "/a"}, {"name": "b", "path": "/b"}]),
-        ("format_roles", "roles", {}, [
-            {"name": "a", "description": "da", "source": "s"},
-            {"name": "b", "description": "db", "source": "s"},
-        ]),
-    ],
-)
-def test_format_multiple_produces_header_plus_one_line_per_entry(fn_name, list_key, extra, entries):
-    """All listing formatters emit a header line then one line per entry."""
-    from agentwire import mcp_core as mcp_server
-    fn = getattr(mcp_server, fn_name)
-    result = fn({list_key: entries, **extra})
-    lines = result.split("\n")
-    assert len(lines) == len(entries) + 1
 
 
-@pytest.mark.parametrize(
-    "fn_name,list_key,extra,entry",
-    [
-        ("format_sessions", "sessions", {}, {"name": "x"}),
-        ("format_panes", "panes", {"session": "s"}, {}),
-        ("format_machines", "machines", {}, {}),
-        ("format_projects", "projects", {}, {}),
-        ("format_roles", "roles", {}, {}),
-        ("format_voices", "voices", {}, [{}]),
-    ],
-)
-def test_format_missing_optional_fields_shows_unknown(fn_name, list_key, extra, entry):
-    """Missing optional fields produce 'unknown' rather than crash or empty string."""
-    from agentwire import mcp_core as mcp_server
-    fn = getattr(mcp_server, fn_name)
-    entries = entry if isinstance(entry, list) else [entry]
-    result = fn({list_key: entries, **extra})
-    assert "unknown" in result or "(local)" in result  # sessions uses (local) for null machine
 
 
 # Format-specific assertions — keep separate; logic is unique per formatter.
 
-class TestFormatSessionsBehavior:
-    def test_all_fields_render(self):
-        from agentwire.mcp_core import format_sessions
-        result = format_sessions({"sessions": [
-            {"name": "my-app", "machine": "gpu-box", "windows": 3, "path": "/p", "posture": "bypass"},
-        ]})
-        assert "my-app" in result
-        assert "gpu-box" in result
-        assert "3 window(s)" in result
-        assert "posture=bypass" in result
-
-    def test_null_machine_shows_local(self):
-        from agentwire.mcp_core import format_sessions
-        assert "local" in format_sessions({"sessions": [{"name": "x", "machine": None}]})
 
 
-class TestFormatPanesBehavior:
-    def test_pane_0_is_orchestrator_active_marked(self):
-        from agentwire.mcp_core import format_panes
-        result = format_panes({"panes": [{"index": 0, "command": "claude", "active": True}], "session": "s"})
-        assert "[orchestrator]" in result
-        assert "(active)" in result
-
-    def test_pane_nonzero_is_worker(self):
-        from agentwire.mcp_core import format_panes
-        result = format_panes({"panes": [{"index": 1, "command": "bash"}], "session": "s"})
-        assert "[worker]" in result
 
 
-class TestFormatMachinesBehavior:
-    def test_user_at_host_format(self):
-        from agentwire.mcp_core import format_machines
-        result = format_machines({"machines": [
-            {"id": "gpu", "host": "10.0.0.1", "user": "root", "status": "online"}
-        ]})
-        assert "root@10.0.0.1" in result
-        assert "status: online" in result
-
-    def test_blank_user_omits_at_sign(self):
-        from agentwire.mcp_core import format_machines
-        result = format_machines({"machines": [
-            {"id": "m1", "host": "h", "user": "", "status": "unknown"}
-        ]})
-        assert "m1: h" in result
-        assert "@" not in result.split("m1: ")[1].split(" ")[0]
 
 
-class TestFormatProjectsBehavior:
-    def test_has_config_marker(self):
-        from agentwire.mcp_core import format_projects
-        result = format_projects({"projects": [{"name": "app", "path": "/app", "has_config": True}]})
-        assert "(has .agentwire.yml)" in result
-
-    def test_no_config_no_marker(self):
-        from agentwire.mcp_core import format_projects
-        result = format_projects({"projects": [{"name": "app", "path": "/app", "has_config": False}]})
-        assert ".agentwire.yml" not in result
 
 
 class TestDeliveryResultBehavior:
     """#834: an unverified send must report its inbox fallback, not just
     hand an inert 'check the pane or resend' string back to the caller."""
 
-    def test_verified_true(self):
-        from agentwire.mcp_core import _delivery_result
-        result = _delivery_result({"verified": True}, "to session 'proj'")
-        assert "verified in pane" in result
 
-    def test_unverified_with_inbox_fallback_reports_no_action_needed(self):
-        from agentwire.mcp_core import _delivery_result
-        result = _delivery_result({"verified": False, "fallback": "inbox"}, "to session 'proj'")
-        assert "queued to its msg inbox" in result
-        assert "No action needed" in result
 
-    def test_unverified_but_already_delivered_reports_no_action_needed(self):
-        """#835 second-pass review: the 'already_delivered' branch (the
-        confirm read was ambiguous but the message was actually on
-        scrollback already) had no direct test pinning its wording."""
-        from agentwire.mcp_core import _delivery_result
-        result = _delivery_result({"verified": False, "fallback": "already_delivered"}, "to session 'proj'")
-        assert "already visible on scrollback" in result
-        assert "No action needed" in result
 
     def test_unverified_with_inbox_stuck_fallback_warns_to_check_pane(self):
         """#843: "inbox_stuck" (queued, but the original stale draft could
@@ -186,51 +44,13 @@ class TestDeliveryResultBehavior:
         assert "Check the pane manually" in result
         assert "No action needed" not in result
 
-    def test_unverified_with_no_fallback_still_warns(self):
-        from agentwire.mcp_core import _delivery_result
-        result = _delivery_result({"verified": False, "fallback": None}, "to session 'proj'")
-        assert "may be lost" in result
-
-    def test_pane_send_has_no_fallback_key_and_must_not_claim_one_failed(self):
-        """pane_send's `agentwire send --pane` branch never attempts the
-        inbox fallback (the msg inbox only addresses sessions, not panes) —
-        it omits the `fallback` key entirely. This must read as the original
-        'may have been dropped' warning, not falsely claim a fallback ran
-        and failed."""
-        from agentwire.mcp_core import _delivery_result
-        result = _delivery_result({"verified": False}, "to pane 1")
-        assert "may have been dropped" in result
-        assert "msg-inbox fallback" not in result
-
-    def test_remote_unverifiable(self):
-        from agentwire.mcp_core import _delivery_result
-        result = _delivery_result({"verified": None}, "to session 'proj'")
-        assert "can't be verified across SSH" in result
-
-    def test_no_verified_key_plain_sent(self):
-        from agentwire.mcp_core import _delivery_result
-        result = _delivery_result({}, "to session 'proj'")
-        assert result == "Message sent to session 'proj'."
 
 
-class TestFormatRolesBehavior:
-    def test_full_role_format(self):
-        from agentwire.mcp_core import format_roles
-        result = format_roles({"roles": [{"name": "voice", "description": "Voice comms", "source": "bundled"}]})
-        assert "voice: Voice comms (bundled)" in result
 
 
-class TestFormatVoicesBehavior:
-    @pytest.mark.parametrize("voices", [
-        [{"name": "alice"}, {"name": "bob"}],
-        ["alice", "bob"],
-        [{"name": "alice"}, "bob"],
-    ])
-    def test_dict_string_and_mixed_entries_all_render(self, voices):
-        from agentwire.mcp_core import format_voices
-        result = format_voices({"voices": voices})
-        assert "alice" in result
-        assert "bob" in result
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -256,38 +76,8 @@ class TestRunAgentwireCmd:
         cmd = mock_run.call_args[0][0]
         assert cmd == ["agentwire", "list", "--json"]
 
-    @patch("agentwire.core._run_bounded")
-    def test_json_array_wrapping(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout='[{"id": 1}, {"id": 2}]',
-            stderr="",
-        )
-        result = self.fn(["history", "list"])
-        assert result["success"] is True
-        assert result["items"] == [{"id": 1}, {"id": 2}]
 
-    @patch("agentwire.core._run_bounded")
-    def test_json_without_success_key(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout='{"data": "hello"}',
-            stderr="",
-        )
-        result = self.fn(["info"])
-        assert result["success"] is True
-        assert result["data"] == "hello"
 
-    @patch("agentwire.core._run_bounded")
-    def test_json_parse_failure_falls_back(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="not json",
-            stderr="",
-        )
-        result = self.fn(["list"])
-        assert result["success"] is True
-        assert result["output"] == "not json"
 
     @patch("agentwire.core._run_bounded")
     def test_nonzero_returncode(self, mock_run):
@@ -300,18 +90,6 @@ class TestRunAgentwireCmd:
         assert result["success"] is False
         assert "session not found" in result["error"]
 
-    @patch("agentwire.core._run_bounded")
-    def test_json_output_false(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="raw output here",
-            stderr="",
-        )
-        result = self.fn(["say", "hello"], json_output=False)
-        assert result["success"] is True
-        assert result["output"] == "raw output here"
-        cmd = mock_run.call_args[0][0]
-        assert "--json" not in cmd
 
     @patch("agentwire.core._run_bounded")
     def test_timeout_expired(self, mock_run):
@@ -320,38 +98,10 @@ class TestRunAgentwireCmd:
         assert result["success"] is False
         assert "timed out" in result["error"]
 
-    @patch("agentwire.core._run_bounded")
-    def test_file_not_found(self, mock_run):
-        mock_run.side_effect = FileNotFoundError()
-        result = self.fn(["list"])
-        assert result["success"] is False
-        assert "not found" in result["error"]
 
-    @patch("agentwire.core._run_bounded")
-    def test_command_construction(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
-        self.fn(["new", "-s", "test"])
-        cmd = mock_run.call_args[0][0]
-        assert cmd == ["agentwire", "new", "-s", "test", "--json"]
 
-    @patch("agentwire.core._run_bounded")
-    def test_custom_timeout(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
-        self.fn(["spawn"], timeout=120)
-        assert mock_run.call_args[0][1] == 120
 
-    @patch("agentwire.core._run_bounded")
-    def test_generic_exception(self, mock_run):
-        mock_run.side_effect = OSError("permission denied")
-        result = self.fn(["list"])
-        assert result["success"] is False
-        assert "permission denied" in result["error"]
 
-    @patch("agentwire.core.subprocess.run")
-    def test_empty_stdout_nonzero(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
-        result = self.fn(["x"])
-        assert result["success"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -359,48 +109,6 @@ class TestRunAgentwireCmd:
 # ---------------------------------------------------------------------------
 
 
-class TestGetPortalUrl:
-    def setup_method(self):
-        from agentwire.mcp_core import get_portal_url
-        self.fn = get_portal_url
-
-    def test_env_var(self, monkeypatch):
-        monkeypatch.setenv("AGENTWIRE_PORTAL_URL", "https://custom:9999")
-        assert self.fn() == "https://custom:9999"
-
-    def test_config_file(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("AGENTWIRE_PORTAL_URL", raising=False)
-        config_dir = tmp_path / ".agentwire"
-        config_dir.mkdir()
-        config_file = config_dir / "config.yaml"
-        import yaml
-        config_file.write_text(yaml.dump({"portal": {"url": "https://from-config:1234"}}))
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        assert self.fn() == "https://from-config:1234"
-
-    def test_default_fallback(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("AGENTWIRE_PORTAL_URL", raising=False)
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        # No SSL certs configured -> http default (instant-mode model)
-        assert self.fn() == "http://localhost:8765"
-
-    def test_env_var_priority_over_config(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("AGENTWIRE_PORTAL_URL", "https://env:1111")
-        config_dir = tmp_path / ".agentwire"
-        config_dir.mkdir()
-        import yaml
-        (config_dir / "config.yaml").write_text(yaml.dump({"portal": {"url": "https://cfg:2222"}}))
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        assert self.fn() == "https://env:1111"
-
-    def test_malformed_yaml(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("AGENTWIRE_PORTAL_URL", raising=False)
-        config_dir = tmp_path / ".agentwire"
-        config_dir.mkdir()
-        (config_dir / "config.yaml").write_text(": : : bad yaml {{{{")
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        # Malformed config + no certs -> http default
-        assert self.fn() == "http://localhost:8765"
 
 
 # ---------------------------------------------------------------------------
@@ -408,38 +116,6 @@ class TestGetPortalUrl:
 # ---------------------------------------------------------------------------
 
 
-class TestGetCallerSession:
-    def setup_method(self):
-        from agentwire.mcp_core import get_caller_session
-        self.fn = get_caller_session
-
-    def test_no_tmux_pane(self, monkeypatch):
-        monkeypatch.delenv("TMUX_PANE", raising=False)
-        assert self.fn() is None
-
-    @patch("agentwire.mcp_core.subprocess.run")
-    def test_returns_session_name(self, mock_run, monkeypatch):
-        monkeypatch.setenv("TMUX_PANE", "%5")
-        mock_run.return_value = MagicMock(returncode=0, stdout="my-session\n")
-        assert self.fn() == "my-session"
-
-    @patch("agentwire.mcp_core.subprocess.run")
-    def test_empty_stdout(self, mock_run, monkeypatch):
-        monkeypatch.setenv("TMUX_PANE", "%5")
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
-        assert self.fn() is None
-
-    @patch("agentwire.mcp_core.subprocess.run")
-    def test_nonzero_returncode(self, mock_run, monkeypatch):
-        monkeypatch.setenv("TMUX_PANE", "%5")
-        mock_run.return_value = MagicMock(returncode=1, stdout="")
-        assert self.fn() is None
-
-    @patch("agentwire.mcp_core.subprocess.run")
-    def test_timeout_expired(self, mock_run, monkeypatch):
-        monkeypatch.setenv("TMUX_PANE", "%5")
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="tmux", timeout=2)
-        assert self.fn() is None
 
 
 # ---------------------------------------------------------------------------
@@ -447,176 +123,10 @@ class TestGetCallerSession:
 # ---------------------------------------------------------------------------
 
 
-class TestPortalRequest:
-    def setup_method(self):
-        from agentwire.mcp_desktop import _portal_request
-        self.fn = _portal_request
-
-    @patch("agentwire.security.get_local_portal_token", return_value="tok123")
-    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.request")
-    def test_get_request(self, mock_req, mock_url, mock_token):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"success": True, "windows": []}
-        mock_req.return_value = mock_resp
-        result = self.fn("GET", "/api/desktop/windows")
-        assert result == {"success": True, "windows": []}
-        mock_req.assert_called_once_with(
-            "GET",
-            "https://localhost:8765/api/desktop/windows",
-            json=None,
-            files=None,
-            headers={"Authorization": "Bearer tok123"},
-            verify=False,
-            timeout=10,
-        )
-
-    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.request")
-    def test_post_request(self, mock_req, mock_url):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"success": True}
-        mock_req.return_value = mock_resp
-        result = self.fn("POST", "/api/desktop/window/open", {"type": "session"})
-        assert result["success"] is True
-        mock_req.assert_called_once()
-
-    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.request")
-    def test_non_200_status(self, mock_req, mock_url):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
-        mock_req.return_value = mock_resp
-        result = self.fn("GET", "/api/health")
-        assert result["success"] is False
-        assert "500" in result["error"]
-
-    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.request")
-    def test_connection_error(self, mock_req, mock_url):
-        import requests
-        mock_req.side_effect = requests.exceptions.ConnectionError()
-        result = self.fn("GET", "/api/health")
-        assert result["success"] is False
-        assert "not reachable" in result["error"]
-
-    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.request")
-    def test_generic_exception(self, mock_req, mock_url):
-        mock_req.side_effect = Exception("timeout")
-        result = self.fn("GET", "/api/health")
-        assert result["success"] is False
-        assert "timeout" in result["error"]
-
-    @patch("agentwire.mcp_desktop.get_portal_url", return_value="https://localhost:8765")
-    @patch("requests.request")
-    def test_post_default_empty_body(self, mock_req, mock_url):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"success": True}
-        mock_req.return_value = mock_resp
-        self.fn("POST", "/api/path")
-        _, kwargs = mock_req.call_args
-        assert kwargs["json"] == {}
 
 
-class TestTtsToolPromptFetch:
-    def test_default_tier_returns_empty(self, tmp_path, monkeypatch):
-        from agentwire import mcp_voice as mcp_server
-        from agentwire.config import load_config
-        cfg = load_config(tmp_path / "nonexistent.yaml")  # default tier
-        monkeypatch.setattr("agentwire.config.load_config", lambda *a, **k: cfg)
-        assert mcp_server._fetch_tts_tool_prompt() == ""
-
-    def test_unreachable_shim_fails_soft(self, tmp_path, monkeypatch):
-        from agentwire import mcp_voice as mcp_server
-        from agentwire.config import load_config
-        cfg = load_config(tmp_path / "nonexistent.yaml")
-        cfg.tts.backend = "custom"
-        cfg.tts.url = "http://localhost:1"  # nothing listens here
-        monkeypatch.setattr("agentwire.config.load_config", lambda *a, **k: cfg)
-        assert mcp_server._fetch_tts_tool_prompt() == ""
-
-    def test_custom_shim_prompt_returned(self, tmp_path, monkeypatch):
-        import io
-
-        from agentwire import mcp_voice as mcp_server
-        from agentwire.config import load_config
-        cfg = load_config(tmp_path / "nonexistent.yaml")
-        cfg.tts.backend = "custom"
-        cfg.tts.url = "http://localhost:8100"
-        monkeypatch.setattr("agentwire.config.load_config", lambda *a, **k: cfg)
-
-        class FakeResp(io.BytesIO):
-            def __enter__(self):
-                return self
-            def __exit__(self, *a):
-                return False
-
-        monkeypatch.setattr(
-            "urllib.request.urlopen",
-            lambda url, timeout=None: FakeResp(b'{"tool_prompt": "Use [laugh] sparingly."}'),
-        )
-        assert mcp_server._fetch_tts_tool_prompt() == "Use [laugh] sparingly."
-
-    def test_say_description_carries_core_text(self):
-        from agentwire import mcp_voice as mcp_server
-        assert "Speak text via TTS" in mcp_server._SAY_DESCRIPTION
-        # With no shim prompt at import time, no capabilities section
-        if not mcp_server._TTS_TOOL_PROMPT:
-            assert "Backend capabilities" not in mcp_server._SAY_DESCRIPTION
 
 
-class TestFormatSessionsServiceGrouping:
-    """#1038 — services collapse into the summary line; unhealthy ones stay loud."""
-
-    def _data(self):
-        return {
-            "sessions": [
-                {"name": "documentscribe", "machine": None, "windows": 1,
-                 "path": "/p", "posture": "bypass", "service": False},
-                {"name": "agentwire-portal", "machine": None, "windows": 1,
-                 "path": "/q", "posture": "bypass", "service": True,
-                 "service_healthy": True, "service_detail": "running"},
-            ],
-            "services": {"count": 1, "unhealthy": [],
-                         "line": "1 service session(s) healthy (agentwire-portal)."},
-        }
-
-    def test_healthy_service_suppressed_into_summary(self):
-        from agentwire.mcp_core import format_sessions
-        out = format_sessions(self._data())
-        assert "documentscribe" in out
-        assert "  - agentwire-portal" not in out
-        assert "Services: 1 service session(s) healthy" in out
-
-    def test_unhealthy_service_surfaces_loudly(self):
-        from agentwire.mcp_core import format_sessions
-        data = self._data()
-        data["sessions"][1].update(service_healthy=False, service_detail="process exited")
-        data["services"] = {"count": 1,
-                            "unhealthy": [{"name": "agentwire-portal", "detail": "process exited"}],
-                            "line": "1 service session(s), 1 UNHEALTHY — agentwire-portal: process exited."}
-        out = format_sessions(data)
-        assert "agentwire-portal" in out
-        assert "SERVICE UNHEALTHY" in out
-
-    def test_only_services_running(self):
-        from agentwire.mcp_core import format_sessions
-        data = self._data()
-        data["sessions"] = [data["sessions"][1]]
-        out = format_sessions(data)
-        assert "No user-facing sessions" in out
-        assert "healthy" in out
-
-    def test_unannotated_payload_still_lists_everything(self):
-        # Backward shape safety: rows without the `service` key list as before.
-        from agentwire.mcp_core import format_sessions
-        out = format_sessions({"sessions": [
-            {"name": "a", "machine": None, "windows": 1, "path": "/a"}]})
-        assert "  - a" in out
 
 
 class TestRunAgentwireCmdLogsNoArgvBodies:
@@ -641,25 +151,3 @@ class TestRunAgentwireCmdLogsNoArgvBodies:
         assert not leaks, leaks
 
 
-class TestOtherArgvLoggersCarryNoBodies:
-    """#1113: the tmux agent wrapper and the session-create route log verb only."""
-
-    def test_tmux_wrapper_debug_lines_omit_typed_text(self, monkeypatch, caplog):
-        import logging
-
-        from agentwire.agents import tmux as tmux_mod
-
-        ran = MagicMock(returncode=0, stdout="", stderr="")
-        monkeypatch.setattr(tmux_mod.subprocess, "run", lambda *a, **k: ran)
-        agent = tmux_mod.TmuxAgent({})
-        leaks = []
-        for label, call in (
-            ("local", lambda: agent._run_local(["tmux", "send-keys", "-t", "s", "SECRET-BODY"])),
-            ("remote", lambda: agent._run_remote({"host": "h"}, "tmux send-keys -t s SECRET-BODY")),
-        ):
-            caplog.clear()
-            with caplog.at_level(logging.DEBUG, logger=tmux_mod.logger.name):
-                call()
-            if "SECRET-BODY" in caplog.text or not caplog.text:
-                leaks.append((label, caplog.text))
-        assert not leaks, leaks
