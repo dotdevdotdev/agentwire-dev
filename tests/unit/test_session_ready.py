@@ -1544,3 +1544,37 @@ class TestUndeliveredReason:
 
     def test_empty_box_stays_unverified(self, monkeypatch):
         assert self._run(monkeypatch, "", empty=True) == "delivery_unverified"
+
+
+class TestShortWindowedTail:
+    """#1164 — a narrow pane windows a paste to a tail UNDER MIN_BOX_FRAGMENT.
+
+    The id token is the identity: a tail that ends in this message's unique
+    ``⟨#id⟩`` and is a suffix of it can only be our own paste, however short.
+    """
+
+    RULE = "─" * 30
+    MSG = ("[MSG from agentwire · request] "
+           + "Please review the collapse height change carefully " * 3
+           + "  ⟨#6a589b⟩")
+    TAIL = MSG[-81:]
+
+    def test_the_fixture_tail_is_under_the_fragment_floor(self):
+        assert len("".join(self.TAIL.split())) < session_ready.MIN_BOX_FRAGMENT
+
+    def test_short_tail_reads_as_ours(self):
+        assert session_ready.box_shows_message(self.TAIL, self.MSG, allow_chip=False)
+        assert session_ready.box_is_exactly(self.TAIL, self.MSG)
+
+    def test_short_tail_without_our_token_is_not_ours(self):
+        tail = self.MSG[-81:-12]  # a contiguous slice that lost the id token
+        assert not session_ready.box_is_exactly(tail, self.MSG)
+        assert not session_ready.box_shows_message(tail, self.MSG, allow_chip=False)
+
+    def test_undelivered_reason_names_it_pasted_unsubmitted(self, monkeypatch):
+        from agentwire import prompt_router
+
+        cap = f"scroll\n{self.RULE}\n❯ {self.TAIL}\n{self.RULE}\n  status"
+        monkeypatch.setattr(session_ready, "scrollback", lambda s, p=0: cap)
+        monkeypatch.setattr(prompt_router, "prompt_is_empty", lambda s, p=0: False)
+        assert prompt_router._undelivered_reason("s", 0, self.MSG) == "pasted_unsubmitted"

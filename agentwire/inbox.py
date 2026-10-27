@@ -1110,9 +1110,20 @@ PASTE_MAX_CHARS = 380
 # Past it, a box that resembles our message is treated as somebody else's.
 PASTE_HEAL_WINDOW_MS = 10 * 60 * 1000
 
+# ``safe_deliver`` refusals that return before anything is pasted.
+_NOT_PASTED_REASONS = frozenset({
+    "target_gone", "target_parked", "target_not_agent", "target_dialog",
+})
+
 
 def _set_paste_stamp(messages: list[Message], ts: int) -> None:
-    """Record (or clear, ``ts=0``) that the drain's paste of these is in the box."""
+    """Record (or clear, ``ts=0``) that the drain's paste of these is in the box.
+
+    A failed RECORD raises: pasting without a durable stamp leaves text in the
+    box that no later tick can recognise as ours (#1164), so the caller must
+    not paste (``flush_session`` logs ``flush_failed`` and retries). A failed
+    clear is harmless — the stamp just ages out of ``PASTE_HEAL_WINDOW_MS``.
+    """
     for m in messages:
         if m.path is None or m.pasted_ts == ts:
             continue
@@ -1120,7 +1131,8 @@ def _set_paste_stamp(messages: list[Message], ts: int) -> None:
         try:
             _write_message(m.path, m)
         except OSError:
-            pass
+            if ts:
+                raise
 
 
 def _draft_evidence(box_content: str) -> str:
@@ -1421,10 +1433,14 @@ def flush_session(session: str, force: bool = False) -> dict:
             # below on every outcome where nothing is sitting in the box.
             _set_paste_stamp(batch, _now_ms())
             delivered, reason = prompt_router.safe_deliver(session, 0, rendered)
-            if not delivered and reason != "pasted_unsubmitted":
-                # A refusal (dialog / draft / parked / gone) or an unproven
-                # paste leaves nothing of ours in the box: no stamp, so a
-                # later look-alike is a draft, not a heal candidate.
+            if not delivered and reason in _NOT_PASTED_REASONS:
+                # Only a refusal BEFORE the paste leaves nothing of ours in
+                # the box. Every other failure (pasted_unsubmitted,
+                # delivery_unverified, box_not_empty) may have LANDED text we
+                # could not recognise at that instant — a narrow pane windows
+                # it to a short tail — so the stamp stays and the next tick's
+                # exact-identity test (_stuck_in_box) decides; clearing it
+                # made our own text a human's foreign_draft forever (#1164).
                 _set_paste_stamp(batch, 0)
             if not delivered:
                 # delivery_unverified means the box-cleared confirm failed — but
