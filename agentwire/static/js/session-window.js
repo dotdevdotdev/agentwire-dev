@@ -19,6 +19,7 @@ import { sessionIcons } from './icon-manager.js';
 import { buildSessionId, normalizeMachine, sameMachine } from './session-id.js';
 import { ansiToHtml } from './utils/ansi.js';
 import { PttController } from './ptt.js';
+import { bindHotkey } from './hotkeys.js';
 import { voicePromptWrap } from './voice/prompt.js';
 import { isAutoSend } from './voice/autosend-prefs.js';
 import { TerminalPane } from './terminal-pane.js';
@@ -164,10 +165,9 @@ export class SessionWindow {
         }
 
         // Clean up PTT keyboard handler
-        if (this._pttKeyHandler) {
-            document.removeEventListener('keydown', this._pttKeyHandler);
-            document.removeEventListener('keyup', this._pttKeyHandler);
-            this._pttKeyHandler = null;
+        if (this._unbindPttHotkey) {
+            this._unbindPttHotkey();
+            this._unbindPttHotkey = null;
         }
 
         // Clean up activity indicator event handlers
@@ -726,28 +726,16 @@ export class SessionWindow {
         this.pttButton.addEventListener('pointerup', onUp, true);
         this.pttButton.addEventListener('pointercancel', onCancel);
 
-        // Keyboard shortcut: Ctrl+Space to toggle recording (when window focused)
-        this._pttKeyHandler = (e) => {
-            // Only respond when this window is focused
-            if (!this.winbox || !document.activeElement?.closest('.winbox')?.contains(container)) {
-                return;
-            }
-
-            // Ctrl+Space (or Cmd+Space on Mac) to record
-            if (e.code === 'Space' && (e.ctrlKey || e.metaKey)) {
-                e.preventDefault();
-                e.stopPropagation();
-
-                if (e.type === 'keydown' && this.pttState === 'idle') {
-                    this._startRecording();
-                } else if (e.type === 'keyup' && this.pttState === 'recording') {
-                    this._stopRecording();
-                }
-            }
-        };
-
-        document.addEventListener('keydown', this._pttKeyHandler);
-        document.addEventListener('keyup', this._pttKeyHandler);
+        // Hold Ctrl/Cmd+Space to record (when this window is focused). Capture-phase
+        // via bindHotkey so the focused xterm can't swallow the chord.
+        this._unbindPttHotkey = bindHotkey({
+            code: 'Space',
+            mod: true,
+            when: () => !!this.winbox && !!document.activeElement?.closest('.winbox')?.contains(container),
+            onRelease: () => { if (this.pttState === 'recording') this._stopRecording(); },
+        }, () => {
+            if (this.pttState === 'idle') this._startRecording();
+        });
     }
 
     _startRecording() {
