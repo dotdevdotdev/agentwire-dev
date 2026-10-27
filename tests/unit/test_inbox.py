@@ -1787,13 +1787,19 @@ class TestHealEqualityAndStamp:
         assert res["delivered"] == 1 and finishes == [m.render()] and not pasted
 
     def test_refused_paste_leaves_no_stamp(self, isolate, monkeypatch):
-        for reason in ("target_dialog", "box_not_empty", "delivery_unverified"):
+        # Only refusals that return BEFORE pasting. box_not_empty /
+        # delivery_unverified may have landed windowed text we could not
+        # recognise yet — those keep the stamp (#1164, TestUnprovenPaste…).
+        stamped = {}
+        for reason in sorted(inbox._NOT_PASTED_REASONS):
             inbox.enqueue("s", "hi", sender="x")
             _patch_delivery(monkeypatch, empty=True, deliver=(False, reason))
             inbox.flush_session("s")
             (m,) = inbox.list_messages("s")
-            assert m.pasted_ts == 0, reason
+            if m.pasted_ts:
+                stamped[reason] = m.pasted_ts
             inbox.purge_pending("s")
+        assert not stamped, stamped
 
     def test_landed_unsubmitted_paste_keeps_its_stamp(self, isolate, monkeypatch):
         inbox.enqueue("s", "hi", sender="x")
@@ -1812,3 +1818,71 @@ class TestHealEqualityAndStamp:
         inbox.flush_session("s")
         (left,) = inbox.list_messages("s")
         assert left.pasted_ts == 0
+
+
+class TestUnprovenPasteKeepsItsStamp:
+    """#1164 — the drain's own paste, left in the box by a swallowed Enter, was
+    re-read as a human's ``foreign_draft`` forever and then pasted again.
+
+    On a narrow pane the box windows the paste to a short tail. The post-paste
+    check (``_undelivered_reason``) could not match it, reported
+    ``box_not_empty``, and the drain CLEARED its paste stamp — so the next tick
+    saw an unstamped, unrecognised box and deferred for good.
+    """
+
+    MSG_TEXT = "Please review the collapse height change carefully " * 3
+
+    def _drive(self, monkeypatch, deliver_reason):
+        from agentwire import session_ready, usage_limit
+
+        m = inbox.enqueue("s", self.MSG_TEXT, kind="request", sender="agentwire")[0]
+        tail = m.render()[-81:]
+        box = {"content": ""}
+        monkeypatch.setattr(usage_limit, "_capture", lambda s, **kw: "dummy")
+        monkeypatch.setattr(prompt_router, "capture", lambda s, p=0, **kw: "dummy")
+        monkeypatch.setattr(
+            prompt_router, "input_box_content_sgr", lambda vis: box["content"])
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
+        monkeypatch.setattr(
+            session_ready, "scrollback", lambda s, p=0: f"{RULE}\n❯\n{RULE}")
+        pastes, enters = [], []
+
+        def deliver(s, p, text):
+            pastes.append(text)
+            box["content"] = tail  # the paste lands, windowed; Enter swallowed
+            return False, deliver_reason
+
+        def heal(s, text, pane_index=0):
+            enters.append(text)
+            box["content"] = ""
+            return "submitted"
+
+        monkeypatch.setattr(prompt_router, "safe_deliver", deliver)
+        monkeypatch.setattr(session_ready, "heal_submit", heal)
+        inbox.flush_session("s")  # tick 1: paste, Enter swallowed
+        inbox.flush_session("s")  # tick 2: must heal, never re-paste
+        inbox.flush_session("s")
+        return pastes, enters
+
+    def test_unproven_paste_is_healed_enter_only_and_consumed_once(
+        self, isolate, monkeypatch
+    ):
+        bad = {}
+        for reason in ("box_not_empty", "delivery_unverified", "pasted_unsubmitted"):
+            for name in [p.name for p in inbox.pending_files("s")]:
+                (inbox.session_dir("s") / name).unlink()
+            pastes, enters = self._drive(monkeypatch, reason)
+            if len(pastes) != 1 or len(enters) != 1 or inbox.list_messages("s"):
+                bad[reason] = (len(pastes), len(enters), len(inbox.list_messages("s")))
+        assert not bad, bad
+
+    def test_unrecordable_stamp_means_no_paste(self, isolate, monkeypatch):
+        inbox.enqueue("s", "hi", sender="x")
+        sent = _patch_delivery(monkeypatch, empty=True)
+
+        def boom(path, msg):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(inbox, "_write_message", boom)
+        res = inbox.flush_session("s")
+        assert sent == [] and res["delivered"] == 0

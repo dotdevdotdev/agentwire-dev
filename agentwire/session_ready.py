@@ -375,9 +375,24 @@ def box_shows_message(box: str, message: str, allow_chip: bool = True) -> bool:
         return True
     if allow_chip and "[Pasted text" in box:
         return True
+    if _is_token_tail(nb, nm, message):
+        return True
     if len(nb) < MIN_BOX_FRAGMENT or len(nb) >= len(nm):
         return False
     return nb in nm
+
+
+def _is_token_tail(nb: str, nm: str, message: str) -> bool:
+    """Is the (whitespace-free) box *nb* a proper tail of *nm* ending in our id?
+
+    A narrow pane windows a long paste to a tail that can fall under
+    ``MIN_BOX_FRAGMENT`` (#1164: 81 raw chars, ~69 non-space). The length floor
+    exists to keep trivial fragments from matching; the message's unique
+    trailing ``⟨#id⟩`` token carries that identity on its own, so a suffix that
+    includes it can only be our paste.
+    """
+    token = _delivery_token(message)
+    return bool(token) and len(nb) < len(nm) and nm.endswith(nb) and token in nb
 
 
 def _split_at_box(capture: str) -> "tuple[str, str] | None":
@@ -776,14 +791,7 @@ def box_is_exactly(box: str, message: str) -> bool:
         return False
     if nb == nm:
         return True
-    token = _delivery_token(message)
-    return (
-        len(nb) >= MIN_BOX_FRAGMENT
-        and len(nb) < len(nm)
-        and nm.endswith(nb)
-        and bool(token)
-        and token in nb
-    )
+    return _is_token_tail(nb, nm, message)
 
 
 def heal_submit(session: str, message: str, pane_index: int = 0) -> str:

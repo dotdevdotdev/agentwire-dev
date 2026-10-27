@@ -144,14 +144,20 @@ lands in a durable inbox and is injected only at a safe boundary.
    but Enter is pressed only into a box that is **provably our paste**.
    `inbox._stuck_in_box` requires BOTH of: **(1) provenance** — the entry
    carries `pasted_ts`, stamped by the drain *before* it pastes, within the last
-   10 minutes (`PASTE_HEAL_WINDOW_MS`), and **cleared on every outcome that
-   leaves nothing of ours in the box** (a refused paste, a dialog, a foreign
-   draft, an unproven paste, `box_changed`); only `pasted_unsubmitted` keeps it.
+   10 minutes (`PASTE_HEAL_WINDOW_MS`), and **cleared only where nothing was
+   pasted** (`target_gone` / `target_parked` / `target_not_agent` /
+   `target_dialog`) or the box stopped being ours (`box_changed`). Every
+   post-paste failure — `pasted_unsubmitted`, `delivery_unverified`,
+   `box_not_empty` — KEEPS it (#1164: a narrow pane windows the paste to a tail
+   the post-paste check can't match, and clearing the stamp there made our own
+   text a human's `foreign_draft` forever, then re-pasted). Recording the stamp
+   is mandatory: if it can't be written the drain does not paste.
    **(2) identity by EQUALITY** (`session_ready.box_is_exactly`) — the
    whitespace-normalized box must equal the whitespace-normalized pasted batch
    (trailing spaces/newlines are ours), or, for a paste taller than the box, be
-   a **suffix** of it (nothing after the visible window), at least
-   `MIN_BOX_FRAGMENT` (80) chars, containing the final `⟨#id⟩` token. The same
+   a **suffix** of it (nothing after the visible window) containing the final
+   `⟨#id⟩` token — the token is the identity, so no length floor applies to it
+   (#1164; an untokened window still needs `MIN_BOX_FRAGMENT`, 80 chars). The same
    predicate gates every Enter in `heal_submit`. Substring containment is NOT
    enough: a box holding our message **plus** a reply, a prefix, text inserted
    in the middle or a trailing partial is a draft and never gets an Enter.
