@@ -24,20 +24,19 @@ here at all is ruled by the tier audit in
 hatch: adding a capability means adding a tool, in a diff someone reviews.
 
 Everything dispatches through the ``agentwire`` CLI, which is the documented
-single source of truth for session logic. The one exception is ``gh``, which
-agentwire has no wrapper for.
+single source of truth for session logic. The one exception is
+:mod:`.project_read` — read-only ``gh``/``git`` in a project checkout, which
+agentwire has no wrapper for — held to a closed command table of its own.
 """
 
 from __future__ import annotations
 
-import json
 import re
-import subprocess
 from dataclasses import dataclass, field
 from typing import Callable
 
 from ..core import run_agentwire_cmd
-from . import delivery, outbox
+from . import delivery, outbox, project_read
 from .confirm import strip_controls
 
 # Session names as the inbox defines them. Anchored: a partial match is how a
@@ -67,17 +66,7 @@ _SESSION_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._@-]*(?:/[A-Za-z0-9][A-Za-z0-9._@-]*)*$"
 )
 
-#: `owner/name`, the only form `gh --repo` should ever receive from a model.
-#: The leading-alphanumeric rule binds the OWNER only, which is where GitHub
-#: actually constrains it (logins are alphanumeric-and-hyphen). REPOSITORY
-#: names may begin with `.`, `_` or `-` — `github/.github` is real — so
-#: extending the rule across the slash for symmetry would refuse real
-#: repositories to close a value-position flag the owner segment already
-#: closes (#979, wave-2 review).
-_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$")
-
 _MAX_OUTPUT_LINES = 200
-_MAX_PR_LIMIT = 50
 _MAX_QUERY_CHARS = 200
 _MAX_HISTORY_LIMIT = 50
 
@@ -241,35 +230,12 @@ def _fleet_session_output(args: dict) -> dict:
     return run_agentwire_cmd(["output", "-s", session, "-n", str(lines)])
 
 
-def _fleet_pull_requests(args: dict) -> dict:
-    """Open PRs via ``gh``. Requires an explicit, validated ``owner/name``.
-
-    Deliberately not defaulted to a cwd: the buddy has no checkout, so there is
-    no "current repo" to be wrong about. It learns valid repos from
-    ``fleet_projects``.
-    """
-    repo = args.get("repo")
-    if not isinstance(repo, str) or not _REPO_RE.match(repo.strip()):
-        raise ToolError(
-            "Need a repository as 'owner/name'. Use fleet_projects to see which "
-            "projects exist, and confirm the repo with the owner if unsure."
-        )
-    limit = _int_arg(args, "limit", 20, 1, _MAX_PR_LIMIT)
-    cmd = [
-        "gh", "pr", "list", "--repo", repo.strip(), "--state", "open",
-        "--limit", str(limit),
-        "--json", "number,title,author,isDraft,headRefName,updatedAt,url",
-    ]
+def _project_lookup(args: dict) -> dict:
+    """Read-only gh/git in a project's checkout — see :mod:`.project_read`."""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"success": False, "error": f"gh failed: {exc}"}
-    if result.returncode != 0:
-        return {"success": False, "error": result.stderr.strip()[:500]}
-    try:
-        return {"success": True, "pull_requests": json.loads(result.stdout or "[]")}
-    except json.JSONDecodeError:
-        return {"success": False, "error": "gh returned unparseable JSON"}
+        return project_read.lookup(args)
+    except project_read.LookupRefusedError as exc:
+        raise ToolError(str(exc)) from None
 
 
 def _query_arg(args: dict, key: str = "query") -> str:
@@ -700,22 +666,38 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
         },
     ),
     ReadOnlyTool(
-        name="fleet_pull_requests",
+        name="project_lookup",
         description=(
-            "Open pull requests for one repository, including which are drafts. "
-            "Requires the repository as 'owner/name'."
+            "Read-only GitHub and git lookups for one PROJECT, run in its own "
+            "checkout — the repo comes from the project, so never ask for "
+            "'owner/name'. Use it directly for issues, PRs, CI and recent "
+            "commits; don't defer these to a session. Commands: "
+            + "; ".join(f"{k} — {v[2]}" for k, v in project_read.LOOKUPS.items())
+            + "."
         ),
-        run=_fleet_pull_requests,
+        run=_project_lookup,
         parameters={
             "type": "object",
             "properties": {
-                "repo": {"type": "string", "description": "Repository as 'owner/name'."},
-                "limit": {
-                    "type": "integer",
-                    "description": f"Maximum PRs to return (1-{_MAX_PR_LIMIT}, default 20).",
+                "project": {
+                    "type": "string",
+                    "description": "Project name, as reported by fleet_projects.",
                 },
+                "lookup": {"type": "string", "enum": list(project_read.LOOKUPS)},
+                "number": {"type": "integer", "description": "Issue or PR number."},
+                "state": {
+                    "type": "string",
+                    "enum": ["open", "closed", "merged", "all"],
+                    "description": "For issues/prs. Default open.",
+                },
+                "limit": {"type": "integer", "description": "Max items (1-50, default 20)."},
+                "search": {
+                    "type": "string",
+                    "description": "GitHub search words for issues/prs, e.g. 'label:bug auth'.",
+                },
+                "ref": {"type": "string", "description": "Branch for log."},
             },
-            "required": ["repo"],
+            "required": ["project", "lookup"],
             "additionalProperties": False,
         },
     ),

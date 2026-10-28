@@ -127,7 +127,7 @@ names are absent from the realtime surface BY NAME.
 **Voice-native tools are ruled here too** (#979). The tier sets above are keyed
 on MCP capability names, and for a while the audit swept exactly those — a
 namespace that is not the exposed surface. ``buddy_inbox``, ``buddy_sent`` and
-``fleet_pull_requests`` have no MCP capability behind them at all, so "every
+``project_lookup`` have no MCP capability behind them at all, so "every
 tool appears in exactly one tier" was true of tools nobody had graded.
 :data:`TOOL_CAPABILITY` maps each wired tool to the capability it exposes and
 :data:`VOICE_NATIVE` carries a written grade for the ones that map to none;
@@ -287,13 +287,17 @@ TOOL_CAPABILITY: dict[str, tuple[str, ...]] = {
 #: these — nothing to look up — so the grade is written out here, with its
 #: reason, and :func:`unruled_tools` makes an ungraded one fail the audit.
 VOICE_NATIVE: dict[str, dict] = {
-    "fleet_pull_requests": {
+    "project_lookup": {
         "grade": "read",
         "ruling": (
-            "Runs `gh pr list --json` in a subprocess: no agentwire capability "
-            "exists for it, and it only observes. Read by the tier-1 rule. The "
-            "repo is validated to `owner/name` and never defaulted from a cwd, "
-            "because the buddy has no checkout to be wrong about."
+            "Runs `gh`/`git` in a configured project's own checkout (#1179): "
+            "no agentwire capability exists for it, and it only observes. Read "
+            "by the tier-1 rule, held there by a closed command table "
+            "(`project_read.COMMANDS`) whose every argv is one of "
+            "`project_read.READ_VERBS` — no merge/create/edit/comment/api — "
+            "with typed values, the project path and repo derived from the "
+            "CLI and the checkout rather than the model, and our own git "
+            "overrides so no checkout config runs a program on a read."
         ),
     },
     "buddy_inbox": {
