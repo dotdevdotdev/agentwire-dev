@@ -772,13 +772,14 @@ def _note_report(sender: str, text: str, recipients: list[str]) -> None:
     and a per-caller copy is the one that drifts. The idle placeholder is kind
     ``idle``, never ``done``, so it cannot reach this; machine mail is excluded
     by SENDER, which is also the recursion guard (an announcement is itself a
-    ``done`` enqueue). Best-effort: the message is already written.
+    ``done`` enqueue). Best-effort: the message is already written, so the
+    WHOLE body — imports included — sits inside the guard.
     """
-    from . import fleet_activity, fleet_alerts
-
-    if sender in fleet_alerts.MACHINE_SENDERS or sender == "unknown":
-        return
     try:
+        from . import fleet_activity, fleet_alerts
+
+        if sender in fleet_alerts.MACHINE_SENDERS or sender == "unknown":
+            return
         fleet_activity.note_session_reported(sender, text, recipients=recipients)
     except Exception as exc:  # noqa: BLE001  # awareness must not break delivery
         _log_event("report_note_failed", **{"from": sender}, error=str(exc))

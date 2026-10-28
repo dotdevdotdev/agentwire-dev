@@ -252,3 +252,38 @@ def test_report_noise_stays_off_the_buddys_voice(isolate):
 
     assert _mail(buddy) == []
     assert [e["event"] for e in fleet_activity.recent()] == ["session_reported"]
+
+
+def test_a_broken_awareness_layer_never_breaks_enqueue(isolate, monkeypatch):
+    """enqueue is the messaging hot path and the message is already on disk by
+    the time awareness runs — so neither a raising producer nor a failing
+    import may escape it."""
+    import sys
+
+    import agentwire
+
+    def boom(*a, **k):
+        raise RuntimeError("producer exploded")
+
+    def break_producer(m):
+        m.setattr(fleet_activity, "note_session_reported", boom)
+
+    def break_import(m):
+        # `from . import x` checks the package attribute first, so both halves
+        # are needed to make the import itself fail.
+        m.delattr(agentwire, "fleet_activity")
+        m.setitem(sys.modules, "agentwire.fleet_activity", None)
+
+    bad = []
+    for name, breaker in (("producer", break_producer), ("import", break_import)):
+        with monkeypatch.context() as m:
+            breaker(m)
+            try:
+                written = inbox.enqueue("boss", f"done via {name}", kind="done",
+                                        sender="worker")
+            except Exception as exc:  # noqa: BLE001
+                bad.append((name, repr(exc)))
+                continue
+            if [w.text for w in written] != [f"done via {name}"] or not written[0].path.exists():
+                bad.append((name, "message not written"))
+    assert not bad, bad
