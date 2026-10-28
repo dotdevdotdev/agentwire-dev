@@ -110,7 +110,7 @@ DEFAULT_LEASE = timedelta(hours=12)
 #: producer would re-announce the same durable, passive condition on every
 #: invocation. A dangling PR is not burning anything while it waits.
 #: The four below are DETECTORS — the machine reporting that something is
-#: wrong. The three after them are LIFECYCLE events (#1016): the fleet
+#: wrong. The four after them are LIFECYCLE events (#1016): the fleet
 #: reporting that something happened. They share this table because the
 #: question is the same one — what may a producer put in front of a listener,
 #: and how loudly — and answering it in two places is how the two answers
@@ -124,6 +124,10 @@ DEFAULT_LEASE = timedelta(hours=12)
 #:   recorded parent, a worker/reviewer role, or a worktree) — an interactive
 #:   orchestrator goes idle after every turn, and announcing that would fire
 #:   once per exchange the owner has with their own session.
+#:
+#: ``session_reported`` → **done**. A delegated session's own report-back
+#:   (#1185) — the "finished, PR is up" sentence the idle cannot carry. News,
+#:   never an alarm: it was already delivered to whoever asked for the work.
 #:
 #: ``task_completed`` → **done**, with one inherit rule: a failed or timed-out
 #:   run is emitted as ``request``, because the fleet has already judged it as
@@ -140,6 +144,7 @@ DETECTOR_KINDS: dict[str, str] = {
     "usage_limit_park": "note",
     "dead_letter": "request",
     "session_idle": "done",
+    "session_reported": "done",
     "task_completed": "done",
     "toast_high": "request",
 }
