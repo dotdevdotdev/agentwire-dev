@@ -78,6 +78,19 @@ CANNED_OUTPUTS: dict[str, dict] = {
         ],
     },
     "fleet_scheduler": {"success": True, "due": [], "failed": [], "gated": ["weekly-stars"]},
+    # project_lookup is keyed "<tool>:<lookup>" — see canned().
+    "project_lookup:issues": {
+        "success": True, "project": "agentwire-dev", "repo": "dotdevdotdev/agentwire-dev",
+        "result": [
+            {"number": 1179, "title": "buddy: terse, batched, project-aware", "labels": []},
+            {"number": 1168, "title": "portal: taskbar flicker on resize",
+             "labels": [{"name": "area:bug"}]},
+        ],
+    },
+    "project_lookup:prs": {
+        "success": True, "project": "agentwire-dev", "repo": "dotdevdotdev/agentwire-dev",
+        "result": [{"number": 1177, "title": "taskbar restore", "isDraft": True}],
+    },
     "fleet_projects": {
         "success": True,
         "projects": [{"name": "agentwire-dev", "path": "~/projects/agentwire-dev"}],
@@ -86,13 +99,23 @@ CANNED_OUTPUTS: dict[str, dict] = {
 
 NO_DATA = {"success": True, "note": "no data in this replay"}
 
+
+def canned(name: str, arguments: str) -> dict:
+    """The replay's answer to one call: by ``<tool>:<lookup>`` when the tool
+    takes a lookup, else by tool name, else :data:`NO_DATA`."""
+    try:
+        lookup = json.loads(arguments or "{}").get("lookup")
+    except (json.JSONDecodeError, AttributeError):
+        lookup = None
+    return CANNED_OUTPUTS.get(f"{name}:{lookup}") or CANNED_OUTPUTS.get(name) or NO_DATA
+
 #: A short spoken answer. Two sentences of ordinary speech is ~30-40 words.
 MAX_ANSWER_WORDS = 45
 
 #: Phrases that narrate work in flight. Every output is in before the batch's
 #: one response is created, so any of these is false by construction.
 _PENDING_RX = re.compile(
-    r"\b(still (running|loading|working|waiting|coming)|once (they|those|it) "
+    r"\b(still (running|loading|coming back)|once (they|those|it) "
     r"(come|comes|finish|finishes|return|returns)|already running)\b",
     re.IGNORECASE,
 )
@@ -198,7 +221,7 @@ async def replay(api_key: str) -> list[dict]:
                 for c in calls:
                     await ws.send_json({"type": "conversation.item.create", "item": {
                         "type": "function_call_output", "call_id": c["call_id"],
-                        "output": json.dumps(CANNED_OUTPUTS.get(c["name"], NO_DATA)),
+                        "output": json.dumps(canned(c["name"], c.get("arguments", ""))),
                     }})
                 await ws.send_json({"type": "response.create"})
     return turns

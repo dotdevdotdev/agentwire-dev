@@ -711,7 +711,7 @@ unfixed and named: the comparison is a prefix match, so a capability whose argv
 is a single token corroborates any voice argv starting with it.
 
 **Tools with no MCP capability behind them are ruled too** (#979). `buddy_inbox`,
-`buddy_sent` and `fleet_pull_requests` have none, so for a while "every tool
+`buddy_sent` and `project_lookup` have none, so for a while "every tool
 appears in exactly one tier" was true of a namespace that is not the exposed
 surface. `surface.VOICE_NATIVE` carries a written grade and reason for each, and
 `surface.unruled_tools()` — what the audit calls — makes a new ungraded
@@ -2137,10 +2137,16 @@ a spoken answer works today, and so does asking it to pass a message on.
 
 - **Not wired to a lifecycle host.** `agentwire buddy serve` is a foreground
   process started by hand. See §6 — deliberate, but unfinished.
-- **`gh` is the one non-CLI dependency.** `fleet_pull_requests` shells out to
-  `gh` directly because agentwire has no wrapper for it. Every other tool goes
-  through the `agentwire` CLI as SSOT. If a `agentwire pr list --json` ever
-  lands, this tool should move to it.
+- **`gh`/`git` are the one non-CLI dependency.** `project_lookup`
+  (`voice_layer/project_read.py`, #1179) runs read-only `gh`/`git` in a
+  configured project's checkout, because agentwire has no wrapper for them.
+  It replaced `fleet_pull_requests`, which wanted a hand-typed `owner/name`.
+  The model names a PROJECT and a command from a closed table
+  (issues, issue, prs, pr, pr_checks, runs, repo, log, status, branches); the
+  path comes from `agentwire projects list`, the repo from the checkout's
+  `origin`, and every argv is one of `READ_VERBS`. No passthrough, no write
+  verbs, no `api`/`-X`, no model-supplied `-c` (git runs with OUR overrides
+  neutralising `core.fsmonitor`/`core.pager`, and `GIT_OPTIONAL_LOCKS=0`).
 
 ---
 

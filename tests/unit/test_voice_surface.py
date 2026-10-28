@@ -128,7 +128,7 @@ class TestTierAudit:
 class TestEveryWiredToolIsRuled:
     """#979/5: the tier audit swept ``@mcp.tool`` names — a namespace that is
     not the exposed surface. ``buddy_inbox``, ``buddy_sent`` and
-    ``fleet_pull_requests`` have no MCP capability behind them, so 'EVERY tool
+    ``project_lookup`` have no MCP capability behind them, so 'EVERY tool
     appears in exactly one tier' was true and beside the point: the next
     voice-native tool could ship with nothing forcing a grade out of anyone.
     Concretely ``buddy_inbox(ack=true)`` mutates state from the read-only
