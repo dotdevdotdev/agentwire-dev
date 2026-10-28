@@ -206,15 +206,17 @@ class HudController {
      */
     toggleObserve() {
         if (!this._view) return;
+        // Captured before ANYTHING below runs: opening the drawer can itself move focus.
+        const prev = document.activeElement;
         if (sessionHud.segment !== 'sessions') sessionHud.setSegment('sessions');
         const wasOpen = sessionHud.open;
         if (!wasOpen) sessionHud.toggle(true);
         if (wasOpen && this._view.allExpanded()) {
-            this._keepFocus(() => this._view.collapseAll());
+            this._keepFocus(prev, () => this._view.collapseAll());
             return;
         }
         // Mount terminals only once the drawer has laid out, or they fit to 0 rows.
-        const run = () => this._keepFocus(() => {
+        const run = () => this._keepFocus(prev, () => {
             const { skipped } = this._view.expandAll(OBSERVE_CAP);
             if (skipped) toast(`Showing ${OBSERVE_CAP} live terminals — ${skipped} more left collapsed`);
         });
@@ -223,20 +225,31 @@ class HudController {
     }
 
     /**
-     * Run `fn` (a bulk expand/collapse) without moving input focus: mounting or
-     * tearing down mini-terminals must not pull it off the element the user was
-     * typing in (#1162). Re-applied after a frame because xterm's own dispose is
-     * deferred one frame and can drop focus after `fn` returns. An element that
-     * `fn` itself removed (focus was inside a collapsed card) can't be restored.
+     * Run `fn` (a bulk expand/collapse) and leave input focus where the user had
+     * it (#1162): mounting or tearing down mini-terminals, the drawer animation
+     * and xterm's deferred dispose can each take it, at different times. The
+     * first two restores are unconditional (a mini-terminal mounting during `fn`
+     * is the thief to undo); the later ones, after the animation, only fire when
+     * focus has been dropped on <body> or left inside the drawer, so a click the
+     * user made meanwhile wins. When `prev` was removed by `fn` itself (focus was
+     * inside a collapsed card) it falls back to the active window's terminal.
      */
-    _keepFocus(fn) {
-        const prev = document.activeElement;
+    _keepFocus(prev, fn) {
         const restore = () => {
-            if (prev && prev.isConnected && document.activeElement !== prev) prev.focus({ preventScroll: true });
+            const target = prev?.isConnected
+                ? prev
+                : document.querySelector('.winbox.focus .xterm-helper-textarea');
+            if (target && document.activeElement !== target) target.focus({ preventScroll: true });
+        };
+        const restoreIfDropped = () => {
+            const a = document.activeElement;
+            if (!a || a === document.body || sessionHud.drawer.contains(a)) restore();
         };
         fn();
         restore();
         requestAnimationFrame(restore);
+        setTimeout(restoreIfDropped, 150);
+        setTimeout(restoreIfDropped, 400);
     }
 
     _render() {

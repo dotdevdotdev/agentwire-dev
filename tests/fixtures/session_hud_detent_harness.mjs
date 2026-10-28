@@ -81,7 +81,7 @@ class El {
 const body = new El('body');
 globalThis.document = {
     createElement: (t) => new El(t), createElementNS: (_, t) => new El(t),
-    addEventListener() {}, removeEventListener() {}, body, activeElement: body,
+    addEventListener() {}, removeEventListener() {}, querySelector: () => null, body, activeElement: body,
 };
 // Stand-in for a mini xterm: mounting takes focus (xterm.open), like a real terminal would.
 globalThis.__mkTextarea = () => { const t = new El('textarea'); body.appendChild(t); return t; };
