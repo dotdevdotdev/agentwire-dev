@@ -37,6 +37,9 @@ colleague walk over and tell me this?":
   decision. A root orchestrator going idle is a conversational turn ending,
   not news, and announcing it would fire after every exchange the owner has
   with their own session — the failure that retires a channel.
+- ``session_reported`` — the same delegated session's own ``done`` report-back
+  (#1185), which is where "finished, PR is up" actually lives. An idle that
+  follows an announced report is coalesced into it: one job, one utterance.
 - ``task_completed`` — a scheduled task finished. The owner did not watch it
   start and cannot see it end; this is the canonical "check in and offer a
   summary" event. A failed one is a ``request`` rather than a ``done``, by the
@@ -95,6 +98,7 @@ SENDER = fleet_alerts.ACTIVITY_SENDER
 #: query by kind.
 EVENTS = (
     "session_idle",       # a pane-0 session finished a turn and went quiet
+    "session_reported",   # a session sent a `done` report-back (#1185)
     "task_completed",     # a scheduled task run ended (any status)
     "toast_high",         # notify-user --priority high
     "toast",              # notify-user --priority normal
@@ -120,8 +124,12 @@ EVENTS = (
 #:   tasks finishing together are two different subjects and both are said.
 #: - ``toast_high`` 5m — a session that loops on a high-priority toast is the
 #:   realistic bad case, and it must not buy an utterance per loop.
+#: - ``session_reported`` 2m — a report is authored, so two of them are two
+#:   pieces of news ("PR is up", later "review fixed"); this only collapses a
+#:   session that re-sends the same report in a loop.
 ANNOUNCE: dict[str, timedelta] = {
     "session_idle": timedelta(minutes=15),
+    "session_reported": timedelta(minutes=2),
     "task_completed": timedelta(minutes=2),
     "toast_high": timedelta(minutes=5),
 }
@@ -471,7 +479,45 @@ def note_session_idle(session: str, text: str, *, parent: str = "") -> dict:
     if not _is_delegated(session):
         return {"recorded": record("session_idle", session=session, text=body),
                 "announced": [], "throttled": False}
+    # COALESCED with the report that usually precedes it (#1185). A worker
+    # sends `msg --kind done "… PR #123"` inside its last turn and goes idle at
+    # the end of it, seconds later. Both are the same finished job; the report
+    # is the half with the PR in it, so it is the one the owner hears and the
+    # idle is recorded as already said.
+    if _announced_recently("session_reported", session, ANNOUNCE["session_idle"]):
+        return {"recorded": record("session_idle", session=session, text=body,
+                                   coalesced="session_reported"),
+                "announced": [], "throttled": True}
     return note("session_idle", session=session, text=body, exclude=(parent,) if parent else ())
+
+
+#: How much of a report-back the buddy is handed. The report is the worker's
+#: one-liner + PR URL by convention; anything longer is a session pasting a
+#: transcript, and the notifier trims what it reads aloud anyway.
+REPORT_CHARS = 400
+
+
+def note_session_reported(sender: str, text: str, *, recipients: Iterable[str] = ()) -> dict:
+    """A session sent a ``done`` report-back — the "X finished, PR is up" event.
+
+    Until #1185 the report reached only its addressee (the creator), so the
+    buddy announced "X is idle and done working" with nothing in it a person
+    could act on, and the sentence that WAS actionable never reached it.
+
+    Gated like an idle: only DELEGATED senders announce (a root orchestrator
+    mailing a peer is a conversation, not a finished job). The recipients are
+    excluded — they already have it, verbatim. The body is the sender's own
+    text and therefore untrusted data; it is bounded here and carried as mail
+    like any other session's words.
+    """
+    report = " ".join(str(text).split())
+    if len(report) > REPORT_CHARS:
+        report = report[:REPORT_CHARS - 1] + "…"
+    body = f"{sender} reported: {report}"
+    if not _is_delegated(sender):
+        return {"recorded": record("session_reported", session=sender, text=body),
+                "announced": [], "throttled": False}
+    return note("session_reported", session=sender, text=body, exclude=tuple(recipients))
 
 
 #: Run statuses whose CONDITION already has a detector of its own

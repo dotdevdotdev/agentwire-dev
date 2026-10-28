@@ -206,3 +206,84 @@ def _say_env(channels_cli, monkeypatch, *, rc: int = 0, browser: bool = True):
     monkeypatch.setattr(channels_cli, "_remote_say", lambda *a, **kw: rc)
 
 
+
+
+# =============================================================================
+# session_reported — "X finished, PR is up" (#1185)
+# =============================================================================
+
+
+def test_a_delegated_workers_done_report_reaches_the_buddy_once(isolate):
+    """The report-back is where the PR lives; the idle that follows is the same
+    job. The buddy hears the report and the idle is coalesced into it — and the
+    recipient, which already has the report verbatim, is not mailed twice."""
+    buddy = _subscribe()
+    _subscribe("boss")
+    _record("auth-fix", created_by="boss")
+
+    inbox.enqueue("boss", "auth-fix: login retry fixed, PR #42 is up", kind="done",
+                  sender="auth-fix")
+    idle = fleet_activity.note_session_idle("auth-fix", "is idle and done working",
+                                            parent="boss")
+
+    heard = _mail(buddy)
+    assert [m.text for m in heard] == [
+        "auth-fix reported: auth-fix: login retry fixed, PR #42 is up"]
+    assert heard[0].kind == "done"
+    assert heard[0].sender == fleet_activity.SENDER
+    assert idle["announced"] == []
+    assert [m.sender for m in _mail("boss")] == ["auth-fix"]
+    # Still on the record for "what happened".
+    assert [e["event"] for e in fleet_activity.recent()] == [
+        "session_idle", "session_reported"]
+
+
+def test_report_noise_stays_off_the_buddys_voice(isolate):
+    """Every non-report shape that reaches enqueue: an undelegated sender's done
+    (a conversation), the idle placeholder (kind idle), and machine mail (whose
+    own announcements are `done` enqueues — the recursion guard)."""
+    buddy = _subscribe()
+    _record("orchestrator", role="orchestrator")
+    _record("worker", created_by="orchestrator")
+
+    inbox.enqueue("peer", "done with the review", kind="done", sender="orchestrator")
+    inbox.enqueue("orchestrator", "is idle and done working", kind="idle", sender="worker")
+    inbox.enqueue("peer", "fleet says hi", kind="done", sender=fleet_activity.SENDER)
+
+    assert _mail(buddy) == []
+    assert [e["event"] for e in fleet_activity.recent()] == ["session_reported"]
+
+
+def test_a_broken_awareness_layer_never_breaks_enqueue(isolate, monkeypatch):
+    """enqueue is the messaging hot path and the message is already on disk by
+    the time awareness runs — so neither a raising producer nor a failing
+    import may escape it."""
+    import sys
+
+    import agentwire
+
+    def boom(*a, **k):
+        raise RuntimeError("producer exploded")
+
+    def break_producer(m):
+        m.setattr(fleet_activity, "note_session_reported", boom)
+
+    def break_import(m):
+        # `from . import x` checks the package attribute first, so both halves
+        # are needed to make the import itself fail.
+        m.delattr(agentwire, "fleet_activity")
+        m.setitem(sys.modules, "agentwire.fleet_activity", None)
+
+    bad = []
+    for name, breaker in (("producer", break_producer), ("import", break_import)):
+        with monkeypatch.context() as m:
+            breaker(m)
+            try:
+                written = inbox.enqueue("boss", f"done via {name}", kind="done",
+                                        sender="worker")
+            except Exception as exc:  # noqa: BLE001
+                bad.append((name, repr(exc)))
+                continue
+            if [w.text for w in written] != [f"done via {name}"] or not written[0].path.exists():
+                bad.append((name, "message not written"))
+    assert not bad, bad

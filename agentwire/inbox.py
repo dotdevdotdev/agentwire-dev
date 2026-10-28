@@ -759,7 +759,30 @@ def enqueue(
             passive=is_passive(kind), broadcast=(to == BROADCAST_TOKEN),
         )
         written.append(msg)
+    if written and kind == "done":
+        _note_report(sender, text, [m.to for m in written])
     return written
+
+
+def _note_report(sender: str, text: str, recipients: list[str]) -> None:
+    """A ``done`` report-back is fleet awareness too (#1185).
+
+    Here, not in ``msg send``, because every report-back path ends in
+    :func:`enqueue` — the CLI, MCP ``msg_send``, ``notify-parent --queued`` —
+    and a per-caller copy is the one that drifts. The idle placeholder is kind
+    ``idle``, never ``done``, so it cannot reach this; machine mail is excluded
+    by SENDER, which is also the recursion guard (an announcement is itself a
+    ``done`` enqueue). Best-effort: the message is already written, so the
+    WHOLE body — imports included — sits inside the guard.
+    """
+    try:
+        from . import fleet_activity, fleet_alerts
+
+        if sender in fleet_alerts.MACHINE_SENDERS or sender == "unknown":
+            return
+        fleet_activity.note_session_reported(sender, text, recipients=recipients)
+    except Exception as exc:  # noqa: BLE001  # awareness must not break delivery
+        _log_event("report_note_failed", **{"from": sender}, error=str(exc))
 
 
 # =============================================================================

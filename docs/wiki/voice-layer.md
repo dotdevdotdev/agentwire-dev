@@ -548,6 +548,16 @@ its kind in `fleet_alerts.DETECTOR_KINDS`:
   that very session. The event's own parent is also excluded, since it already
   hears this by paste from `notify-parent`; the same news twice is how a
   channel earns being ignored.
+- **`session_reported` → `done`, same delegated gate (#1185).** A worker's own
+  `done` report-back — the "finished, PR #42 is up" sentence an idle cannot
+  carry — recorded at `inbox.enqueue`, the one seam every report-back path
+  ends in (CLI, MCP `msg_send`, `notify-parent --queued`). The recipients are
+  excluded (they have it verbatim); machine senders are excluded by name, which
+  is also the recursion guard; the idle placeholder is kind `idle` and never
+  reaches it. **An idle that follows an announced report is coalesced** —
+  recorded, not announced — so one finished job is one utterance, and it is the
+  one with the PR in it. The body is the session's words: bounded to 400 chars
+  and carried as untrusted mail like any other.
 - **`task_completed` → `done`, `request` when it ended badly** — the canonical
   check-in event: the owner did not watch it start and cannot see it end. The
   inherit rule is the dead-letter rule's shape — the fleet already judged it,
@@ -565,8 +575,25 @@ its kind in `fleet_alerts.DETECTOR_KINDS`:
 **Nothing lifecycle is ever an `escalation`.** The interrupt tier stays the two
 conditions nothing clears without a human. An idle session is not burning.
 
+**Verified at read time, and retired when dead (#1048, #1185).** The spool is
+written when something happens and read whenever the buddy next speaks — the
+next day, sometimes. So `buddy_inbox`'s unread view re-checks every notice
+against *current* state before it can be volunteered: a prompt alert whose
+marker is gone, an idle or report whose subject session no longer exists (a
+report gets the 5-minute sender grace — a worker reaped right after reporting
+still deserves it said), a gone sender, anything past 15 minutes, an older
+re-raise of the same `ref`. A dropped notice is never spoken and its reason
+goes on screen. It is also **retired**: the leading run of dropped notices is
+acked, so it stops counting as unread and stops re-dropping every poll (the
+alert about a probe dead since the day before was exactly that shape). Only the
+leading run — the cursor is one id, and acking past a dropped notice behind
+unheard news would bury the news; that run retires once the news is acked. A
+marker read that *errors* abstains rather than dropping, because a retirement
+is permanent and an I/O hiccup is not a verdict. `unread_only=false` still
+returns everything — the record is never deleted.
+
 **Throttled per subject, from the ledger itself** — 15m for an idle, 2m for a
-task, 5m for a high toast. A flapping session records every flap and buys one
+report or a task, 5m for a high toast. A flapping session records every flap and buys one
 utterance. The check reads the ledger rather than a second state file: the
 record is written *before* the emit decision, so there is one thing to keep
 consistent, and a lost ledger costs a duplicate announcement rather than a lost
@@ -578,6 +605,7 @@ producer's job is its own job:
 | Surface | Seam | Recorded |
 |---|---|---|
 | idle hook | `cmd_notify_parent`, `--on-idle`, **above** the no-target return | `session_idle` |
+| `done` report-backs — `msg send`, MCP `msg_send`, `notify-parent --queued` | `inbox.enqueue`, kind `done`, non-machine sender | `session_reported` |
 | `agentwire say` | `cmd_say`, per successfully-played chunk | `spoke` (+ the sink) |
 | text toasts — CLI `notify-user`, **MCP `notify_user`**, `say --display`, and the scheduler's zombie reaper (`priority=high`) | `core.post_desktop_notification`, below all four | `toast` / `toast_high` |
 | `agentwire notify-event` | `cmd_notify`, three events only | `session_created` / `session_closed` / `pane_died` |

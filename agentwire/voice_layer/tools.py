@@ -374,8 +374,8 @@ def _fleet_voice_health(args: dict) -> dict:
 #: How old spooled mail may be and still be VOLUNTEERED (#1048). Speech has no
 #: scrollback: an hours-stale "is idle and done working" about workers torn
 #: down the previous night was spoken as fresh news. Past this, the notice is
-#: dropped with a reason rather than read out — the spool keeps the body, and
-#: the ack of a later spoken notice retires it.
+#: dropped with a reason rather than read out and retired from the unread view
+#: (#1185) — the spool keeps the body for anyone who asks for the record.
 STALE_NOTICE_S = 900
 
 #: Grace before "sender session gone" makes a message stale. A worker that
@@ -409,12 +409,21 @@ def _staleness_reason(m: dict, now_ms: int, live: "set | None") -> "str | None":
             try:
                 marker = prompt_router.read_marker(session, int(pane_s))
             except Exception:
-                marker = None
+                # A read that FAILED is not a verdict (#1185). A drop retires
+                # the notice for good, so reading an error as "no longer live"
+                # would silently lose the alarm it was carrying.
+                marker = {"hash": phash}
             if not marker or str(marker.get("hash") or "") != phash:
                 return "prompt no longer live"
     if ref.startswith("activity:session_idle:") and live is not None:
         subject = ref[len("activity:session_idle:"):]
         if subject and subject not in live:
+            return "subject session gone"
+    if ref.startswith("activity:session_reported:") and live is not None:
+        # The sender-gone grace, not the idle's instant drop: a worker reaped
+        # seconds after reporting still deserves its report spoken.
+        subject = ref[len("activity:session_reported:"):]
+        if subject and subject not in live and age_s > SENDER_GONE_GRACE_S:
             return "subject session gone"
     if age_s > STALE_NOTICE_S:
         return f"older than {STALE_NOTICE_S // 60} minutes"
@@ -524,13 +533,17 @@ def _buddy_inbox(args: dict) -> dict:
     # volunteering path, and a stale notice must be dropped at speak time with
     # a reason, never replayed as fresh news. A deliberate full-history read
     # (unread_only=false) is the owner asking for the record and gets it
-    # unfiltered. Dropped messages stay in the spool; the contiguous ack of a
-    # later spoken notice retires them from the unread view for good.
+    # unfiltered. Dropped messages stay in the spool (the record) but leave
+    # the unread view: a leading run is retired here, the rest by the ack of
+    # the notice ahead of them (#1185).
     dropped: list[dict] = []
+    retired = 0
     if unread_only:
         from .. import fleet_alerts
 
-        messages, dropped = _gate_notices(messages)
+        unread = messages
+        messages, dropped = _gate_notices(unread)
+        retired = _retire_dropped(name, unread, dropped)
         for d in dropped:
             fleet_alerts.log_event("stale_notice_dropped", buddy=name, **d)
     return {
@@ -543,7 +556,36 @@ def _buddy_inbox(args: dict) -> dict:
             for m in messages
         ],
         "dropped": dropped,
+        "retired": retired,
     }
+
+
+def _retire_dropped(name: str, unread: list[dict], dropped: list[dict]) -> int:
+    """Ack through the LEADING run of dropped notices. Returns how many (#1185).
+
+    The gate used to drop and stop: the notice stayed unread, ``buddy status``
+    kept counting it, and every poll re-dropped and re-logged it — a dead
+    session's alert living on as a permanent unread. Every drop reason is
+    permanent (a dead marker, a gone subject or sender, an age that only grows,
+    a newer re-raise that is itself still pending), so retiring one loses
+    nothing the owner could still be told.
+
+    Only the leading run, because the cursor is ONE id: acking past a dropped
+    notice that sits behind a still-pending one would bury the pending one. A
+    run like that retires on the first read after the pending notice is acked —
+    at that point it leads.
+    """
+    gone = {d.get("id") for d in dropped}
+    through = ""
+    count = 0
+    for m in unread:
+        if m.get("id") not in gone:
+            break
+        through = str(m.get("id") or "")
+        count += 1
+    if not through or not delivery.advance_cursor(name, through):
+        return 0
+    return count
 
 
 _MAX_SENT_LIMIT = 50

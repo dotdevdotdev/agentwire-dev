@@ -290,3 +290,60 @@ class TestTheAcceptanceComposition:
         text = report["noticeTexts"][0]
         assert "root-sess is blocked" in text
         assert "Plus 5 more from" in text and "collapsed" in text
+
+
+# =============================================================================
+# 4. Dropped notices are RETIRED, not re-dropped forever (#1185)
+# =============================================================================
+
+
+class TestStaleNoticesRetire:
+    def test_a_leading_stale_run_retires_and_one_behind_news_waits(
+        self, isolate, monkeypatch
+    ):
+        """The voice-heal-probe shape: an alert about a long-dead session sat
+        unread and was re-raised the next day. Retire the leading dropped run;
+        a dropped notice BEHIND unheard news must not be acked past it."""
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"worker-1"})
+        _seed_spool([
+            _msg("m1", age_s=4 * 3600),
+            _msg("m2", sender="gone", age_s=3600),
+            _msg("m3", age_s=10, text="fresh report"),
+            _msg("m4", age_s=2 * 3600),
+        ])
+        res = tools._buddy_inbox({"_buddy": "buddy"})
+        assert [m["id"] for m in res["messages"]] == ["m3"]
+        assert res["retired"] == 2
+        assert [m["id"] for m in delivery.read_spool("buddy")] == ["m3", "m4"]
+
+        tools._buddy_inbox({"_buddy": "buddy", "ack_through": "m3"})
+        res = tools._buddy_inbox({"_buddy": "buddy"})
+        assert res["retired"] == 1
+        assert delivery.read_spool("buddy") == []
+
+    def test_a_marker_read_that_errors_is_not_a_verdict(self, isolate, monkeypatch):
+        from agentwire import prompt_router
+
+        monkeypatch.setattr(inbox, "live_sessions", lambda: {"probe"})
+
+        def boom(session, pane):
+            raise OSError("disk hiccup")
+
+        monkeypatch.setattr(prompt_router, "read_marker", boom)
+        _seed_spool([_msg("m1", sender="fleet-alerts", kind="escalation",
+                          ref="prompt:probe:0:abc123")])
+        res = tools._buddy_inbox({"_buddy": "buddy"})
+        assert [m["id"] for m in res["messages"]] == ["m1"]
+        assert res["retired"] == 0
+
+    def test_a_report_from_a_just_reaped_worker_is_still_news(self, isolate, monkeypatch):
+        monkeypatch.setattr(inbox, "live_sessions", lambda: set())
+        ref = "activity:session_reported:auth-fix"
+        _seed_spool([
+            _msg("m1", sender="fleet-activity", ref=ref, age_s=30),
+            _msg("m2", sender="fleet-activity", ref=ref.replace("auth-fix", "old"),
+                 age_s=600),
+        ])
+        res = tools._buddy_inbox({"_buddy": "buddy"})
+        assert [m["id"] for m in res["messages"]] == ["m1"]
+        assert [d["reason"] for d in res["dropped"]] == ["subject session gone"]
