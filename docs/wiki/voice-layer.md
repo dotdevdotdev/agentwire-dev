@@ -2179,6 +2179,17 @@ a spoken answer works today, and so does asking it to pass a message on.
   comments, titles, commit subjects, branch names) while the buddy has a
   write path, so it comes back ONLY under `untrusted_content`, with a `note`
   saying it is data, not instructions; the persona says the same.
+- **Spend is the second non-CLI read.** `fleet_openai_usage`
+  (`voice_layer/openai_usage.py`) GETs two fixed OpenAI Admin endpoints,
+  `/organization/costs` (by line item) and `/organization/usage/completions`
+  (by model, audio tokens split out — Realtime bills there), for today (UTC)
+  or `days=N` up to 31, following pages up to a cap and saying `partial` past
+  it. It needs `OPENAI_ADMIN_KEY` (an org Admin key; the project key the buddy
+  mints with is refused there, and keeping them apart means the read tool
+  never holds the key that spends). The model passes one integer; only
+  numbers and label-shaped names (`_LABEL_RE`, else `other`) come back, under
+  an `untrusted` note, and an error body is never echoed — it would be
+  spoken. The transport is injectable; tests never touch the network.
 - **Baseline awareness is a roster, not a preload** (#1179). Each `/mint`
   appends `digest.build_digest()` to the instructions: every agent session
   (role, parent, project, last activity) and every local project (path,

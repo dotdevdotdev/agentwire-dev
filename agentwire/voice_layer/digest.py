@@ -46,6 +46,7 @@ Deep dives (call them; never preload):
 - fleet_activity: what happened recently. fleet_dangling: finished work nobody can merge.
 - fleet_worktrees, fleet_scheduler(+_status/_history/_live), fleet_tasks, fleet_dead_letters.
 - fleet_wiki_search: past investigations. fleet_history: past conversations.
+- fleet_openai_usage(days): OpenAI spend + tokens, incl. this voice layer's own.
 - buddy_inbox / buddy_sent: your own mail and sends. propose_session_message: the one write."""
 
 #: How work flows here, so the buddy can speak about it without a lookup.
