@@ -40,6 +40,7 @@ import { hudController } from './session-hud-controller.js';
 import { hudNotices } from './session-hud-notices.js';
 import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import { setupHelp, openHelp, isHelpOpen } from './help-modal.js';
+import { createTaskbarPersistence, bindPageLifecycle } from './taskbar-persist.js';
 import { PttController } from './ptt.js';
 import { voicePromptWrap } from './voice/prompt.js';
 import { isAutoSend } from './voice/autosend-prefs.js';
@@ -642,18 +643,9 @@ function setupCollage() {
 
 // Clean up on page unload
 function setupPageUnload() {
-    window.addEventListener('beforeunload', () => {
-        // Suppress taskbar state saves during teardown — we want the saved state
-        // to reflect what was open, so it can be restored on next page load.
-        restoringTaskbar = true;
-
-        // Disconnect main WebSocket
-        desktop.disconnect();
-
-        // Close all windows
-        sessionWindows.forEach(sw => sw.close());
-        artifactWindows.forEach(aw => aw.close());
-    });
+    // Windows are NOT closed on unload: that only mutated the records, and a
+    // bfcache restore would come back to an empty desktop (see taskbar-persist.js).
+    bindPageLifecycle(window, taskbarPersistence, { onLeave: () => desktop.disconnect() });
 }
 
 // Clock
@@ -1026,7 +1018,7 @@ export function openCouncilWindow(sitting = null) {
 const TASKBAR_STATE_KEY = 'taskbar-state';
 const taskbarRecords = new Map(); // id -> { kind, id, ...args }
 let taskbarDragoverBound = false;
-let restoringTaskbar = false;
+const taskbarPersistence = createTaskbarPersistence({ getStorage: () => localStorage, key: TASKBAR_STATE_KEY });
 
 function _lookupWindowInstance(id) {
     if (id === COUNCIL_WINDOW_ID && councilWindow) return councilWindow;
@@ -1058,23 +1050,7 @@ export function getWindowSession(id) {
     return rec && rec.kind === 'session' ? rec.session : null;
 }
 
-function loadTaskbarState() {
-    try {
-        const raw = localStorage.getItem(TASKBAR_STATE_KEY);
-        if (!raw) return { tabs: [], activeId: null };
-        const data = JSON.parse(raw);
-        if (Array.isArray(data)) return { tabs: data, activeId: null };  // legacy schema
-        return {
-            tabs: Array.isArray(data.tabs) ? data.tabs : [],
-            activeId: data.activeId || null,
-        };
-    } catch (e) {
-        return { tabs: [], activeId: null };
-    }
-}
-
 function saveTaskbarState() {
-    if (restoringTaskbar) return;
     const ids = Array.from(elements.taskbarWindows.querySelectorAll('.sidebar-open-item'))
         .map(btn => btn.dataset.session);
     const tabs = ids.map(id => {
@@ -1086,9 +1062,7 @@ function saveTaskbarState() {
         return { ...rec, minimized };
     }).filter(Boolean);
     const activeId = desktop.getActiveWindow ? desktop.getActiveWindow() : null;
-    try {
-        localStorage.setItem(TASKBAR_STATE_KEY, JSON.stringify({ tabs, activeId }));
-    } catch (e) {}
+    taskbarPersistence.save({ tabs, activeId });
 }
 
 function recordTaskbarEntry(record) {
@@ -1116,11 +1090,11 @@ function _openByRecord(rec) {
 }
 
 export function restoreTaskbarState() {
-    const { tabs: rawTabs, activeId } = loadTaskbarState();
+    const { tabs: rawTabs, activeId } = taskbarPersistence.load();
     // Phase 3 moved panels to sidebar accordions — filter out stale panel records.
     const tabs = rawTabs.filter(t => t.kind !== 'panel');
     if (tabs.length === 0) return;
-    restoringTaskbar = true;
+    taskbarPersistence.freeze();
     try {
         // Materialize EVERY saved window — not just the active one — so they all
         // register with the desktop manager. Otherwise only the active window is a
@@ -1143,7 +1117,7 @@ export function restoreTaskbarState() {
             desktop.setActiveWindow(focusRec.id);
         }
     } finally {
-        restoringTaskbar = false;
+        taskbarPersistence.thaw();
         saveTaskbarState();
     }
 }
