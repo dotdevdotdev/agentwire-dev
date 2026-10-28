@@ -9,8 +9,6 @@ import yaml
 
 from tests import home_guard
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-
 #: The owner's real config directory. Nothing in the suite may write here.
 #: Re-exported from the single owner so both halves agree on what "real" is.
 REAL_AGENTWIRE_HOME = home_guard.REAL_AGENTWIRE_HOME
@@ -318,30 +316,6 @@ def project_dir(tmp_path):
     return proj
 
 
-@pytest.fixture
-def project_config_file(project_dir):
-    """Write a .agentwire.yml and return its path."""
-    config_path = project_dir / ".agentwire.yml"
-    data = {
-        "posture": "bypass",
-        "roles": ["agentwire", "voice"],
-        "voice": "default",
-        "parent": "main",
-    }
-    with open(config_path, "w") as f:
-        yaml.safe_dump(data, f)
-    return config_path
-
-
-@pytest.fixture
-def scheduler_board_file(tmp_config_dir):
-    """Write a scheduler.yaml with 3 test tasks, return path."""
-    board_path = tmp_config_dir / "scheduler.yaml"
-    import shutil
-    shutil.copy(FIXTURES_DIR / "sample_scheduler.yaml", board_path)
-    return board_path
-
-
 @pytest.fixture(autouse=True)
 def isolated_device_registry(tmp_path, monkeypatch):
     """Point the device registry + pairings at a temp dir for every test.
@@ -419,20 +393,5 @@ def bash_hook():
 
 
 @pytest.fixture(scope="module")
-def edit_hook():
-    return load_damage_control_hook("edit-tool-damage-control.py")
-
-
-@pytest.fixture(scope="module")
-def write_hook():
-    return load_damage_control_hook("write-tool-damage-control.py")
-
-
-@pytest.fixture(scope="module")
 def mcp_hook():
     return load_damage_control_hook("mcp-tool-damage-control.py")
-
-
-@pytest.fixture(scope="module")
-def read_hook():
-    return load_damage_control_hook("read-tool-damage-control.py")

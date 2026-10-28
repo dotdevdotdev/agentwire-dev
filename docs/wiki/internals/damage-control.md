@@ -453,7 +453,7 @@ alias created AND written through by the same command from a computed name, a
 derived-command budget exhausted by a pathological command, and the TOCTOU
 window (see [Closed, fail-closed, user-owned](#closed-fail-closed-user-owned-1065)). Directory-extraction spellings `/.`, `//`, `/sub/..`,
 `--one-top-level=` and `bsdtar` are normalized. Pins:
-`tests/unit/test_control_plane_writers.py` (must-block per verb *and* must-allow
+`tests/unit/test_damage_control_bypass.py` (must-block per verb *and* must-allow
 siblings).
 
 The same escape-hatch-/kill-switch-exempt tier also covers specific COMMANDS,
@@ -540,7 +540,7 @@ Patterns live in **categorized YAML files** under `agentwire/hooks/damage-contro
 
 ### Flag position: `{ARGS}` (#1125)
 
-GNU tools and git accept options after operands, so `rm foo -rf x` is the same operation as `rm -rf foo x`. A rule spelled `verb\s+(-[^\s]*)*-f` only sees flags before the first operand. Such rules are authored with `pattern_src:` (containing `{ARGS}`, "any leading arguments of this command segment") on the line after `pattern:`; `scripts/gen_rule_patterns.py` expands it into the plain `pattern:` the hook reads (`--check` fails when stale, pinned by `test_damage_control_flag_order.py`). **The hook never expands anything**: an old hook reading new rules sees an ordinary valid regex. The first cut expanded at match time and an old hook + new rules ALLOWED every rm/push/reset/clean/chown (a literal `{ARGS}` matches nothing). A token is an argument unless it is a separator (`; & |`) or the bare `--` (everything after is an operand, so `rm -- -rf` stays allowed). Short flags match as cluster members (`-vrf`, `-hR`) plus the long option; `git branch` uses a case-sensitive `D` or delete+force (`-d -f`, `-df`, `--delete --force`); `git clean` is allowed when a dry run (`-n`, `--dry-run`) appears anywhere in the segment. Rules: rm, chown -R root, chmod 777 (non-recursive: mode must be the first non-flag operand, `chmod u+x 777` allows, #1133), git reset --hard, clean, push -f/--delete, branch -D, killall/pkill -9, kill -9 (ask) / kill with the all-processes target `-1` (block), rsync --delete* (ask), mail -s, kubectl delete all --all. After editing a `pattern_src`, run the generator.
+GNU tools and git accept options after operands, so `rm foo -rf x` is the same operation as `rm -rf foo x`. A rule spelled `verb\s+(-[^\s]*)*-f` only sees flags before the first operand. Such rules are authored with `pattern_src:` (containing `{ARGS}`, "any leading arguments of this command segment") on the line after `pattern:`; `scripts/gen_rule_patterns.py` expands it into the plain `pattern:` the hook reads (`--check` fails when stale, pinned by `test_damage_control_bypass.py`). **The hook never expands anything**: an old hook reading new rules sees an ordinary valid regex. The first cut expanded at match time and an old hook + new rules ALLOWED every rm/push/reset/clean/chown (a literal `{ARGS}` matches nothing). A token is an argument unless it is a separator (`; & |`) or the bare `--` (everything after is an operand, so `rm -- -rf` stays allowed). Short flags match as cluster members (`-vrf`, `-hR`) plus the long option; `git branch` uses a case-sensitive `D` or delete+force (`-d -f`, `-df`, `--delete --force`); `git clean` is allowed when a dry run (`-n`, `--dry-run`) appears anywhere in the segment. Rules: rm, chown -R root, chmod 777 (non-recursive: mode must be the first non-flag operand, `chmod u+x 777` allows, #1133), git reset --hard, clean, push -f/--delete, branch -D, killall/pkill -9, kill -9 (ask) / kill with the all-processes target `-1` (block), rsync --delete* (ask), mail -s, kubectl delete all --all. After editing a `pattern_src`, run the generator.
 
 ### Batch-1 residual closures (#1133)
 
@@ -639,7 +639,7 @@ The fix is **#924**: extend the `_SHELL_NAMES` rescan to
 the entire rule set, which is the coupling this design exists to avoid.
 
 Known limits, all asserted as expected-fail rows in
-`tests/unit/test_damage_control_payload_anchoring.py` so a green suite cannot
+`tests/unit/test_damage_control_bypass.py` so a green suite cannot
 imply they work:
 
 | limit | example | tracked |
@@ -657,7 +657,7 @@ them — the same *(rule × command-form)* conclusion that made anchoring a
 per-file decision.
 
 Both invariants are enforced by
-`tests/unit/test_damage_control_payload_anchoring.py`, which also asserts a
+`tests/unit/test_damage_control_bypass.py`, which also asserts a
 dangerous form for every anchored rule against a **solo config of that rule
 alone** — a full-rule-set assertion can pass because some *other* rule caught
 the command, which is how a synthetic one-rule fixture stays green through real
@@ -783,7 +783,7 @@ Blocks: `rm`, `unlink`, `rmdir`, `shred`, plus the three ways to the same end th
 
 **Declared residual** (not closable by a text hook): the CONTENT of a list file (`cat /tmp/list | xargs rm` is judged by where the list lives, not by what it names); `rm $f` loops with non-literal operands (the generic rm rule already refuses them, scratch or not); `cd <dir> && …` is not modelled for relative roots (the hook's cwd resolves them); `rsync --delete` into a guarded directory; the emptying spellings above.
 
-Pinned by `tests/unit/test_damage_control_producer_fed.py`: a differential (consumer spellings × producers × targets × homes × {default, kill switch off, unattended}) against the direct-operand decision, must-allow controls (scratch pipelines, the narrowed relative producers, runtime-state moves including the real owner command), must-ask controls, and the exec-variant equivalence. Logic lives only in `_core.py` (no rule-YAML change), so a newer ruleset never needs a newer hook.
+Pinned by `tests/unit/test_damage_control_bypass.py`: a differential (consumer spellings × producers × targets × homes × {default, kill switch off, unattended}) against the direct-operand decision, must-allow controls (scratch pipelines, the narrowed relative producers, runtime-state moves including the real owner command), must-ask controls, and the exec-variant equivalence. Logic lives only in `_core.py` (no rule-YAML change), so a newer ruleset never needs a newer hook.
 
 #### 5. allowedPaths (Granular path-based allowlist)
 
@@ -1267,7 +1267,7 @@ marker-liveness bullet above), and a heredoc that **feeds a shell** (`bash <<'EO
 <<'EOF'` — the body is the program). A *real* backtick or `$(` is unchanged. The
 `git commit -m "$(cat <<'EOF' … EOF)"` idiom keeps its operand-position
 substitution ask, which bypass/auto demote — it is just no longer misread as
-verb concealment. `tests/unit/test_damage_control_inert_view.py` pins both
+verb concealment. `tests/unit/test_damage_control_bypass.py` pins both
 halves; each guard has a mutation that turns it red.
 
 **The dynamic-evaluation builtin is judged by position (#1115).** The old
@@ -1363,7 +1363,7 @@ inside `$(…)`, which the substitution path judges. Command-position use is
 *always* unverifiable; a literal operand is not re-scanned as a command. With
 the kill switch off (`enabled: false`) nothing here applies — the switch
 allows everything by design.
-`tests/unit/test_damage_control_eval_position.py` is the differential: generated
+`tests/unit/test_damage_control_bypass.py` is the differential: generated
 spelling × position × wrapper × consumer cases, one generated test per table
 (driven by independent copies of the table specs, so a deleted row or element goes red),
 committed corpora of executing spellings (never `allow`, also unattended and
@@ -2045,7 +2045,7 @@ earlier wiring there was deleted; removing it changed no decision).
 
 Pinned by a differential (command x 70+ wrappers incl. the full pattern-form
 sweep, decision equal to top level, in all four kill-switch x unattended states)
-in `tests/unit/test_compound_command_positions.py`, plus must-allow controls and
+in `tests/unit/test_damage_control_bypass.py`, plus must-allow controls and
 exact-shape pins for the stripper.
 
 **Declared residuals:** a substitution in a
@@ -2126,7 +2126,7 @@ two pre-existing gaps in the typed form remain visible here: a redirect before
 the verb (`>/dev/null kill -9 1`) and `env -S "kill -9 1"` are not read as the
 verb by the kill rule even without any indirection. An alias is not carried
 into `bash -c '…'` — the real shell does not either. Test:
-`tests/unit/test_damage_control_indirect_verbs.py`.
+`tests/unit/test_damage_control_bypass.py`.
 
 ### Hidden commands are judged as commands (#1136)
 
@@ -2161,7 +2161,7 @@ carriers for the verb rules too: the launched command is judged as if typed
 (`flock /tmp/l rm -rf /x` blocks like `rm -rf /x`). The eval check models the same
 grammars, so only the eval word's wrongful ask is gone — `docker run alpine ls`
 still asks, by the docker write-tier rule.
-`tests/unit/test_damage_control_hidden_commands.py` is the differential.
+`tests/unit/test_damage_control_bypass.py` is the differential.
 
 **Declared residuals (undecidable statically, or text a program produces):**
 `sed e` with no operand and `awk system($0)` run input data; `awk -f prog` /
@@ -2175,7 +2175,7 @@ A here-string behind a same-line compound keyword (`if true; then sh <<< X; fi`,
 bash -c 'sh <<< X'`, also heredoc) are judged like the bare form (#1144): the feed line
 is cut at its last segment break before its opener words are stripped, and the
 `-c` payload scan steps past prefix wrappers. Pinned by
-`test_damage_control_hidden_input_positions.py` (every hidden-input form x every
+`test_damage_control_bypass.py` (every hidden-input form x every
 opener/wrapper == the top-level decision).
 
 ### A `)` / `;` inside a word's data does not hide the verb (#1119)
@@ -2207,7 +2207,7 @@ character scanning, which sees every verb in the remainder (errs closed for the
 operation). A `$'a\'b'` that shlex cannot parse is ask-tier via the existing
 "unbalanced quotes" ambiguity, as is any substitution inside an expansion.
 
-Pinned by a differential in `tests/unit/test_damage_control_word_spans.py`
+Pinned by a differential in `tests/unit/test_damage_control_bypass.py`
 (command x 20 constructs x 6 positions x 8 wrappers, equal to the top-level
 decision, plus the kill-switch-off / unattended states), with must-allow
 controls and scanner-shape pins.
