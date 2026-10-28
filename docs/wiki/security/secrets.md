@@ -24,10 +24,19 @@ holding every key. See [File permissions](#file-permissions) below.
 
 ## What loads it
 
-`agentwire/__main__.py` calls `load_dotenv(~/.agentwire/.env)` on **every**
-entry point — CLI commands, the portal, the MCP server, the scheduler. Any
-code reading `os.environ` sees the keys; so does any feature added later.
-That universality is why this is the one blessed spot.
+`agentwire/__main__.py` loads `~/.agentwire/.env` through
+`agentwire/env_loader.py` on **every** entry point — CLI commands, the portal,
+the MCP server, the scheduler. Any code reading `os.environ` sees the keys; so
+does any feature added later. That universality is why this is the one blessed
+spot.
+
+**Precedence:** a variable already in the environment wins over the file —
+**unless it is empty**. python-dotenv's own `load_dotenv` counts an empty
+`export OPENAI_API_KEY=` in a shell profile as "set" and skips the file, which
+silently hid a real key (#1184); the loader fills an empty or whitespace-only
+inherited value from a non-empty file value instead. When a key is still
+missing, the error says which case you are in: *not set* vs *exported as an
+empty string*.
 
 Two consequences:
 

@@ -1685,7 +1685,9 @@ def _render_beta_section() -> int:
     """
     import os
 
-    from .config import BETA_FLAG_NAMES, enabled_beta_flags
+    from .buddy_cli import buddy_service_configured
+    from .config import BETA_FLAG_NAMES, enabled_beta_flags, load_config
+    from .env_loader import missing_env_message
     from .voice_layer.realtime import API_KEY_ENV
 
     issues = 0
@@ -1699,10 +1701,14 @@ def _render_beta_section() -> int:
             if os.environ.get(API_KEY_ENV, "").strip():
                 print(f"  [ok] beta.{name}: on — {API_KEY_ENV} is present")
             else:
-                print(f"  [!!] beta.{name}: on but {API_KEY_ENV} is not set — "
-                      "the voice buddy cannot mint a session")
-                print(f"     Fix: add {API_KEY_ENV} to ~/.agentwire/.env (chmod 600)")
+                print(f"  [!!] beta.{name}: on but the voice buddy cannot mint a session")
+                print(f"     {missing_env_message(API_KEY_ENV)}")
                 issues += 1
+            if not buddy_service_configured(load_config().services.custom):
+                # Not an issue — running it supervised is the owner's call —
+                # but the one command that does it should be findable here.
+                print("  [..] voice buddy: no supervised service — run "
+                      "`agentwire buddy service install` from your own terminal")
         else:
             print(f"  [ok] beta.{name}: on")
     return issues

@@ -9,8 +9,9 @@ dispatches with no confirm spine, so a write tool is refused outright instead of
 degrading to an ungated write. ``serve`` starts the bridge, and the bridge HOLDS
 a spine — so the browser client it serves can reach the one gated write (``msg
 send`` to a live session). The only things this module itself writes are the
-buddy's identity record, its inbox spool cursor, and (for ``serve``) a localhost
-socket.
+buddy's identity record, its inbox spool cursor, (for ``serve``) a localhost
+socket, and (for the human-only ``service install|uninstall``) its one
+``services.custom`` entry in ``config.yaml``.
 
 See ``docs/wiki/voice-layer.md`` for the design and the harness boundary.
 """
@@ -392,6 +393,195 @@ def cmd_buddy_serve(args) -> int:
     return 0
 
 
+# ─────────────────────────────────────────────────────────────
+# Supervised service (#1184)
+# ─────────────────────────────────────────────────────────────
+#
+# #983 gave the services registry a generic `command` kind, and the buddy is
+# one caller of it — but the entry lives in ~/.agentwire/config.yaml, which is
+# protected control plane, and `command` is execution plane, so `config set`
+# refuses it by design. Pasting YAML from the wiki was the only way in, which
+# in practice meant no machine had one. These verbs write that one FIXED entry
+# (no free-form command text) and are human-only, the same gate as
+# `safety packs enable`: a tty check here plus a PROTECTED_COMMAND_PATTERNS
+# entry that stops an agent's Bash tool before it gets this far.
+
+#: The service's name — already in ``services._BUILTIN_SERVICE_SESSIONS``, so
+#: it is classified as infrastructure everywhere the fleet is listed. Not the
+#: buddy's own name: ``buddy`` is a session identity other sessions message,
+#: and a tmux session under that name would be a pane `send` could paste into.
+SERVICE_NAME = "agentwire-buddy"
+DEFAULT_PORT = 8788
+_SERVE_COMMAND = "agentwire buddy serve"
+
+
+def service_name(name: str) -> str:
+    return SERVICE_NAME if name == identity.DEFAULT_NAME else f"{SERVICE_NAME}-{name}"
+
+
+def buddy_service_configured(custom_services) -> bool:
+    """Does any ``services.custom`` entry supervise a buddy bridge?
+
+    Keyed on the command, not the name, so a hand-pasted wiki entry under
+    another name counts too.
+    """
+    return any((s.command or "").startswith(_SERVE_COMMAND) for s in custom_services)
+
+
+def service_entry(name: str, *, port: int, autostart: bool) -> dict:
+    """The ``services.custom`` entry that supervises ``buddy serve <name>``.
+
+    *name* must already have passed ``identity.validate_name`` — that charset is
+    what makes interpolating it into a shell command safe.
+    """
+    return {
+        "name": service_name(name),
+        "command": f"{_SERVE_COMMAND} {name} --port {int(port)}",
+        "autostart": bool(autostart),
+        "restart": "on-failure",
+        # tmux_session, not an HTTP probe: `/` hands over the run token
+        # (docs/wiki/voice-layer.md §6).
+        "healthcheck": {"kind": "tmux_session", "interval": 60},
+    }
+
+
+def upsert_service_entry(raw: dict, entry: dict) -> str:
+    """Put *entry* into ``raw['services']['custom']``; say what happened."""
+    services = raw.setdefault("services", {})
+    if not isinstance(services, dict):
+        raise ValueError("services: in config.yaml is not a mapping")
+    custom = services.get("custom") or []
+    for i, existing in enumerate(custom):
+        if isinstance(existing, dict) and existing.get("name") == entry["name"]:
+            if existing == entry:
+                return "unchanged"
+            custom[i] = entry
+            services["custom"] = custom
+            return "updated"
+    services["custom"] = [*custom, entry]
+    return "installed"
+
+
+def remove_service_entry(raw: dict, svc_name: str) -> bool:
+    custom = (raw.get("services") or {}).get("custom") or []
+    kept = [e for e in custom if not (isinstance(e, dict) and e.get("name") == svc_name)]
+    if len(kept) == len(custom):
+        return False
+    raw["services"]["custom"] = kept
+    return True
+
+
+def _host_gate(verb: str, json_mode: bool) -> "int | None":
+    from .tasks_cli import _host_context_ok
+
+    if _host_context_ok():
+        return None
+    return _fail(
+        f"agentwire buddy service {verb} writes ~/.agentwire/config.yaml (protected "
+        "control plane) — human-only. Run it from your own terminal, not through an agent.",
+        json_mode,
+    )
+
+
+def _registered_service(svc_name: str):
+    from . import services as services_mod
+    from .config import load_config
+
+    return next((s for s in services_mod.registry(load_config()) if s.name == svc_name), None)
+
+
+def cmd_buddy_service_install(args) -> int:
+    """Register the buddy if needed, write its service entry, start it."""
+    import os
+
+    from . import services as services_mod
+    from .config_cli import _load_raw, _save_raw
+    from .env_loader import missing_env_message
+
+    json_mode = getattr(args, "json", False)
+    refused = _host_gate("install", json_mode)
+    if refused is not None:
+        return refused
+    try:
+        identity.validate_name(args.name)
+        created = not identity.is_registered(args.name)
+        if created:
+            identity.register(args.name)
+    except identity.BuddyError as exc:
+        return _fail(str(exc), json_mode)
+
+    entry = service_entry(args.name, port=args.port, autostart=args.autostart)
+    raw = _load_raw()
+    try:
+        outcome = upsert_service_entry(raw, entry)
+    except ValueError as exc:
+        return _fail(f"Refusing to write: {exc}. Fix the file by hand first.", json_mode)
+    if outcome != "unchanged":
+        _save_raw(raw)
+
+    key_problem = (None if os.environ.get(realtime.API_KEY_ENV, "").strip()
+                   else missing_env_message(realtime.API_KEY_ENV))
+    started, start_msg = None, "not started (--no-start)"
+    if not args.no_start:
+        services_mod.set_disabled(entry["name"], False)
+        svc = _registered_service(entry["name"])
+        started, start_msg = services_mod.start_service(svc)
+
+    url = f"http://127.0.0.1:{int(args.port)}/"
+    payload = {
+        "success": started is not False,
+        "service": entry["name"], "entry": outcome, "buddy_registered": created,
+        "autostart": entry["autostart"], "started": started, "result": start_msg,
+        "url": url, "key_problem": key_problem,
+    }
+    lines = [
+        f"Service {entry['name']}: {outcome} in ~/.agentwire/config.yaml"
+        + (f" (registered buddy '{args.name}')" if created else ""),
+        f"  start:     {start_msg}",
+        "  autostart: " + ("on — boots with the portal" if entry["autostart"]
+                           else "off — rerun with --autostart to boot it with the portal"),
+    ]
+    if key_problem:
+        lines += ["", f"  [!!] {key_problem}"]
+    if started:
+        lines += [
+            "",
+            f"Open {url} and click Start talking — the greeting is the liveness probe.",
+            f"Restart: agentwire services down {entry['name']} && agentwire services up "
+            f"{entry['name']}, then reload the page (each run mints a new token).",
+        ]
+    if not json_mode and started is False:
+        for line in lines:
+            print(line, file=sys.stderr)
+        return 1
+    return _emit(payload, json_mode, lines)
+
+
+def cmd_buddy_service_uninstall(args) -> int:
+    """Stop the buddy's service and remove its entry. The identity stays."""
+    from . import services as services_mod
+    from .config_cli import _load_raw, _save_raw
+
+    json_mode = getattr(args, "json", False)
+    refused = _host_gate("uninstall", json_mode)
+    if refused is not None:
+        return refused
+    svc_name = service_name(args.name)
+    svc = _registered_service(svc_name)
+    stop_msg = services_mod.stop_service(svc)[1] if svc else "not registered"
+    raw = _load_raw()
+    removed = remove_service_entry(raw, svc_name)
+    if removed:
+        _save_raw(raw)
+    return _emit(
+        {"success": True, "service": svc_name, "removed": removed, "result": stop_msg},
+        json_mode,
+        [f"Service {svc_name}: {stop_msg}; "
+         + ("entry removed from ~/.agentwire/config.yaml" if removed else "no entry to remove")
+         + f". Buddy '{args.name}' is still registered."],
+    )
+
+
 def register_buddy_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "buddy",
@@ -454,3 +644,27 @@ def register_buddy_parser(subparsers) -> None:
     srv.add_argument("--model", default="")
     srv.add_argument("--voice", default="", metavar="VOICE", help=_VOICE_HELP)
     srv.set_defaults(func=beta_gated(cmd_buddy_serve))
+
+    svc = sub.add_parser(
+        "service",
+        help="Run the bridge under the service supervisor (human-only)",
+        description=(
+            "Write (or remove) the agentwire-buddy entry in services.custom so the "
+            "bridge is supervised: watchdog health checks, restart on failure, and "
+            "optionally autostart with the portal. Human-only — run from your own "
+            "terminal."
+        ),
+    )
+    svc_sub = svc.add_subparsers(dest="service_command", required=True)
+    inst = _common(svc_sub.add_parser(
+        "install", help="Register the buddy if needed, add its service entry, start it"))
+    inst.add_argument("--port", type=int, default=DEFAULT_PORT,
+                      help=f"Port on 127.0.0.1 (default: {DEFAULT_PORT})")
+    inst.add_argument("--autostart", action="store_true",
+                      help="Also boot it on portal launch / agentwire up (default: off)")
+    inst.add_argument("--no-start", action="store_true",
+                      help="Write the entry without starting it now")
+    inst.set_defaults(func=beta_gated(cmd_buddy_service_install))
+    _common(svc_sub.add_parser(
+        "uninstall", help="Stop the service and remove its entry (keeps the identity)")
+    ).set_defaults(func=beta_gated(cmd_buddy_service_uninstall))

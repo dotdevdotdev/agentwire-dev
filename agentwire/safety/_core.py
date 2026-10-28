@@ -6246,6 +6246,12 @@ PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = [
         "agentwire safety packs/groups enable|disable changes damage-control "
         "policy — host-only, run it from your own terminal (not through an agent).",
     ),
+    (
+        r'\bagentwire\s+buddy\s+service\s+(?:install|uninstall)\b',
+        "agentwire buddy service install|uninstall writes a supervised command into "
+        "~/.agentwire/config.yaml — host-only, run it from your own terminal (not "
+        "through an agent).",
+    ),
 ]
 
 

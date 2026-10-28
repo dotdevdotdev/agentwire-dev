@@ -163,6 +163,9 @@ agentwire services status name  # one service
 agentwire services up <name>    # start (also clears 'down' state)
 agentwire services up --all     # start all autostart services (skips downed)
 agentwire services down <name>  # stop AND keep stopped (watchdog won't respawn)
+agentwire buddy service install [--autostart]  # HUMAN-ONLY: supervise the voice buddy
+                                # as service agentwire-buddy (beta.voice_layer)
+agentwire buddy service uninstall              # HUMAN-ONLY: stop + remove the entry
 
 # TTS/STT servers
 agentwire tts start|stop|status # TTS server management
