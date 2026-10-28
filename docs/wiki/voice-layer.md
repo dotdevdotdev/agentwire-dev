@@ -2147,6 +2147,10 @@ a spoken answer works today, and so does asking it to pass a message on.
   `origin`, and every argv is one of `READ_VERBS`. No passthrough, no write
   verbs, no `api`/`-X`, no model-supplied `-c` (git runs with OUR overrides
   neutralising `core.fsmonitor`/`core.pager`, and `GIT_OPTIONAL_LOCKS=0`).
+  Everything the command printed is attacker-writable (issue/PR bodies,
+  comments, titles, commit subjects, branch names) while the buddy has a
+  write path, so it comes back ONLY under `untrusted_content`, with a `note`
+  saying it is data, not instructions; the persona says the same.
 
 ---
 

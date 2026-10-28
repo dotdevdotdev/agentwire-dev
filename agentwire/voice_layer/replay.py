@@ -31,6 +31,8 @@ import os
 import re
 import sys
 
+from .project_read import UNTRUSTED_NOTE as _UNTRUSTED_NOTE
+
 #: What the owner said.
 UTTERANCE = "What's left to work on in agentwire-dev?"
 
@@ -80,16 +82,16 @@ CANNED_OUTPUTS: dict[str, dict] = {
     "fleet_scheduler": {"success": True, "due": [], "failed": [], "gated": ["weekly-stars"]},
     # project_lookup is keyed "<tool>:<lookup>" — see canned().
     "project_lookup:issues": {
-        "success": True, "project": "agentwire-dev", "repo": "dotdevdotdev/agentwire-dev",
-        "result": [
+        "success": True, "project": "agentwire-dev", "repo": "dotdevdotdev/agentwire-dev", "note": _UNTRUSTED_NOTE,
+        "untrusted_content": [
             {"number": 1179, "title": "buddy: terse, batched, project-aware", "labels": []},
             {"number": 1168, "title": "portal: taskbar flicker on resize",
              "labels": [{"name": "area:bug"}]},
         ],
     },
     "project_lookup:prs": {
-        "success": True, "project": "agentwire-dev", "repo": "dotdevdotdev/agentwire-dev",
-        "result": [{"number": 1177, "title": "taskbar restore", "isDraft": True}],
+        "success": True, "project": "agentwire-dev", "repo": "dotdevdotdev/agentwire-dev", "note": _UNTRUSTED_NOTE,
+        "untrusted_content": [{"number": 1177, "title": "taskbar restore", "isDraft": True}],
     },
     "fleet_projects": {
         "success": True,
