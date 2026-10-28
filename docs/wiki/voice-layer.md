@@ -129,7 +129,7 @@ data. Where the design hypothesis and the docs disagreed, the docs won.
 | **Auth** | `POST /v1/realtime/client_secrets` mints a short-lived **ephemeral client secret**. Response quirk: `value` and `expires_at` are **top-level**, `session.id` is nested. | ⚠️ Unstated. Matters: it's why minting is server-side. The API key never reaches the browser. |
 | **Connect** | Browser POSTs its SDP offer to `POST /v1/realtime/calls` with the client secret as bearer; gets an SDP answer back. | — |
 | **Tool execution** | **Client-side.** The docs are explicit: "the client detects conversation items that contain function call arguments, it will execute custom code using those arguments." OpenAI never runs anything. | ✅ Assumption held — and it's the whole reason the security story works. |
-| **Function-call events** | Tools declared as `session.tools[]`. Calls arrive on `response.done` as `output[]` items with `type: "function_call"`, carrying `name`, `arguments` (a JSON **string**), `call_id`. Result returns as `conversation.item.create` → `function_call_output`, then `response.create`. | — |
+| **Function-call events** | Tools declared as `session.tools[]`. Calls arrive on `response.done` as `output[]` items with `type: "function_call"`, carrying `name`, `arguments` (a JSON **string**), `call_id`. Result returns as `conversation.item.create` → `function_call_output`; one `response.create` after the whole batch's outputs (#1179). | — |
 | **Turn detection** | `semantic_vad` (default) decides turns from *what was said*, not a silence timer. Or `null` for manual control. `create_response` / `interrupt_response` can be disabled independently. | ⚠️ Unstated. `semantic_vad` matters here — the owner thinking out loud about the fleet pauses mid-sentence constantly. |
 | **Barge-in** | Native and free. `input_audio_buffer.speech_started` fires, the in-flight response emits `response.cancelled`. Over WebRTC the browser handles playback truncation; only WebSocket clients must hand-send `conversation.item.truncate`. | ✅ Supported — better than assumed, and needs no code on WebRTC. |
 | **Voices** | Ten, closed: `cedar`, `marin`, `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`. The docs single out `cedar`/`marin` as the newer, more natural pair. **Fixed per session:** "Once the model has emitted audio in a session, the `voice` cannot be modified for that session." | ⚠️ Unstated. Matters twice — see [The voice list](#the-voice-list-and-why-switching-costs-a-reconnect-1017). |
@@ -2163,8 +2163,13 @@ changing underneath the conversation.**
   is in flight. VAD fires its own responses, so ours must not race them.
 - **Sequential tool dispatch.** One response can carry several `function_call`
   items; firing them concurrently makes their `response.create` calls race each
-  other. Their `#764/#785` fix — await each in turn — is carried over verbatim
-  in spirit.
+  other. Their `#764/#785` fix — await each in turn — is carried over, and
+  #1179 finished it: awaiting each call still created a response per OUTPUT,
+  so the model spoke after the first result and narrated the rest as "still
+  running". `dispatchToolBatch` now submits every output, then creates ONE
+  response (or lets the announcer's scripted one take the turn). Live check:
+  `uv run python -m agentwire.voice_layer.replay` replays the failed exchange
+  and judges one batched call round + one short answer.
 - **The `<voice_mode>` addendum shape**: a base prompt plus an explicit
   addendum that overrides text-mode habits the spoken channel breaks.
 - **"Say the specifics out loud."** Their hardest-won prompt lesson: "I've got
