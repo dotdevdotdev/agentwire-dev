@@ -126,10 +126,41 @@ class TestTheReplayJudge:
             {"calls": [], "said": "Taskbar PR 1177 is dangling, portal fix is still active."},
         ]) == []
 
-    def test_rejects_serial_calls_and_speaking_early(self):
+    def test_rejects_serial_calls_and_narrating_the_lookup(self):
         problems = replay.judge([
-            {"calls": ["fleet_sessions"], "said": "Checking."},
+            {"calls": ["fleet_sessions"], "said": "Let me pull the sessions so I can see."},
             {"calls": ["fleet_dangling"], "said": ""},
             {"calls": [], "said": "One dangling PR."},
         ])
         assert len(problems) == 3, problems
+
+    def test_a_one_word_preamble_is_tolerated(self):
+        assert replay.judge([
+            {"calls": list(replay.FAILED_BATCH), "said": "Checking."},
+            {"calls": [], "said": "One dangling PR."},
+        ]) == []
+
+    def test_each_later_step_is_held_to_its_own_rule(self):
+        """The rest of the failed session: deferring a lookup, skipping the
+        tool the step needs, and a long refusal each fail; the good shapes
+        pass."""
+        by_text = {s.utterance: s for s in replay.STEPS}
+        ci = by_text["Check CI on agentwire-dev from the project directory."]
+        merge = by_text["Merge PR 1177."]
+        wiki = by_text["Have we hit that taskbar flicker before?"]
+        cases = [
+            (ci, [{"calls": [], "said": "A session should check CI from the project."}], False),
+            (ci, [{"calls": ["fleet_sessions"], "said": ""},
+                  {"calls": [], "said": "Looks fine."}], False),
+            (ci, [{"calls": ["project_lookup"], "said": ""},
+                  {"calls": [], "said": "Main is green; the taskbar run failed."}], True),
+            (ci, [{"calls": ["project_lookup"], "said": ""},
+                  {"calls": [], "said": "I can't check CI; a session should."}], False),
+            (merge, [{"calls": [], "said": " ".join(["word"] * 31)}], False),
+            (merge, [{"calls": [], "said": "Can't merge — it's a draft with failing CI."}], True),
+            (wiki, [{"calls": ["fleet_wiki_search"], "said": ""},
+                    {"calls": [], "said": "Yes — the WebKit pageshow race, #1173."}], True),
+        ]
+        wrong = [(step.utterance, turns) for step, turns, ok in cases
+                 if (replay.judge(turns, step) == []) != ok]
+        assert not wrong, wrong
