@@ -60,8 +60,7 @@ advisories accumulated that way, and were found only because a PR's check list
 happened to be in front of someone.
 
 Non-blocking and impossible-to-miss pull against each other, so the reporting is
-split across three surfaces (`scripts/pip_audit_report.py`, unit-tested in
-`tests/unit/test_pip_audit_report.py`):
+split across three surfaces (`scripts/pip_audit_report.py`):
 
 | Surface | Where it shows | What it's for |
 |---------|----------------|---------------|
@@ -101,9 +100,10 @@ Properties the tests pin, because each is easy to break silently:
 
 `PYSEC-2026-3483` is ignored because agentwire never serves MCP over WebSocket.
 An ignore justified by "we don't use that path" is only as strong as the path
-staying unused, so `tests/unit/test_pip_audit_report.py` asserts the premise:
-`mcp_server.py` runs `transport="stdio"`, and nothing under `agentwire/` imports
-`mcp.server.websocket`. If either changes, the tests fail and name the ignore.
+staying unused, so re-check the premise whenever `mcp_server.py` or the MCP
+dependency changes: `mcp_server.py` must run `transport="stdio"`, and nothing under
+`agentwire/` may import `mcp.server.websocket`. No test pins it (a source-grep
+test fails on refactors and passes on regressions); the ignore comment is the record.
 A rationale that has quietly become false is worse than none.
 
 ## Residual CVEs (ignored in the PR audit)
