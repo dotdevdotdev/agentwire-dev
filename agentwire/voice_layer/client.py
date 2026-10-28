@@ -13,8 +13,9 @@ The flow, per the current Realtime docs:
 3. POST the SDP offer to ``https://api.openai.com/v1/realtime/calls`` with the
    client secret as bearer; set the answer as the remote description.
 4. On ``response.done``, any ``function_call`` items go to ``/tool`` here, and
-   the result goes back as ``conversation.item.create`` +
-   ``function_call_output``, then ``response.create``.
+   each result goes back as ``conversation.item.create`` +
+   ``function_call_output``; ONE ``response.create`` follows once the whole
+   batch is in (#1179).
 
 Two guards carried over from DocumentScribe's implementation, both of which they
 paid for in bugs:
@@ -22,9 +23,9 @@ paid for in bugs:
 - **``responseActive``** — the server rejects a ``response.create`` while a
   response is in flight. ``server``/``semantic`` VAD fires its own responses, so
   ours must not race them.
-- **Sequential tool dispatch** — one response can carry several
-  ``function_call`` items; firing them concurrently makes their
-  ``response.create`` calls race each other. Await each in turn.
+- **One response per batch** — one response can carry several
+  ``function_call`` items. Each is awaited in turn and its output submitted;
+  the single ``response.create`` comes after the last one, never per output.
 
 Barge-in needs no code: the model is full-duplex, and ``echoCancellation`` on
 the mic handles local speaker feedback the way any WebRTC call does.
@@ -1646,11 +1647,12 @@ function maybeCreateResponse() {
   return send({ type: "response.create" });
 }
 
-// `suppressResponse` is for results the ANNOUNCER will speak. The output still
-// has to land — an unresolved function call hangs the conversation — but the
-// ordinary response must not be created, because the announcer is about to
-// create a scripted one and two creates race.
-function sendFunctionCallOutput(callId, output, suppressResponse) {
+// Submits the output and NOTHING ELSE. Creating the response is the batch's
+// job (dispatchToolBatch), never one call's: a response created after the
+// first output of a parallel batch speaks before the rest have landed — the
+// #1179 "the others are still running" narration, about calls that had all
+// returned in a second. Returns whether the output reached the model.
+function sendFunctionCallOutput(callId, output) {
   const ok = send({
     type: "conversation.item.create",
     item: { type: "function_call_output", call_id: callId, output: JSON.stringify(output) },
@@ -1659,15 +1661,20 @@ function sendFunctionCallOutput(callId, output, suppressResponse) {
     // The data channel is closed, so the model will never see this result and
     // can never speak it. Say it here instead of dropping it.
     announce("I lost the connection to the voice service, so I couldn't finish that.");
-    return;
   }
-  if (!suppressResponse) maybeCreateResponse();
+  return ok;
 }
 
+// Dispatches ONE call and submits its output, without creating a response.
+// Returns what the batch owes the owner for it: `submitted` (an output the
+// model should answer from) and/or `say` (announcer arguments — text the owner
+// must hear whether or not the model chooses to say it).
 async function handleFunctionCall(item) {
   let args = {};
   try { args = item.arguments ? JSON.parse(item.arguments) : {}; }
-  catch { sendFunctionCallOutput(item.call_id, { error: "malformed arguments JSON" }); return; }
+  catch {
+    return { submitted: sendFunctionCallOutput(item.call_id, { error: "malformed arguments JSON" }) };
+  }
   log("tool", item.name + " " + JSON.stringify(args), "tool");
 
   let result;
@@ -1680,11 +1687,10 @@ async function handleFunctionCall(item) {
     result = await post("/tool", { name: item.name, arguments: args });
   } catch (err) {
     log("error", "tool dispatch failed: " + err, "err");
-    announce("I couldn't reach my own tools just then, so I did nothing.");
     sendFunctionCallOutput(item.call_id, {
       success: false, error: "bridge unreachable: " + err,
     });
-    return;
+    return { say: ["I couldn't reach my own tools just then, so I did nothing."] };
   }
 
   // Anything the owner must hear goes through the announcer, which does not
@@ -1712,15 +1718,45 @@ async function handleFunctionCall(item) {
   // retires the target session's reminders — a cancel is not acting, so the
   // reminder stands. The router holds both rules.
   outcomeRouter.route(item.name, result);
-  const mustSpeak = !!(result && result.must_speak && result.say);
-  sendFunctionCallOutput(item.call_id, result, mustSpeak);
-  if (mustSpeak) {
+  const submitted = sendFunctionCallOutput(item.call_id, result);
+  if (result && result.must_speak && result.say) {
     // `say` is literal text to utter — the one payload that used to carry a
     // model DIRECTIVE here got read aloud verbatim (#950 root cause).
     // `fallback_say`, when present, is the echo-safe text for the
     // browser-voice channel (it never carries a nonce).
-    announce(result.say, result.anchor_proposal_id
-      ? { anchor: result.anchor_proposal_id } : null, result.fallback_say);
+    return { submitted, say: [result.say, result.anchor_proposal_id
+      ? { anchor: result.anchor_proposal_id } : null, result.fallback_say] };
+  }
+  return { submitted };
+}
+
+// One response.done can carry several function_call items — the model's
+// parallel batch. Every output is submitted FIRST, then the batch gets exactly
+// ONE response (#1179):
+//
+//   - nothing must be spoken → one ordinary response.create, answering from
+//     ALL the outputs at once;
+//   - something must be spoken → the announcer's scripted response is the
+//     turn, created only now, after every output has landed (an announce
+//     mid-batch created a response against calls still unresolved). The
+//     ordinary outputs stay in context; a second create here would race the
+//     announcer's, which cancels whatever is in flight.
+//
+// Sequential, never concurrent, for the same reason as before: the calls are
+// ordered side effects (a confirm after a propose), and nothing is gained by
+// racing them — the batch answers once either way.
+async function dispatchToolBatch(calls) {
+  const toSay = [];
+  let submitted = false;
+  for (const c of calls) {
+    const r = await handleFunctionCall(c);
+    if (r.submitted) submitted = true;
+    if (r.say) toSay.push(r.say);
+  }
+  if (toSay.length) {
+    for (const args of toSay) announce(...args);
+  } else if (submitted) {
+    maybeCreateResponse();
   }
 }
 
@@ -1919,7 +1955,7 @@ async function start() {
           (async () => {
             try {
               await forwardChain;
-              for (const c of calls) await handleFunctionCall(c);
+              await dispatchToolBatch(calls);
             } catch (err) {
               log("error", "dispatch loop failed: " + err, "err");
               announce("Something went wrong handling that, so I did nothing.");
