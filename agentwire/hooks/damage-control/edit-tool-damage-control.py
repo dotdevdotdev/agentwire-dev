@@ -30,7 +30,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "c41c0fbc63b4ba224fea0451ef7b57b1dab691815b77f3390b3581a5532b47b3", "generated_at": "2026-10-22T00:22:38Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "12159c305ffd80b227cf3e3da220ecdd77f9f67507dbbed52437b597ebf8d6a6", "generated_at": "2026-10-28T23:33:38Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -6280,6 +6280,12 @@ PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = [
         r'\bagentwire\s+safety\s+(?:packs|groups)\s+(?:enable|disable)\b',
         "agentwire safety packs/groups enable|disable changes damage-control "
         "policy — host-only, run it from your own terminal (not through an agent).",
+    ),
+    (
+        r'\bagentwire\s+buddy\s+service\s+(?:install|uninstall)\b',
+        "agentwire buddy service install|uninstall writes a supervised command into "
+        "~/.agentwire/config.yaml — host-only, run it from your own terminal (not "
+        "through an agent).",
     ),
 ]
 

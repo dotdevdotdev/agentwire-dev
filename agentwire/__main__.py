@@ -2,18 +2,17 @@
 
 import argparse
 import sys
-from pathlib import Path
 
-from dotenv import load_dotenv
+from .env_loader import load_env_files
 
-# Load .env files (project first, then global config)
-load_dotenv()  # .env in current directory
-load_dotenv(Path.home() / ".agentwire" / ".env")  # Global config
+# Load env files (project first, then global config) — before anything that
+# reads the environment at import time.
+load_env_files()
 
-from . import (  # noqa: E402  # must follow load_dotenv() above
+from . import (  # noqa: E402  # must follow load_env_files() above
     __version__,
 )
-from .core import (  # noqa: E402,F401  # E402: must follow load_dotenv(); F401: re-exported moved helpers
+from .core import (  # noqa: E402,F401  # E402: must follow load_env_files(); F401: re-exported moved helpers
     _UNATTENDED_ENV_KEYS,
     CONFIG_DIR,
     AgentCommand,

@@ -38,10 +38,18 @@ OPENAI_API_KEY=sk-...
 Then:
 
 ```bash
-agentwire doctor                # reports the flag, and whether the key is present
-agentwire buddy register buddy  # the session identity (no tmux session)
-agentwire buddy serve buddy     # the bridge, on 127.0.0.1:8788
+agentwire doctor                    # reports the flag, and whether the key is present
+agentwire buddy service install     # register + supervise + start, on 127.0.0.1:8788
 ```
+
+`service install` is the no-babysitting path (#1184): it registers the buddy
+identity if needed, writes the [§6](#6-lifecycle-host) `services.custom` entry
+as service `agentwire-buddy`, and starts it under the watchdog. Add
+`--autostart` to also boot it with the portal; `service uninstall` reverses it
+and keeps the identity. It is **human-only** — run it from your own terminal —
+for the same reason as `safety packs enable`: it writes a supervised command
+into protected control plane. To hand-launch instead (foreground, Ctrl-C to
+stop): `agentwire buddy register buddy && agentwire buddy serve buddy`.
 
 `agentwire doctor` reports the flag's state either way — including "off",
 because "is this costing me anything?" is a question a doctor run should
@@ -101,11 +109,14 @@ main's 11ms — it was 242ms and 24 stderr log lines before those two fixes.
 
 ### The one thing the flag does not gate, and why
 
-The `services.custom` entry in [§6 Lifecycle host](#6-lifecycle-host) needs no
-gating: **nothing ships it.** The registry has no built-in buddy entry
+The `services.custom` entry in [§6 Lifecycle host](#6-lifecycle-host) is not
+on by default: **nothing ships it.** The registry has no built-in buddy entry
 (`services.registry()` adds only the notifications bridge), and `config.yaml`
-is protected control plane that this feature never writes. The entry exists
-only if you paste it yourself.
+is protected control plane — `command` is execution plane, so `agentwire
+config set` refuses it by design. The entry exists only once a human runs
+`agentwire buddy service install` (itself beta-gated, tty-gated and blocked for
+an agent's Bash tool) or pastes it by hand. While the flag is on and no entry
+exists, `doctor` names that command as an `[..]` line, not an issue.
 
 The ordering is worth stating, though, because the failure is confusing rather
 than loud: paste that entry while the flag is off and the supervised process is
@@ -2295,15 +2306,19 @@ registry grew a second kind, `command`, which is entirely generic — it
 supervises a process and has no idea the voice layer exists. The buddy is one
 caller of it.
 
-The entry, ready to paste. It is **not** written into the owner's
-`config.yaml` by anything on this branch (that file is protected control plane,
-and a spike must not add itself to a startup path); wiring it up is one edit:
+`agentwire buddy service install` writes exactly this entry (human-only; see
+[§0](#0-opting-in)) — nothing writes it automatically, because `config.yaml`
+is protected control plane and a beta must not add itself to a startup path.
+The name is `agentwire-buddy`, not `buddy`: `buddy` is the session identity
+other sessions message, and a tmux session under that name would be a pane
+`agentwire send` could paste into. `agentwire-buddy` is also already on the
+built-in service list, so fleet listings classify it as infrastructure.
 
 ```yaml
 # ~/.agentwire/config.yaml
 services:
   custom:
-    - name: buddy
+    - name: agentwire-buddy
       command: agentwire buddy serve buddy --port 8788
       autostart: false        # flip to true when you want it on the startup path
       restart: on-failure

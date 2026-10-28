@@ -346,15 +346,14 @@ async def replay(api_key: str, steps: tuple[Step, ...] = STEPS) -> list[list[dic
 
 
 def main() -> int:
-    from pathlib import Path
+    from ..env_loader import GLOBAL_ENV_FILE, load_env_file, missing_env_message
+    from .realtime import API_KEY_ENV
 
-    from dotenv import load_dotenv
-
-    # Same load the CLI entry point does — the one blessed secrets file.
-    load_dotenv(Path.home() / ".agentwire" / ".env")
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    # Same loader the CLI entry point uses — the one blessed secrets file.
+    load_env_file(GLOBAL_ENV_FILE)
+    api_key = os.environ.get(API_KEY_ENV, "").strip()
     if not api_key:
-        print("OPENAI_API_KEY is not set (~/.agentwire/.env)", file=sys.stderr)
+        print(missing_env_message(API_KEY_ENV), file=sys.stderr)
         return 2
     failed = 0
     for step, turns in zip(STEPS, asyncio.run(replay(api_key))):

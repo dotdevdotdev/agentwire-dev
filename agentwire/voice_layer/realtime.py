@@ -25,6 +25,8 @@ import os
 import urllib.error
 import urllib.request
 
+from ..env_loader import missing_env_message
+
 CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 CALLS_URL = "https://api.openai.com/v1/realtime/calls"
 
@@ -116,10 +118,7 @@ def validate_voice(voice: str) -> str:
 def api_key() -> str:
     key = os.environ.get(API_KEY_ENV, "").strip()
     if not key:
-        raise RealtimeError(
-            f"{API_KEY_ENV} is not set. Add it to ~/.agentwire/.env (chmod 600) — "
-            "the one blessed spot for secrets."
-        )
+        raise RealtimeError(missing_env_message(API_KEY_ENV))
     return key
 
 
