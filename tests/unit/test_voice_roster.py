@@ -6,6 +6,9 @@ which tools deep-dive them — compact and budgeted, ranked by recent activity,
 never an unbounded dump. Deep dives stay tool calls.
 """
 
+import json
+import os
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -163,3 +166,71 @@ def test_project_context_refuses_bad_shapes_before_reading_anything(project):
               if tools.dispatch("project_context", s, "buddy")["success"] is not False]
     assert not leaked, leaked
     assert project == []
+
+
+# ---------------------------------------------------------------------------
+# Confinement: a cloned repo is attacker-shaped (#1182 review)
+# ---------------------------------------------------------------------------
+
+SECRET = "SECRET-KEY-MATERIAL-7731"
+
+
+def _context_json(project_fixture) -> str:
+    return json.dumps(tools.dispatch("project_context", {"project": "proj"}, "buddy"))
+
+
+def test_symlinks_out_of_the_project_ship_nothing(project, tmp_path):
+    root = tmp_path / "proj"
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "id_ed25519").write_text(SECRET)
+    (outside / "skill").mkdir()
+    (outside / "skill" / "SKILL.md").write_text(f"---\nname: x\ndescription: {SECRET}\n---\n")
+    # CLAUDE.md, AGENTS.md, a SKILL.md file, a whole skill dir, MEMORY.md, README.
+    for link in ("CLAUDE.md", "AGENTS.md", "README.md"):
+        (root / link).unlink(missing_ok=True)
+        (root / link).symlink_to(outside / "id_ed25519")
+    leak = root / ".claude" / "skills" / "leak"
+    leak.mkdir()
+    (leak / "SKILL.md").symlink_to(outside / "id_ed25519")
+    (root / ".claude" / "skills" / "leakdir").symlink_to(outside / "skill")
+    from agentwire import history
+    mem = history.claude_projects_dir() / history.encode_project_path(str(root.resolve())) / "memory"
+    (mem / "MEMORY.md").unlink()
+    (mem / "MEMORY.md").symlink_to(outside / "id_ed25519")
+
+    out = _context_json(project)
+    assert SECRET not in out, out
+    result = json.loads(out)["untrusted_content"]
+    assert result["claude_md"] is None and result["memory_index"] is None
+    assert [s["name"] for s in result["skills"]] == ["deploy"]
+    assert SECRET not in digest.overview_line(str(root))
+
+
+def test_a_symlink_inside_the_project_still_reads(project, tmp_path):
+    """The false-reject half: confinement is about WHERE it lands, not links."""
+    root = tmp_path / "proj"
+    (root / "docs").mkdir()
+    (root / "docs" / "guide.md").write_text("Inside the repo.\n")
+    (root / "CLAUDE.md").unlink()
+    (root / "CLAUDE.md").symlink_to(root / "docs" / "guide.md")
+    result = tools.dispatch("project_context", {"project": "proj", "part": "claude_md"}, "buddy")
+    assert result["untrusted_content"]["claude_md"] == "Inside the repo.\n"
+
+
+def test_a_fifo_cannot_hang_the_bridge(project, tmp_path):
+    root = tmp_path / "proj"
+    (root / "CLAUDE.md").unlink()
+    os.mkfifo(root / "CLAUDE.md")
+    done: dict = {}
+    worker = threading.Thread(
+        target=lambda: done.update(r=tools.dispatch("project_context", {"project": "proj"}, "buddy")),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(2)
+    if worker.is_alive():  # unblock the reader so the test process can exit
+        fd = os.open(root / "CLAUDE.md", os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        pytest.fail("project_context blocked on a FIFO")
+    assert done["r"]["success"] and done["r"]["untrusted_content"]["claude_md"] is None

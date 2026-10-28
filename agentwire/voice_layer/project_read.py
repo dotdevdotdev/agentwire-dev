@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -336,38 +337,64 @@ _MAX_LISTED = 30
 _TASKS_FILE = ".agentwire.tasks.yml"
 
 
-def _read(path: Path, limit: int) -> "str | None":
+def read_confined(path: Path, root: Path, limit: int) -> "str | None":
+    """Up to *limit* characters of *path*, or None — and None for anything
+    that is not a regular file INSIDE *root* once every symlink is resolved.
+
+    A cloned repo is attacker-shaped: ``CLAUDE.md -> ~/.ssh/id_ed25519`` would
+    otherwise ship that key to the model, and a FIFO named ``CLAUDE.md`` would
+    hang the bridge on open. So: resolve, require containment, then open with
+    ``O_NOFOLLOW | O_NONBLOCK`` and check the OPENED file is regular (``fstat``,
+    not a pre-open ``stat`` — no window for a swap between check and read).
+    """
     try:
-        text = path.read_text(errors="replace")
+        real = path.resolve(strict=True)
+        base = root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not real.is_relative_to(base):
+        return None
+    try:
+        fd = os.open(real, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            raw = fh.read(limit * 4 + 4)  # UTF-8 is at most 4 bytes a character
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    text = raw.decode("utf-8", errors="replace")
     return text if len(text) <= limit else text[:limit] + "\n…[truncated]"
 
 
 def _claude_md(root: Path, limit: int) -> "str | None":
-    text = _read(root / "CLAUDE.md", limit)
+    text = read_confined(root / "CLAUDE.md", root, limit)
     # A CLAUDE.md that is only `@AGENTS.md`-style imports says nothing itself.
     if text is not None and all(
         not ln.strip() or ln.strip().startswith("@") for ln in text.splitlines()
     ):
-        text = _read(root / "AGENTS.md", limit) or text
+        text = read_confined(root / "AGENTS.md", root, limit) or text
     return text
 
 
 def _memory(root: Path, limit: int) -> "str | None":
     from ..history import claude_projects_dir, encode_project_path
 
-    return _read(
-        claude_projects_dir() / encode_project_path(str(root.resolve())) / "memory" / "MEMORY.md",
-        limit,
-    )
+    memory = claude_projects_dir() / encode_project_path(str(root.resolve())) / "memory"
+    return read_confined(memory / "MEMORY.md", memory, limit)
 
 
 def _skills(root: Path) -> list[dict]:
     out = []
     for skill in sorted((root / ".claude" / "skills").glob("*/SKILL.md"))[:_MAX_LISTED]:
+        text = read_confined(skill, root, 2000)
+        if text is None:
+            continue  # escapes the project, or not a regular file: not listed at all
         meta = {"name": skill.parent.name, "description": ""}
-        text = _read(skill, 2000) or ""
         if text.startswith("---"):
             for line in text.split("---", 2)[1].splitlines():
                 key, _, value = line.partition(":")
@@ -380,7 +407,7 @@ def _skills(root: Path) -> list[dict]:
 def _tasks(root: Path) -> "list[dict] | None":
     import yaml
 
-    text = _read(root / _TASKS_FILE, 50_000)
+    text = read_confined(root / _TASKS_FILE, root, 50_000)
     if text is None:
         return None
     try:

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..core import run_agentwire_cmd
+from .project_read import read_confined
 
 MAX_CHARS = 6000
 MAX_PROJECT_ROWS = 20
@@ -94,9 +95,10 @@ def overview_line(project_path: str) -> str:
     CLAUDE.md, then AGENTS.md (what an ``@AGENTS.md`` import points at).
     Headings, blanks, fences, lists, imports and boilerplate are skipped."""
     for name in ("README.md", "CLAUDE.md", "AGENTS.md"):
-        try:
-            text = (Path(project_path) / name).read_text(errors="replace")[:4000]
-        except OSError:
+        # Confined like project_context: a symlinked README must not put a
+        # file from elsewhere on disk into the roster.
+        text = read_confined(Path(project_path) / name, Path(project_path), 4000)
+        if text is None:
             continue
         fenced = False
         for raw in text.splitlines():
