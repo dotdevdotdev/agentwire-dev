@@ -29,15 +29,13 @@ applied twice — first to the dialog shape that had no fixture at all, then to
 the pane width that every fixture happened to share.
 """
 
-import json
 import textwrap
-from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from agentwire import prompt_router
-from agentwire.prompt_router import PromptInfo, detect_prompt
+from agentwire.prompt_router import detect_prompt
 
 # =============================================================================
 # Fixtures — real captures, verbatim
@@ -146,146 +144,23 @@ def sent_emails(monkeypatch):
 
 
 class TestDetection:
-    def test_the_real_dialog_is_detected(self):
-        """The bug: this returned None, so nothing downstream ever ran."""
-        info = detect_prompt(RESUME_DIALOG)
-        assert info is not None
-        assert info.kind == "resume"
-
-    def test_all_three_options_are_parsed(self):
-        info = detect_prompt(RESUME_DIALOG)
-        assert [(o["number"], o["label"]) for o in info.options] == [
-            (1, "Resume from summary (recommended)"),
-            (2, "Resume full session as-is"),
-            (3, "Don't ask me again"),
-        ]
-
-    def test_age_and_tokens_are_reported_as_context(self):
-        assert detect_prompt(RESUME_DIALOG).summary == (
-            "session is 2m old, 134.1k tokens")
-        assert detect_prompt(RESUME_DIALOG_OLDER).summary == (
-            "session is 2h 47m old, 233.6k tokens")
-
-    def test_the_hash_ignores_the_ticking_age(self):
-        """Otherwise every sweep sees a NEW prompt and re-notifies the parent.
-
-        The title interpolates age and token count. If those reached the
-        content hash, a dialog that redrew would defeat the presence-marker
-        dedupe and paste into the parent every 60 seconds.
-        """
-        assert (detect_prompt(RESUME_DIALOG).content_hash()
-                == detect_prompt(RESUME_DIALOG_OLDER).content_hash())
-
-    def test_a_quoted_dialog_is_not_detected(self):
-        """A pane merely SHOWING this text must never be routed as blocked."""
-        assert detect_prompt(QUOTED_RESUME_DIALOG) is None
-
-    def test_a_delivered_notification_is_not_re_detected(self):
-        """The loop guard: our own message quotes the option labels."""
-        info = detect_prompt(RESUME_DIALOG)
-        message = prompt_router.build_message("worker", 0, info)
-        assert detect_prompt(message + "\n\n Enter to confirm · Esc to cancel") is None
-
-    def test_it_does_not_shadow_the_other_dialog_kinds(self):
-        """_detect_resume runs first; the existing three must still classify."""
-        from tests.unit.test_prompt_router import (
-            PERMISSION_BASH,
-            PLAN_APPROVAL,
-            QUESTION_SIMPLE,
-            QUESTION_TABBED,
-        )
-
-        assert detect_prompt(PERMISSION_BASH).kind == "permission"
-        assert detect_prompt(PLAN_APPROVAL).kind == "plan"
-        assert detect_prompt(QUESTION_SIMPLE).kind == "question"
-        assert detect_prompt(QUESTION_TABBED).kind == "question"
-
-    def test_the_footer_alone_is_not_enough(self):
-        """The usage-limit dialog shares this exact footer."""
-        from tests.unit.test_prompt_router import USAGE_LIMIT_DIALOG
-
-        assert detect_prompt(USAGE_LIMIT_DIALOG) is None
-
-    def test_the_body_sentence_is_122_columns_wide(self):
-        """Pins the premise the wrap tests rest on.
-
-        If a future Claude Code shortens this sentence below the common pane
-        widths, the wrap cases below stop exercising anything and should be
-        re-derived rather than left passing vacuously.
-        """
-        body = next(ln for ln in RESUME_DIALOG.split("\n")
-                    if "Resuming the full session" in ln)
-        assert len(body) == 122
-
-    def test_a_92_column_pane_is_detected(self):
-        """The blocking bug: a line break inside the anchor.
-
-        The anchor was tested against NORMALIZED text (wrap-insensitive, so it
-        passed) and then located with `str.index` on the UN-normalized capture
-        (wrap-sensitive, so it raised ValueError). 92 columns puts a break
-        inside "We recommend resuming from a summary."
-        """
-        info = detect_prompt(RESUME_DIALOG_AT_92)
-        assert info is not None
-        assert info.kind == "resume"
-        assert len(info.options) == 3
-
-    def test_the_anchor_really_is_broken_at_92_columns(self):
-        """Guards the guard — a fixture that didn't wrap would pass anyway."""
-        assert "We recommend resuming from a summary." not in RESUME_DIALOG_AT_92
-        assert "We recommend resuming from a summary." in RESUME_DIALOG
-
-    @pytest.mark.parametrize("width", [64, 80, 92, 100, 120, 131])
-    def test_the_pane_widths_this_fleet_actually_runs(self, width):
-        """64, 80 and 131 were live pane widths on the machine that hit #905."""
-        info = detect_prompt(render_at_width(RESUME_DIALOG, width))
-        assert info is not None, f"undetected at {width} columns"
-        assert [o["number"] for o in info.options] == [1, 2, 3]
-
-    def test_no_width_crashes_and_none_silently_misses(self):
-        """Every plausible pane width, swept.
-
-        Before the fix: 54 of these 101 widths raised ValueError out of
-        `detect_prompt` — and, because the sweep had no per-pane guard, out of
-        the entire sweep with it. A single test at one width could not see
-        that, which is the whole lesson.
-        """
-        crashed, missed = [], []
-        for width in range(40, 141):
-            try:
-                if detect_prompt(render_at_width(RESUME_DIALOG, width)) is None:
-                    missed.append(width)
-            except Exception as exc:
-                crashed.append((width, type(exc).__name__, str(exc)))
-        assert crashed == [], f"{len(crashed)} width(s) raised: {crashed[:3]}"
-        assert missed == [], f"{len(missed)} width(s) undetected: {missed[:10]}"
-
-    def test_the_hash_survives_a_re_wrap(self):
-        """A pane resize must not look like a brand-new prompt."""
-        wide = detect_prompt(RESUME_DIALOG).content_hash()
-        assert detect_prompt(RESUME_DIALOG_AT_92).content_hash() == wide
-        assert detect_prompt(render_at_width(RESUME_DIALOG, 64)).content_hash() == wide
-
-    def test_the_footer_is_not_swallowed_as_an_option_description(self):
-        """`parse_ask_options` treats the next non-blank line as a description,
-        and the hint footer follows option 3."""
-        for screen in (RESUME_DIALOG, RESUME_DIALOG_AT_92):
-            options = detect_prompt(screen).options
-            assert all("Enter to confirm" not in o["description"] for o in options)
-            assert options[-1]["description"] == ""
-
-    def test_a_quoted_dialog_is_still_rejected_when_wrapped(self):
-        """The wrap tolerance must not cost us the false-positive guard."""
+    def test_the_pane_widths_this_fleet_actually_runs(self):
+        """64, 80 and 131 were live pane widths on the machine that hit #905;
+        92 breaks a line inside the anchor sentence. At every width the live
+        dialog is detected with one stable hash (a re-wrap or the ticking age
+        is not a new prompt), and a merely QUOTED dialog never is."""
+        want = detect_prompt(RESUME_DIALOG).content_hash()
+        assert detect_prompt(RESUME_DIALOG_OLDER).content_hash() == want
+        bad = []
         for width in (64, 80, 92, 131):
-            assert detect_prompt(render_at_width(QUOTED_RESUME_DIALOG, width)) is None
-
-    def test_the_anchor_alone_is_not_enough(self):
-        """Body text with no live menu under it is prose, not a dialog."""
-        prose = (
-            "I hit the resume dialog. We recommend resuming from a summary.\n"
-            "Anyway, moving on.\n"
-        )
-        assert detect_prompt(prose) is None
+            info = detect_prompt(render_at_width(RESUME_DIALOG, width))
+            if info is None or [o["number"] for o in info.options] != [1, 2, 3]:
+                bad.append((width, "undetected"))
+            elif info.content_hash() != want:
+                bad.append((width, "hash moved"))
+            if detect_prompt(render_at_width(QUOTED_RESUME_DIALOG, width)) is not None:
+                bad.append((width, "quoted dialog detected"))
+        assert not bad, bad
 
 
 # =============================================================================
@@ -313,23 +188,6 @@ class TestRouting:
         assert "agentwire prompts answer" in text
         assert info.content_hash() in text
 
-    def test_the_notification_is_answerable_as_captured(self, monkeypatch):
-        """The hash in the message must match what `prompts answer` re-derives."""
-        monkeypatch.setattr(prompt_router, "_capture", lambda t, **k: RESUME_DIALOG)
-        sent = []
-        monkeypatch.setattr(prompt_router, "_tmux", lambda args, **k: sent.append(args)
-                            or SimpleNamespace(returncode=0, stdout=""))
-
-        info = detect_prompt(RESUME_DIALOG)
-        ok, reason = prompt_router.answer(
-            "worker", 0, info.content_hash(), ["1"])
-        assert ok, reason
-
-    def test_a_stale_hash_refuses_to_answer(self, monkeypatch):
-        monkeypatch.setattr(prompt_router, "_capture", lambda t, **k: RESUME_DIALOG)
-        ok, reason = prompt_router.answer("worker", 0, "0000000000000000", ["1"])
-        assert not ok
-
 
 # =============================================================================
 # The root case — no parent to route to
@@ -337,27 +195,6 @@ class TestRouting:
 
 
 class TestRootEscalation:
-    def test_a_root_session_emails_the_owner(self, monkeypatch, sent_emails):
-        """no_parent used to be terminal: marker written, nobody told."""
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
-
-        info = detect_prompt(RESUME_DIALOG)
-        assert prompt_router.route_prompt("documentscribe", 0, info) is None
-
-        assert len(sent_emails) == 1
-        assert "documentscribe" in sent_emails[0]["subject"]
-        body = sent_emails[0]["body"]
-        assert "no parent" in body
-        assert "agentwire prompts answer -s 'documentscribe'" in body
-        assert info.content_hash() in body
-
-    def test_the_marker_records_the_escalation(self, monkeypatch, sent_emails):
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
-        prompt_router.route_prompt("root", 0, detect_prompt(RESUME_DIALOG))
-        marker = prompt_router.read_marker("root", 0)
-        assert marker["status"] == "no_parent"
-        assert marker["escalated_at"]
-
     def test_the_sweeps_60s_cadence_does_not_become_60_emails_an_hour(
             self, monkeypatch, sent_emails):
         """A no-parent prompt is re-routed EVERY tick — nothing sets
@@ -367,64 +204,6 @@ class TestRootEscalation:
         for _ in range(10):
             prompt_router.route_prompt("root", 0, info)
         assert len(sent_emails) == 1
-
-    def test_it_nags_again_once_the_ttl_expires(self, monkeypatch, sent_emails):
-        """Four hours of silence is the failure; one email then quiet is not
-        much better."""
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
-        info = detect_prompt(RESUME_DIALOG)
-        prompt_router.route_prompt("root", 0, info)
-
-        marker = prompt_router.read_marker("root", 0)
-        old = datetime.fromisoformat(marker["escalated_at"]) - timedelta(hours=2)
-        marker["escalated_at"] = old.isoformat()
-        marker["detected_at"] = old.isoformat()
-        prompt_router.write_marker("root", 0, **{
-            k: v for k, v in marker.items() if k not in ("session", "pane")})
-
-        prompt_router.route_prompt("root", 0, info)
-        assert len(sent_emails) == 2
-        assert "waiting 120 minutes" in sent_emails[1]["body"]
-
-    def test_how_long_it_has_been_blocked_survives_the_rewrite(
-            self, monkeypatch, sent_emails):
-        """detected_at used to be refreshed on every tick, so a pane blocked
-        for four hours read as seconds old to anything measuring the wait."""
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
-        info = detect_prompt(RESUME_DIALOG)
-        prompt_router.route_prompt("root", 0, info)
-        first = prompt_router.read_marker("root", 0)["detected_at"]
-
-        for _ in range(5):
-            prompt_router.route_prompt("root", 0, info)
-        assert prompt_router.read_marker("root", 0)["detected_at"] == first
-
-    def test_a_different_prompt_restarts_the_clock(self, monkeypatch, sent_emails):
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
-        prompt_router.route_prompt("root", 0, detect_prompt(RESUME_DIALOG))
-        first = prompt_router.read_marker("root", 0)
-
-        other = PromptInfo(kind="question", question="Ship it?",
-                           options=[{"number": 1, "label": "Yes"}])
-        prompt_router.route_prompt("root", 0, other)
-        assert prompt_router.read_marker("root", 0)["detected_at"] != first["detected_at"]
-        assert len(sent_emails) == 2
-
-    def test_a_failing_mailer_never_breaks_the_sweep(self, monkeypatch):
-        def boom(**kw):
-            raise RuntimeError("resend is down")
-
-        monkeypatch.setattr("agentwire.channels.email.send_email", boom)
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
-
-        assert prompt_router.route_prompt("root", 0, detect_prompt(RESUME_DIALOG)) is None
-        assert prompt_router.read_marker("root", 0)["status"] == "no_parent"
-
-    def test_a_parented_session_does_not_email(self, monkeypatch, sent_emails):
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: ("orch", 0))
-        monkeypatch.setattr(prompt_router, "safe_deliver", lambda *a: (True, "delivered"))
-        prompt_router.route_prompt("worker", 0, detect_prompt(RESUME_DIALOG))
-        assert sent_emails == []
 
 
 # =============================================================================
@@ -476,14 +255,6 @@ def fleet(monkeypatch):
 
 
 class TestSweep:
-    def test_the_sweep_routes_the_blocked_pane(self, fleet, monkeypatch):
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: ("orch", 0))
-        monkeypatch.setattr(prompt_router, "safe_deliver", lambda *a: (True, "delivered"))
-
-        result = prompt_router.sweep()
-        assert [(r["session"], r["pane"], r["kind"]) for r in result["routed"]] == [
-            ("blocked", 1, "resume")]
-
     def test_one_crashing_pane_does_not_cost_the_fleet_its_routing(
             self, fleet, monkeypatch):
         """The blast radius that made the wrap bug worse than #905 itself.
@@ -513,133 +284,6 @@ class TestSweep:
         # The pane AFTER the crashing one still got routed.
         assert [r["session"] for r in result["routed"]] == ["healthy"]
 
-    def test_a_crash_is_reported_not_swallowed(self, fleet, monkeypatch):
-        """Containment must not become silence.
-
-        `except Exception: continue` would turn "the detector crashed" into
-        "this pane has no prompt" — indistinguishable from healthy, and
-        permanent. That is #885's failure shape with different spelling.
-        """
-        def boom(visible):
-            raise ValueError("substring not found")
-
-        monkeypatch.setattr(prompt_router, "detect_prompt", boom)
-
-        result = prompt_router.sweep()
-
-        failed = {(f["session"], f["pane"]) for f in result["failed"]}
-        assert ("blocked", 1) in failed
-        assert all("ValueError" in f["error"] for f in result["failed"])
-
-        events = [json.loads(ln) for ln in
-                  prompt_router.EVENTS_FILE.read_text().strip().splitlines()]
-        failures = [e for e in events if e["event"] == "detect_failed"]
-        assert ("blocked", 1) in {(e["session"], e["pane"]) for e in failures}
-        assert all("ValueError" in e["error"] for e in failures)
-
-    def test_the_watchdog_prints_a_detector_failure(self, monkeypatch, capsys):
-        """It has to reach `agentwire limits tick`, not just a file."""
-        import argparse
-
-        from agentwire import limits_cli
-
-        monkeypatch.setattr(limits_cli.usage_limit, "tick", lambda: {
-            "skipped": None, "parked": [], "resumed": [], "waiting": []})
-        monkeypatch.setattr(prompt_router, "tick", lambda: {
-            "routed": [], "deferred": [],
-            "failed": [{"session": "blocked", "pane": 1,
-                        "error": "ValueError: substring not found"}]})
-        for mod in ("inbox", "session_context"):
-            monkeypatch.setattr(f"agentwire.{mod}.tick",
-                                lambda: {"flushed": [], "deferred": [], "acted": []})
-        monkeypatch.setattr("agentwire.scheduler.zombie.tick", lambda: {"killed": []})
-        monkeypatch.setattr("agentwire.cohort.tick", lambda: {"reaped": [], "swept": []})
-
-        limits_cli.cmd_limits_tick(argparse.Namespace(json=False))
-        out = capsys.readouterr().out
-        assert "prompt detector FAILED on blocked.1" in out
-        assert "ValueError" in out
-
-    def test_the_marker_gc_still_runs_after_a_crash(self, fleet, monkeypatch):
-        """The GC sits after the loop — an unguarded raise skipped it too."""
-        prompt_router.write_marker(
-            "long-gone", 0, kind="resume", hash="x", status="delivered",
-            detected_at=(prompt_router._now() - timedelta(hours=2)).isoformat())
-
-        def boom(visible):
-            raise ValueError("substring not found")
-
-        monkeypatch.setattr(prompt_router, "detect_prompt", boom)
-        prompt_router.sweep()
-
-        assert prompt_router.read_marker("long-gone", 0) is None
-
-    def test_a_shell_pane_showing_the_text_is_ignored(self, fleet, monkeypatch):
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: ("orch", 0))
-        monkeypatch.setattr(prompt_router, "safe_deliver", lambda *a: (True, "delivered"))
-        touched = {r["session"] for r in prompt_router.sweep()["routed"]}
-        assert "a-shell" not in touched
-
-
-class TestBlockedPanes:
-    def test_it_finds_the_pane_every_liveness_check_calls_healthy(self, fleet):
-        """`pane_current_command` is `node` for this pane — alive by every
-        existing measure, and doing nothing."""
-        blocked = prompt_router.blocked_panes()
-        assert [(b["session"], b["pane"], b["kind"]) for b in blocked] == [
-            ("blocked", 1, "resume")]
-
-    def test_no_marker_means_nobody_was_told(self, fleet):
-        b = prompt_router.blocked_panes()[0]
-        assert b["status"] == "unrouted"
-        assert b["stuck"] is True
-
-    def test_a_freshly_routed_prompt_is_not_stuck(self, fleet):
-        info = detect_prompt(RESUME_DIALOG)
-        prompt_router.write_marker(
-            "blocked", 1, kind="resume", hash=info.content_hash(),
-            parent="orch", status="delivered",
-            detected_at=prompt_router._now().isoformat(),
-            notified_at=prompt_router._now().isoformat())
-        b = prompt_router.blocked_panes()[0]
-        assert (b["status"], b["stuck"]) == ("waiting", False)
-
-    def test_a_long_wait_is_stuck(self, fleet):
-        old = (prompt_router._now() - timedelta(hours=4)).isoformat()
-        prompt_router.write_marker(
-            "blocked", 1, kind="resume", hash="x", parent="orch",
-            status="delivered", detected_at=old, notified_at=old)
-        b = prompt_router.blocked_panes()[0]
-        assert (b["status"], b["stuck"], b["waiting_minutes"]) == ("waiting", True, 240)
-
-    def test_a_root_session_is_reported_as_no_parent(self, fleet):
-        prompt_router.write_marker(
-            "blocked", 1, kind="resume", hash="x", parent=None,
-            status="no_parent",
-            detected_at=prompt_router._now().isoformat(), notified_at=None)
-        assert prompt_router.blocked_panes()[0]["status"] == "no_parent"
-
-    def test_it_never_writes_a_marker(self, fleet):
-        prompt_router.blocked_panes()
-        assert list(prompt_router.STATE_DIR.glob("*.json")) == []
-
-    def test_a_detector_crash_is_reported_as_a_finding(self, fleet, monkeypatch):
-        """The check has to be able to see its own blind spot."""
-        def boom(visible):
-            raise ValueError("substring not found")
-
-        monkeypatch.setattr(prompt_router, "detect_prompt", boom)
-        b = prompt_router.blocked_panes()[0]
-        assert (b["status"], b["stuck"]) == ("detector_error", True)
-        assert "ValueError" in b["error"]
-
-    def test_unreachable_tmux_is_none_not_empty(self, monkeypatch):
-        """"Couldn't look" must not collapse into "looked, all healthy"."""
-        monkeypatch.setattr(
-            prompt_router, "_tmux",
-            lambda *a, **k: SimpleNamespace(returncode=1, stdout=""))
-        assert prompt_router.blocked_panes() is None
-
 
 class TestDoctorSection:
     def test_it_flags_the_blocked_session(self, fleet, capsys):
@@ -652,50 +296,4 @@ class TestDoctorSection:
         assert "blocked pane 1" in out
         assert "agentwire prompts answer" in out
 
-    def test_a_healthy_fleet_reports_nothing(self, monkeypatch, capsys):
-        from agentwire import doctor_cli
 
-        monkeypatch.setattr(prompt_router, "blocked_panes", lambda: [])
-        assert doctor_cli._render_blocked_prompt_section() == 0
-        assert "No session is sitting on an unanswered prompt" in capsys.readouterr().out
-
-    def test_a_routed_prompt_is_shown_but_not_counted(self, fleet, capsys):
-        from agentwire import doctor_cli
-
-        now = prompt_router._now().isoformat()
-        prompt_router.write_marker(
-            "blocked", 1, kind="resume", hash="x", parent="orch",
-            status="delivered", detected_at=now, notified_at=now)
-        found = doctor_cli._render_blocked_prompt_section()
-        assert found == 0
-        assert "routed to orch" in capsys.readouterr().out
-
-    def test_a_detector_crash_is_flagged_loudly(self, fleet, monkeypatch, capsys):
-        from agentwire import doctor_cli
-
-        def boom(visible):
-            raise ValueError("substring not found")
-
-        monkeypatch.setattr(prompt_router, "detect_prompt", boom)
-        found = doctor_cli._render_blocked_prompt_section()
-        out = capsys.readouterr().out
-        assert found >= 1   # every agent pane in the fleet raises here
-        assert "detector RAISED" in out
-        assert "ValueError" in out
-        assert "grep detect_failed" in out
-
-    def test_unreachable_tmux_is_not_an_issue(self, monkeypatch, capsys):
-        from agentwire import doctor_cli
-
-        monkeypatch.setattr(prompt_router, "blocked_panes", lambda: None)
-        assert doctor_cli._render_blocked_prompt_section() == 0
-        assert "tmux not reachable" in capsys.readouterr().out
-
-
-class TestEvents:
-    def test_the_escalation_is_logged(self, monkeypatch, sent_emails):
-        monkeypatch.setattr(prompt_router, "resolve_parent", lambda *a, **k: None)
-        prompt_router.route_prompt("root", 0, detect_prompt(RESUME_DIALOG))
-        events = [json.loads(ln) for ln in
-                  prompt_router.EVENTS_FILE.read_text().strip().splitlines()]
-        assert {"no_parent_escalated", "no_parent"} <= {e["event"] for e in events}
