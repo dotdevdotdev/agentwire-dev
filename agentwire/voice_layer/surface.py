@@ -337,6 +337,16 @@ VOICE_NATIVE: dict[str, dict] = {
             "channel."
         ),
     },
+    "fleet_openai_usage": {
+        "grade": "read",
+        "ruling": (
+            "GETs two fixed OpenAI Admin endpoints (organization costs and "
+            "completions usage) with OPENAI_ADMIN_KEY. No agentwire capability "
+            "exists for it and it only observes: no write verb, no URL or path "
+            "from the model (only an integer day count), and only numbers and "
+            "pattern-checked labels leave it, marked untrusted."
+        ),
+    },
     "buddy_sent": {
         "grade": "read",
         "ruling": (

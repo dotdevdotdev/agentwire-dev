@@ -24,9 +24,10 @@ here at all is ruled by the tier audit in
 hatch: adding a capability means adding a tool, in a diff someone reviews.
 
 Everything dispatches through the ``agentwire`` CLI, which is the documented
-single source of truth for session logic. The one exception is
-:mod:`.project_read` — read-only ``gh``/``git`` in a project checkout, which
-agentwire has no wrapper for — held to a closed command table of its own.
+single source of truth for session logic. Two exceptions, both reads of
+things agentwire has no wrapper for: :mod:`.project_read` — read-only
+``gh``/``git`` in a project checkout, held to a closed command table of its
+own — and :mod:`.openai_usage`, two fixed GET endpoints of the OpenAI Admin API.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ..core import run_agentwire_cmd
-from . import delivery, outbox, project_read
+from . import delivery, openai_usage, outbox, project_read
 from .confirm import strip_controls
 
 # Session names as the inbox defines them. Anchored: a partial match is how a
@@ -243,6 +244,14 @@ def _project_context(args: dict) -> dict:
     try:
         return project_read.context(args)
     except project_read.LookupRefusedError as exc:
+        raise ToolError(str(exc)) from None
+
+
+def _fleet_openai_usage(args: dict) -> dict:
+    """OpenAI org spend + tokens — see :mod:`.openai_usage`."""
+    try:
+        return openai_usage.usage(args)
+    except openai_usage.UsageError as exc:
         raise ToolError(str(exc)) from None
 
 
@@ -1003,6 +1012,23 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
                     "type": "string",
                     "description": "Only this session, exact name from fleet_sessions.",
                 },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ReadOnlyTool(
+        name="fleet_openai_usage",
+        description=(
+            "OpenAI org spend and token use — what the voice layer (Realtime) "
+            "and anything else on this OpenAI org has cost. Today (UTC) by "
+            "default; days=N for the last N days. Returns totals plus the top "
+            "line items and models; say the dollar figure first."
+        ),
+        run=_fleet_openai_usage,
+        parameters={
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "description": "Days back, 1-31 (default 1 = today)."},
             },
             "additionalProperties": False,
         },
