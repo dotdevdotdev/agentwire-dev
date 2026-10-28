@@ -300,6 +300,16 @@ VOICE_NATIVE: dict[str, dict] = {
             "overrides so no checkout config runs a program on a read."
         ),
     },
+    "project_context": {
+        "grade": "read",
+        "ruling": (
+            "Reads a configured project's own files (#1179): CLAUDE.md, the "
+            "Claude memory index for its path, skill frontmatter, task names. "
+            "No agentwire capability exists for it; it opens files at paths "
+            "derived from `agentwire projects list`, never from the model, and "
+            "writes nothing. Content returns as untrusted_content with a note."
+        ),
+    },
     "buddy_inbox": {
         "grade": "write_light",
         "ruling": (

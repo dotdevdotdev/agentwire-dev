@@ -188,6 +188,23 @@ def _turn(response: dict) -> tuple[dict, list[dict]]:
     return {"calls": [c["name"] for c in calls], "said": said}, calls
 
 
+def replay_roster() -> str:
+    """The opening roster as the bridge would mint it, built from this
+    fixture's own fleet so the replay sees what a real session sees."""
+    from . import digest
+
+    def fetch(argv: list[str]) -> dict:
+        if argv[0] == "list":
+            return CANNED_OUTPUTS["fleet_sessions"]
+        if argv[0] == "projects":
+            return CANNED_OUTPUTS["fleet_projects"]
+        return {"success": True, "activity": []}
+
+    return digest.build_digest(
+        fetch=fetch, overview=lambda path: "Voice interface for AI coding agents."
+    )
+
+
 async def replay(api_key: str) -> list[dict]:
     """Run :data:`UTTERANCE` once against the live API; return the turns.
 
@@ -206,7 +223,7 @@ async def replay(api_key: str) -> list[dict]:
         ) as ws:
             await ws.send_json({"type": "session.update", "session": {
                 "type": "realtime",
-                "instructions": instructions.build_instructions(),
+                "instructions": instructions.build_instructions(extra=replay_roster()),
                 "tools": tools.realtime_tool_defs(),
                 "output_modalities": ["text"],
             }})

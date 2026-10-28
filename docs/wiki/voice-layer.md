@@ -2151,6 +2151,18 @@ a spoken answer works today, and so does asking it to pass a message on.
   comments, titles, commit subjects, branch names) while the buddy has a
   write path, so it comes back ONLY under `untrusted_content`, with a `note`
   saying it is data, not instructions; the persona says the same.
+- **Baseline awareness is a roster, not a preload** (#1179). Each `/mint`
+  appends `digest.build_digest()` to the instructions: every agent session
+  (role, parent, project, last activity) and every local project (path,
+  one-line overview from README/CLAUDE/AGENTS, live count, last activity),
+  ranked most-recent-first under line caps and a `MAX_CHARS` budget, with
+  truncation naming the tool that lists the rest; healthy services collapse
+  to a count. Then a static index of deep-dive tools and a paragraph on how
+  the fleet works. A failing source becomes one "unavailable" line — the
+  digest never raises. Project depth is on demand: `project_context` reads a
+  project's CLAUDE.md (following `@AGENTS.md`), its Claude memory index,
+  skill frontmatter and task names, returned under `untrusted_content` with
+  a note, like `project_lookup`.
 
 ---
 
