@@ -1228,6 +1228,10 @@ function addTaskbarButton(id, windowInstance) {
     });
     elements.taskbarWindows.appendChild(btn);
     bindTaskbarDragover();
+    // The tab list is read from these buttons, but the saves that fire while a
+    // window opens (record, onfocus) run before this one exists and persist an
+    // empty set. Chrome happens to focus again later; Safari doesn't (#1173).
+    saveTaskbarState();
 
     // Listen for minimize events to update tab styling
     desktop.on('window_minimized', ({ id: minimizedId }) => {
