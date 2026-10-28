@@ -238,6 +238,14 @@ def _project_lookup(args: dict) -> dict:
         raise ToolError(str(exc)) from None
 
 
+def _project_context(args: dict) -> dict:
+    """A project's own notes on demand — see :func:`.project_read.context`."""
+    try:
+        return project_read.context(args)
+    except project_read.LookupRefusedError as exc:
+        raise ToolError(str(exc)) from None
+
+
 def _query_arg(args: dict, key: str = "query") -> str:
     """A free-text search string, made safe as a positional CLI argument.
 
@@ -698,6 +706,29 @@ READ_ONLY_TOOLS: tuple[ReadOnlyTool, ...] = (
                 "ref": {"type": "string", "description": "Branch for log."},
             },
             "required": ["project", "lookup"],
+            "additionalProperties": False,
+        },
+    ),
+    ReadOnlyTool(
+        name="project_context",
+        description=(
+            "A project's own notes: its CLAUDE.md (how the project works), the "
+            "memory index sessions keep about it, its skills, and its scheduled "
+            "tasks. Call it when asked about a project's workflow, conventions "
+            "or history, or before giving an opinion on how to approach work "
+            "in it. part=all gives a trimmed view of everything."
+        ),
+        run=_project_context,
+        parameters={
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name, as in the roster or fleet_projects.",
+                },
+                "part": {"type": "string", "enum": list(project_read.PARTS)},
+            },
+            "required": ["project"],
             "additionalProperties": False,
         },
     ),

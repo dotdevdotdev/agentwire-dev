@@ -68,7 +68,7 @@ def bridge(monkeypatch):
     from agentwire.voice_layer import realtime
 
     monkeypatch.setattr(realtime, "mint_session", FakeMint())
-    return server.BuddyBridge("buddy", "tok", runner=lambda argv: {"success": True})
+    return server.BuddyBridge("buddy", "tok", roster=lambda: "", runner=lambda argv: {"success": True})
 
 
 class TestTheEpochIsReservedAtomically:
@@ -107,7 +107,7 @@ class TestTheEpochIsReservedAtomically:
         from agentwire.voice_layer import realtime
 
         monkeypatch.setattr(realtime, "mint_session", FakeMint())
-        b = server.BuddyBridge("buddy", "tok")
+        b = server.BuddyBridge("buddy", "tok", roster=lambda: "")
         b.ring = SlowReadRing()
 
         bases = []

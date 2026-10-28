@@ -48,7 +48,7 @@ import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import client, confirm, identity, realtime, tools, transcript, write_tools
+from . import client, confirm, digest, identity, realtime, tools, transcript, write_tools
 from . import instructions as buddy_instructions
 
 #: Not 8765 (portal SSL) and not 8100 (portal HTTP) — a spike must never
@@ -162,8 +162,12 @@ class BuddyBridge:
         model: str = "",
         voice: str = "",
         runner=None,
+        roster=None,
     ):
         self.buddy = buddy
+        # The opening fleet roster (#1179), injected so a test mints without
+        # shelling out to the live fleet.
+        self.roster = roster or digest.build_digest
         self.token = token
         self.model = model or realtime.DEFAULT_MODEL
         # Explicit flag → the buddy's recorded voice → the default (#1017).
@@ -364,7 +368,9 @@ class BuddyBridge:
         if not seq_base:
             return {"success": False, "error": "sequence space exhausted"}
         session = realtime.mint_session(
-            instructions=buddy_instructions.build_instructions(),
+            # The roster is built per mint: a new session starts with the
+            # fleet as it is NOW (#1179). build_digest never raises.
+            instructions=buddy_instructions.build_instructions(extra=self.roster()),
             tools=tools.realtime_tool_defs(),
             model=self.model,
             # The REQUESTED voice, minted with before it is adopted. A raise

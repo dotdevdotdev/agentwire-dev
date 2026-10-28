@@ -84,7 +84,7 @@ class TestTheMintCarriesTheVoice:
                     "model": kwargs["model"], "calls_url": "u"}
 
         monkeypatch.setattr(realtime, "mint_session", fake_mint)
-        return server.BuddyBridge("buddy", "tok"), minted
+        return server.BuddyBridge("buddy", "tok", roster=lambda: ""), minted
 
 
     def test_a_mint_with_a_voice_switches_and_reports_it(self, bridge):
