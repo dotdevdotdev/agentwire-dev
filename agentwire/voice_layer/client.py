@@ -121,6 +121,10 @@ function createAnnouncer(deps) {
   var setTimer = deps.setTimer;
   var clearTimer = deps.clearTimer;
   var onLog = deps.onLog || function () {};
+  // Structured trace (#1191) — every response.create this announcer sends, and
+  // whether it cancelled an in-flight response first. Not onLog: that one
+  // renders a row on the owner's screen.
+  var onTrace = deps.onTrace || function () {};
   // Called with (meta, how) the moment there is EVIDENCE the text was spoken —
   // "model" when a response.done carried it, "fallback" when the browser voice
   // said it. This is what the proposal anchor is driven from: see the client's
@@ -530,8 +534,13 @@ function createAnnouncer(deps) {
     // The unconditional cancel was one edge of a closed loop: cancel with
     // nothing active → error event → spoken error notice → another cancel
     // (#950 defect 2).
+    var cancelledFirst = responseActive;
     if (responseActive) send({ type: "response.cancel" });
 
+    onTrace("response.create", {
+      by: "announcer", why: item.meta ? Object.keys(item.meta).join(",") : "announce",
+      cancelledFirst: cancelledFirst, chars: item.text.length,
+    });
     send({
       type: "response.create",
       response: {
@@ -1176,6 +1185,10 @@ function createConfirmGate(deps) {
     outstanding: function () {
       return since >= 0 && now() - since < ttlMs;
     },
+    // For the trace (#1191): how long the hold has left, 0 when none.
+    remaining: function () {
+      return since < 0 ? 0 : Math.max(0, ttlMs - (now() - since));
+    },
   };
 }
 """
@@ -1212,6 +1225,91 @@ function createOutcomeRouter(deps) {
       gate.resolved();
       if (result.acted_session) ledger.actedOn(result.acted_session);
     },
+  };
+}
+"""
+
+#: The page's half of the durable trace (#1191). Same discipline as the
+#: announcer: a standalone factory with injected deps, so batching, the size
+#: bound and drop-on-error run under ``node`` against a fake transport.
+#: Exported by :func:`tracer_source`.
+TRACER_JS = """
+// Buffers trace events and ships them to the bridge in batches. Three rules,
+// all about never being the thing that breaks the conversation:
+//
+//   - event() never throws, and never blocks: it queues and returns.
+//   - A failed POST DROPS its batch. No retry loop, no log() call (log() traces
+//     — a failing trace path that logged would feed itself).
+//   - Bounded everywhere: each field is clipped so a batch stays far under the
+//     bridge's 64K body cap (an over-cap body is cut, fails to parse, and the
+//     whole batch is lost), and the queue has a ceiling — overflow is COUNTED
+//     and reported as one trace.dropped event, never silently.
+function createTracer(deps) {
+  var post = deps.post;
+  var now = deps.now;
+  var setTimer = deps.setTimer;
+  var clearTimer = deps.clearTimer || function () {};
+  var flushMs = deps.flushMs || 1000;
+  var maxBatch = deps.maxBatch || 20;
+  var maxQueue = deps.maxQueue || 2000;
+  var maxField = deps.maxField || 500;
+  var queue = [];
+  var timer = null;
+  var inflight = false;
+  var dropped = 0;
+  var cseq = 0;
+
+  function clip(v) {
+    if (v === null || v === undefined || typeof v === "number" || typeof v === "boolean") return v;
+    var s = typeof v === "string" ? v : (function () {
+      try { return JSON.stringify(v); } catch (e) { return String(v); }
+    })();
+    if (typeof v !== "string" && s && s.length <= maxField) return v;
+    s = String(s);
+    return s.length > maxField ? s.slice(0, maxField) + "…[clipped]" : s;
+  }
+
+  function schedule() {
+    if (timer) return;
+    timer = setTimer(function () { timer = null; flush(); }, flushMs);
+  }
+
+  function flush() {
+    if (inflight || !queue.length) return;
+    var batch = queue.splice(0, maxBatch);
+    if (dropped) {
+      batch.push({ ts: now(), kind: "trace.dropped", fields: { count: dropped } });
+      dropped = 0;
+    }
+    inflight = true;
+    var done = function () {
+      inflight = false;
+      if (queue.length) schedule();
+    };
+    var sent;
+    try { sent = post(batch); } catch (e) { sent = null; }
+    Promise.resolve(sent).then(done, done);
+  }
+
+  return {
+    event: function (kind, fields) {
+      try {
+        cseq += 1;
+        if (queue.length >= maxQueue) { dropped += 1; return; }
+        var out = { cseq: cseq };
+        if (fields) {
+          Object.keys(fields).forEach(function (k) { out[k] = clip(fields[k]); });
+        }
+        queue.push({ ts: now(), kind: String(kind), fields: out });
+        if (queue.length >= maxBatch) flush();
+        else schedule();
+      } catch (e) { /* a trace line is never worth the conversation */ }
+    },
+    flush: function () {
+      if (timer) { clearTimer(timer); timer = null; }
+      flush();
+    },
+    pending: function () { return queue.length; },
   };
 }
 """
@@ -1290,6 +1388,7 @@ __NOTIFIER__
 __CONFIRM_GATE__
 __RERAISE__
 __OUTCOME_ROUTER__
+__TRACER__
 
 const TOKEN = __TOKEN__;
 const CALLS_URL = "https://api.openai.com/v1/realtime/calls";
@@ -1300,12 +1399,49 @@ const $start = document.getElementById("start");
 const $stop = document.getElementById("stop");
 const $voice = document.getElementById("voice");
 
+// --- the durable trace (#1191) ----------------------------------------------
+// Everything below that matters for an after-the-fact diagnosis goes through
+// tracer.event(): the bridge appends it to this run's JSONL, which
+// `agentwire buddy log` reads. Its own POST is a raw keepalive fetch, never
+// post() — post() traces its failures, and the trace path must not feed itself.
+const tracer = createTracer({
+  post: (events) => fetch("/trace", {
+    method: "POST",
+    keepalive: true,
+    headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" },
+    body: JSON.stringify({ events }),
+  }),
+  now: () => Date.now(),
+  setTimer: (fn, ms) => window.setTimeout(fn, ms),
+  clearTimer: (handle) => window.clearTimeout(handle),
+});
+// Anything that escapes a handler. Visible AND traced: an uncaught throw in a
+// data-channel handler is a stall with no other symptom.
+window.addEventListener("error", (e) => {
+  tracer.event("window.error", {
+    message: e.message, source: e.filename, line: e.lineno, col: e.colno,
+    stack: e.error && e.error.stack,
+  });
+  log("error", "page error: " + e.message, "err");
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e.reason;
+  tracer.event("unhandledrejection", { reason: String(r && (r.stack || r.message) || r) });
+  log("error", "unhandled rejection: " + String(r && r.message || r), "err");
+});
+window.addEventListener("pagehide", () => tracer.flush());
+tracer.event("page.load", { ua: navigator.userAgent });
+
 // The voice this page will mint with. Seeded from the bridge, which resolved
 // it from `--voice` → the buddy's record → the default, so a reload comes back
 // showing whatever was last chosen rather than silently reverting (#1017).
 let currentVoice = __VOICE__;
 
 let pc = null, dc = null, micStream = null, audioEl = null;
+// The periodic state snapshot (#1191): a stall with no event around it still
+// leaves a picture of the state machine at most this long before it.
+const STATE_SNAPSHOT_MS = 15000;
+let stateTimer = null;
 let responseActive = false;
 
 // --- conversation-item time -------------------------------------------------
@@ -1420,6 +1556,7 @@ function nextSeq() { return ++seqCounter; }
 function setStatus(text) { $status.textContent = text; }
 
 function log(who, text, cls) {
+  tracer.event("log", { who, text });
   const row = document.createElement("div");
   row.className = "row " + (cls || "");
   const label = document.createElement("div");
@@ -1458,12 +1595,67 @@ function describeApiFailure(prefix, status, bodyText) {
 }
 
 async function post(path, body) {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+  } catch (err) {
+    tracer.event("fetch.failed", { path, error: String(err) });
+    throw err;
+  }
+  if (!res.ok) tracer.event("bridge.http", { path, status: res.status });
   return res.json();
+}
+
+// The client state machine, flat — what every stall question starts from.
+// Named fields, not a dump: the bridge redacts by key, and a key that merely
+// CONTAINS "audio" would be redacted, hence `sinkAttached`.
+function stateSnapshot() {
+  return {
+    responseActive,
+    ownerSpeaking,
+    confirmOutstanding: confirmGate.outstanding(),
+    confirmRemainingMs: confirmGate.remaining(),
+    announcerPending: announcer ? announcer.pending() : null,
+    anchorPending: announcer ? announcer.anchorPending() : null,
+    announcerArmed: announcer ? announcer.armed() : null,
+    errorNoticePending,
+    greeted,
+    sessionReady,
+    sinkAttached: audioAttached,
+    dc: dc ? dc.readyState : null,
+    pc: pc ? pc.connectionState : null,
+    ice: pc ? pc.iceConnectionState : null,
+    seq: seqCounter,
+  };
+}
+function traceState(why) {
+  try { tracer.event("state", Object.assign({ why }, stateSnapshot())); }
+  catch (e) { /* a snapshot is never worth the conversation */ }
+}
+
+// The small, non-payload facts of a Realtime server event. Never audio, never
+// deltas (they are skipped before this), never the full output text.
+function rtFields(payload) {
+  const f = {};
+  if (payload.item_id) f.item_id = payload.item_id;
+  if (payload.response_id) f.response_id = payload.response_id;
+  if (payload.event_id) f.event_id = payload.event_id;
+  if (payload.error) f.error = payload.error;
+  const r = payload.response;
+  if (r) {
+    f.response_id = r.id;
+    f.status = r.status;
+    if (r.status_details) f.status_details = r.status_details;
+    f.output = (r.output || []).map((i) => i.type + (i.name ? ":" + i.name : ""));
+  }
+  if (payload.item && payload.item.type) {
+    f.item_type = payload.item.type + (payload.item.name ? ":" + payload.item.name : "");
+  }
+  return f;
 }
 
 // Queue a forward to the bridge onto the ordered chain. Never blocks the event
@@ -1642,9 +1834,14 @@ function send(event) {
 // through here at all — they go through the announcer, which cancels rather
 // than declining. Returning false here used to mean "nothing is ever said",
 // silently.
-function maybeCreateResponse() {
-  if (responseActive) return false;
-  return send({ type: "response.create" });
+function maybeCreateResponse(why) {
+  if (responseActive) {
+    tracer.event("response.create", { by: "batch", why, sent: false, declined: "responseActive" });
+    return false;
+  }
+  const sent = send({ type: "response.create" });
+  tracer.event("response.create", { by: "batch", why, sent, declined: sent ? null : "channel closed" });
+  return sent;
 }
 
 // Submits the output and NOTHING ELSE. Creating the response is the batch's
@@ -1678,6 +1875,8 @@ async function handleFunctionCall(item) {
   log("tool", item.name + " " + JSON.stringify(args), "tool");
 
   let result;
+  const toolStarted = Date.now();
+  tracer.event("tool.start", { name: item.name, call_id: item.call_id });
   try {
     // The bridge's own discipline is "errors come back as data, never
     // exceptions — a stalled function call leaves the conversation hanging."
@@ -1686,6 +1885,7 @@ async function handleFunctionCall(item) {
     // silently hung, which is precisely the failure the discipline names.
     result = await post("/tool", { name: item.name, arguments: args });
   } catch (err) {
+    tracer.event("tool.end", { name: item.name, call_id: item.call_id, ms: Date.now() - toolStarted, failed: String(err) });
     log("error", "tool dispatch failed: " + err, "err");
     sendFunctionCallOutput(item.call_id, {
       success: false, error: "bridge unreachable: " + err,
@@ -1717,6 +1917,12 @@ async function handleFunctionCall(item) {
   // A QUEUED send is also the observable "acted on it" (#967) that
   // retires the target session's reminders — a cancel is not acting, so the
   // reminder stands. The router holds both rules.
+  tracer.event("tool.end", {
+    name: item.name, call_id: item.call_id, ms: Date.now() - toolStarted,
+    success: result && result.success, reason: result && result.reason,
+    must_speak: !!(result && result.must_speak),
+    confirm_terminal: result && result.confirm_terminal,
+  });
   outcomeRouter.route(item.name, result);
   const submitted = sendFunctionCallOutput(item.call_id, result);
   if (result && result.must_speak && result.say) {
@@ -1746,6 +1952,7 @@ async function handleFunctionCall(item) {
 // ordered side effects (a confirm after a propose), and nothing is gained by
 // racing them — the batch answers once either way.
 async function dispatchToolBatch(calls) {
+  if (!calls.length) return;
   const toSay = [];
   let submitted = false;
   for (const c of calls) {
@@ -1753,11 +1960,17 @@ async function dispatchToolBatch(calls) {
     if (r.submitted) submitted = true;
     if (r.say) toSay.push(r.say);
   }
+  const names = calls.map((c) => c.name);
   if (toSay.length) {
+    tracer.event("batch.decision", { calls: names, decision: "announcer", say: toSay.length });
     for (const args of toSay) announce(...args);
   } else if (submitted) {
-    maybeCreateResponse();
+    tracer.event("batch.decision", { calls: names, decision: "create" });
+    maybeCreateResponse("tool batch answered");
+  } else {
+    tracer.event("batch.decision", { calls: names, decision: "none", why: "nothing submitted" });
   }
+  traceState("batch.done");
 }
 
 function spokenText(output) {
@@ -1859,6 +2072,7 @@ async function start() {
       setTimer: (fn, ms) => window.setTimeout(fn, ms),
       clearTimer: (handle) => window.clearTimeout(handle),
       onLog: (kind, detail) => log("speak", kind + ": " + detail, "tool"),
+      onTrace: (kind, fields) => tracer.event(kind, fields),
     });
     // The buddy's clock (#962). Its only voice is announce(); its gate is the
     // same state the announcer tracks — the owner not speaking, no response in
@@ -1891,8 +2105,31 @@ async function start() {
       seen: heardReplies,
       seenRefs: heardNoticeRefs,
     });
-    dc.addEventListener("open", () => { setStatus("listening"); $stop.disabled = false; });
-    dc.addEventListener("close", () => setStatus("closed"));
+    dc.addEventListener("open", () => {
+      setStatus("listening"); $stop.disabled = false;
+      tracer.event("dc.open", {});
+      traceState("dc.open");
+    });
+    // A data channel carries no close reason; the peer connection's state at
+    // that moment is the closest thing to one, so it rides along.
+    dc.addEventListener("close", () => {
+      setStatus("closed");
+      tracer.event("dc.close", {
+        pc: pc ? pc.connectionState : null, ice: pc ? pc.iceConnectionState : null,
+      });
+      traceState("dc.close");
+    });
+    dc.addEventListener("error", (e) => {
+      tracer.event("dc.error", { error: String(e && e.error && e.error.message || e && e.type) });
+    });
+    pc.addEventListener("connectionstatechange", () => {
+      tracer.event(pc.connectionState === "failed" ? "pc.failed" : "pc.state",
+        { state: pc.connectionState, ice: pc.iceConnectionState });
+    });
+    pc.addEventListener("iceconnectionstatechange", () => {
+      tracer.event("pc.ice", { ice: pc.iceConnectionState });
+    });
+    stateTimer = window.setInterval(() => traceState("periodic"), STATE_SNAPSHOT_MS);
     dc.addEventListener("message", (e) => {
       let payload;
       try { payload = JSON.parse(e.data); } catch (err) {
@@ -1906,6 +2143,8 @@ async function start() {
         }
         return;
       }
+      const etype = String(payload.type || "");
+      if (!etype.endsWith(".delta")) tracer.event("rt." + etype, rtFields(payload));
       switch (payload.type) {
         // The server's own readiness signal — the session exists and can take
         // a response.create. One leg of the greeting gate (#963).
@@ -1919,6 +2158,7 @@ async function start() {
         case "response.created":
           responseActive = true;
           if (announcer) announcer.onResponseCreated();
+          traceState("response.created");
           break;
         // A CANCELLED response only clears the in-flight flag. It is never
         // evidence of anything: it can carry partial audio that said something
@@ -1928,6 +2168,7 @@ async function start() {
         case "response.cancelled":
           responseActive = false;
           if (announcer) announcer.onResponseCancelled();
+          traceState("response.cancelled");
           break;
         case "response.done": {
           responseActive = false;
@@ -1945,6 +2186,7 @@ async function start() {
           // re-speaking a text the fallback already uttered — so a genuine
           // double-speak (#950) still reads as the same line twice.
           if (said) log(saidOurScript ? "heard" : "buddy", said, saidOurScript ? "heard" : "buddy");
+          traceState("response.done");
 
           const calls = output.filter((i) => i.type === "function_call");
           // Sequential, never concurrent — two dispatches would race their own
@@ -2011,6 +2253,7 @@ async function start() {
           break;
         case "conversation.item.input_audio_transcription.completed":
           if (payload.transcript) log("you", payload.transcript, "you");
+          traceState("transcript");
           if (payload.item_id) {
             forward("/utterance", {
               item_id: payload.item_id,
@@ -2068,6 +2311,8 @@ async function start() {
 }
 
 function stop() {
+  traceState("stop");
+  if (stateTimer) { window.clearInterval(stateTimer); stateTimer = null; }
   if (dc) { dc.close(); dc = null; }
   if (pc) { pc.close(); pc = null; }
   if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
@@ -2196,6 +2441,15 @@ def confirm_gate_source() -> str:
     return CONFIRM_GATE_JS
 
 
+def tracer_source() -> str:
+    """The trace batcher on its own, for the node-driven tests.
+
+    Same rule as :func:`announcer_source`: the code under test is
+    byte-identical to the code in the page.
+    """
+    return TRACER_JS
+
+
 def voice_options(selected: str) -> str:
     """The picker's ``<option>`` list, from the one enumeration (#1017).
 
@@ -2233,6 +2487,7 @@ def page(buddy: str, token: str, voice: str = "") -> str:
         .replace("__CONFIRM_GATE__", CONFIRM_GATE_JS)
         .replace("__RERAISE__", RERAISE_JS)
         .replace("__OUTCOME_ROUTER__", OUTCOME_ROUTER_JS)
+        .replace("__TRACER__", TRACER_JS)
         .replace("__BUDDY__", html.escape(buddy))
         .replace("__VOICE_OPTIONS__", voice_options(voice))
         .replace("__VOICE__", json.dumps(voice))
