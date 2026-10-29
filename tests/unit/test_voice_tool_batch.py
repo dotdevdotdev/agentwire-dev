@@ -47,6 +47,7 @@ def _run_batch(calls: list[dict], results: dict[str, dict]) -> dict:
         "const trace = [];",
         "const tracer = { event(kind, fields) { trace.push({ kind, ...fields }); } };",
         "function traceState() {}",
+        "const watchdog = { toolStarted() {}, toolEnded() {} };",
         "function announce(text) { spoken.push(text); wire.push({ type: 'announce', text }); }",
         "const outcomeRouter = { route() {} };",
         f"const RESULTS = {json.dumps(results)};",

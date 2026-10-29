@@ -20,6 +20,7 @@ The driver is JavaScript run after the page loads, with these helpers:
 - ``await advance(ms)`` — run virtual time, firing due timers.
 - ``await drainTrace()`` — flush the page's tracer into ``bridge.traces``.
 - ``toolHandler = (name, args) => result`` — the bridge's ``/tool`` answer.
+- ``mintReply = {...}`` — the bridge's ``/mint`` answer (default: a good mint).
 
 and these records: ``wire`` (every event the page SENT on the data channel),
 ``bridge`` (``traces``, ``tools``, ``utterances``, ``anchors``), ``spokenFallback``.
@@ -111,6 +112,7 @@ __define("RTCPeerConnection", class {
 
 const bridge = { traces: [], tools: [], utterances: [], anchors: [] };
 let toolHandler = () => ({ success: true });
+let mintReply = null;
 __define("fetch", async (url, opts) => {
   const reply = (o, status = 200) => ({
     ok: status < 400, status, json: async () => o, text: async () => JSON.stringify(o),
@@ -118,7 +120,7 @@ __define("fetch", async (url, opts) => {
   if (String(url).startsWith("https://")) return { ok: true, status: 200, text: async () => "answer" };
   const b = opts && opts.body ? JSON.parse(opts.body) : {};
   if (url === "/trace") { bridge.traces.push(...b.events); return reply({ success: true }); }
-  if (url === "/mint") return reply({ success: true, seq_base: 1000000, voice: "marin", client_secret: "ek_harness" });
+  if (url === "/mint") return reply(mintReply || { success: true, seq_base: 1000000, voice: "marin", client_secret: "ek_harness" });
   if (url === "/tool") { bridge.tools.push(b); return reply(toolHandler(b.name, b.arguments || {})); }
   if (url === "/utterance") { bridge.utterances.push(b); return reply({ success: true }); }
   if (url === "/anchor") { bridge.anchors.push(b); return reply({ success: true, anchored: true }); }

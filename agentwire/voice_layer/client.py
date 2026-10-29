@@ -1229,6 +1229,184 @@ function createOutcomeRouter(deps) {
 }
 """
 
+#: The stall watchdog and the failure vocabulary (#1191). A standalone factory
+#: like the others, so its timers run under ``node`` on a virtual clock.
+#: Exported by :func:`watchdog_source`.
+WATCHDOG_JS = """
+// Turns "nothing happened" into an EVENT. Before this, every one of these was
+// silence: the page kept showing "listening" while the conversation was dead,
+// and the owner — not looking at a screen — had no way to tell a slow model
+// from a dead one (#1190).
+//
+// What counts as a stall, each priced:
+//
+//   no_reply        the owner's speech was transcribed and no response and no
+//                   tool call followed within replyMs. A reply already in
+//                   flight when the transcript lands (server VAD creates the
+//                   response at the COMMIT, usually before transcription
+//                   finishes) counts as answered — arming on the transcript
+//                   alone would flag every healthy turn.
+//   response_stuck  a response stayed active past responseMs. Generous: over
+//                   WebRTC response.done waits for the audio, so a long answer
+//                   is a long response.
+//   tool_stuck      a tool call to the bridge has not returned in toolMs.
+//   empty_reply     a response COMPLETED with no output at all — not a word,
+//                   not a call.
+//   failure         the service said no: a response.done with status=failed,
+//                   or an error event with a service-failure code, or a
+//                   connect/mint refusal. Carries the REASON CODE, and fires
+//                   immediately — there is nothing to wait for.
+//   channel_closed  the data channel closed without the owner pressing Stop.
+//                   Carries the last failure seen as its reason: the server
+//                   says why, then hangs up, and the close itself has no
+//                   reason field.
+//
+// The watchdog only DETECTS. What a stall does (trace, banner, voice) is the
+// page's onStall; onClear fires on the first healthy turn after a stall.
+function createStallWatchdog(deps) {
+  var setTimer = deps.setTimer;
+  var clearTimer = deps.clearTimer;
+  var now = deps.now;
+  var onStall = deps.onStall;
+  var onClear = deps.onClear || function () {};
+  var replyMs = deps.replyMs;
+  var responseMs = deps.responseMs;
+  var toolMs = deps.toolMs;
+
+  var awaiting = null;     // the owner's latest utterance, until something answers it
+  var responses = {};      // response id -> ceiling timer
+  var tools = {};          // call id -> ceiling timer
+  var lastFailure = null;  // {reason, message, at}
+  var stalled = false;
+
+  function fire(kind, info) {
+    stalled = true;
+    onStall(kind, info || {});
+  }
+  function answered() {
+    if (!awaiting) return;
+    awaiting.replied = true;
+    if (awaiting.timer) { clearTimer(awaiting.timer); awaiting.timer = null; }
+  }
+  function endResponse(id) {
+    var key = id || "?";
+    if (responses[key]) { clearTimer(responses[key]); delete responses[key]; }
+  }
+
+  return {
+    speechStarted: function (itemId) {
+      if (awaiting && awaiting.timer) clearTimer(awaiting.timer);
+      awaiting = { itemId: itemId, since: now(), replied: false, timer: null };
+    },
+    transcript: function (itemId, text) {
+      var a = awaiting;
+      if (!a || a.itemId !== itemId) {
+        if (a && a.timer) clearTimer(a.timer);
+        a = awaiting = { itemId: itemId, since: now(), replied: false, timer: null };
+      }
+      if (a.replied || a.timer) return;
+      a.timer = setTimer(function () {
+        if (awaiting !== a) return;
+        a.timer = null;
+        fire("no_reply", { item_id: itemId, transcript: text, waitedMs: now() - a.since });
+      }, replyMs);
+    },
+    responseCreated: function (id) {
+      answered();
+      var key = id || "?";
+      endResponse(key);
+      var started = now();
+      responses[key] = setTimer(function () {
+        delete responses[key];
+        fire("response_stuck", { response_id: id, activeMs: now() - started });
+      }, responseMs);
+    },
+    responseDone: function (id, status, outputs, reason, message) {
+      endResponse(id);
+      if (status === "failed") {
+        lastFailure = { reason: reason || "unknown", message: message || "", at: now() };
+        fire("failure", { source: "response.done", reason: reason || "unknown",
+          message: message || "", response_id: id });
+        return;
+      }
+      if (status === "completed" && outputs === 0) {
+        fire("empty_reply", { response_id: id });
+        return;
+      }
+      if (status === "completed" && stalled) { stalled = false; onClear(); }
+    },
+    responseCancelled: function (id) { endResponse(id); },
+    toolStarted: function (callId, name) {
+      answered();
+      var started = now();
+      tools[callId] = setTimer(function () {
+        delete tools[callId];
+        fire("tool_stuck", { call_id: callId, name: name, activeMs: now() - started });
+      }, toolMs);
+    },
+    toolEnded: function (callId) {
+      if (tools[callId]) { clearTimer(tools[callId]); delete tools[callId]; }
+    },
+    // A refusal from the service outside a response: an error event with a
+    // service-failure code, or the connect/mint POST.
+    failure: function (source, reason, message) {
+      lastFailure = { reason: reason || "unknown", message: message || "", at: now() };
+      fire("failure", { source: source, reason: reason || "unknown", message: message || "" });
+    },
+    channelClosed: function (info) {
+      var out = info || {};
+      out.reason = lastFailure ? lastFailure.reason : "unknown";
+      if (lastFailure) out.message = lastFailure.message;
+      fire("channel_closed", out);
+    },
+    reset: function () {
+      if (awaiting && awaiting.timer) clearTimer(awaiting.timer);
+      awaiting = null;
+      Object.keys(responses).forEach(function (k) { clearTimer(responses[k]); });
+      Object.keys(tools).forEach(function (k) { clearTimer(tools[k]); });
+      responses = {};
+      tools = {};
+      lastFailure = null;
+      stalled = false;
+    },
+  };
+}
+
+// The service's reason codes, in plain words the owner can act on. Every
+// phrase names WHO said no and WHAT to do, because it is spoken by the browser
+// voice to someone who may not be looking at the page.
+//
+// A code is a SERVICE FAILURE (loud) only if it is listed here — an `error`
+// event about a malformed event of our own is a bug to log, not an outage to
+// announce. A failed response is loud whatever its code: status=failed is the
+// service saying the turn is dead, and an unknown code still gets the default.
+var FAILURE_WORDS = {
+  insufficient_quota: "OpenAI says the account is out of credits. Add credits, then start me again.",
+  credit_balance_exhausted: "OpenAI says the account is out of credits. Add credits, then start me again.",
+  rate_limit_exceeded: "OpenAI is rate-limiting this account. Give it a minute, then try again.",
+  invalid_api_key: "OpenAI rejected the API key. Check the key, then start me again.",
+  session_expired: "The voice session expired. Start me again.",
+  server_error: "OpenAI had a server error. Try again in a moment.",
+};
+function isServiceFailure(code) {
+  return Object.prototype.hasOwnProperty.call(FAILURE_WORDS, code);
+}
+function describeFailure(reason) {
+  if (isServiceFailure(reason)) return FAILURE_WORDS[reason];
+  return "OpenAI reported a failure" + (reason && reason !== "unknown" ? " (" + reason + ")" : "") +
+    ", so nothing I say will get through. It's logged.";
+}
+// The reason code out of an OpenAI error object, wherever it sits.
+function failureReason(err) {
+  if (!err) return "unknown";
+  if (err.code) return String(err.code);
+  if (err.type && err.type !== "error" && err.type !== "failed") return String(err.type);
+  if (err.error) return failureReason(err.error);
+  if (err.reason) return String(err.reason);
+  return "unknown";
+}
+"""
+
 #: The page's half of the durable trace (#1191). Same discipline as the
 #: announcer: a standalone factory with injected deps, so batching, the size
 #: bound and drop-on-error run under ``node`` against a fake transport.
@@ -1324,6 +1502,7 @@ _PAGE = """<!doctype html>
   :root {
     --bg: #0b0e11; --fg: #e6edf3; --muted: #8b949e;
     --accent: #00ff66; --accent-2: #00bfff; --border: #21262d; --radius: 10px;
+    --danger: #ff7b72; --danger-bg: #2d1214;
   }
   * { box-sizing: border-box; }
   body {
@@ -1367,6 +1546,14 @@ _PAGE = """<!doctype html>
   .heard { color: var(--muted); font-style: italic; }
   .heard .who { color: var(--muted); }
   .err { color: #ff7b72; }
+  /* The stall banner (#1191): the one thing on the page that says the
+     conversation is NOT fine. Click dismisses; the next healthy turn clears it. */
+  #banner {
+    margin-top: 14px; padding: 10px 14px; border-radius: var(--radius);
+    border: 1px solid var(--danger); color: var(--danger); background: var(--danger-bg);
+    font-weight: 600; cursor: pointer;
+  }
+  #banner[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -1381,6 +1568,7 @@ _PAGE = """<!doctype html>
   <select id="voice">__VOICE_OPTIONS__</select>
   <span id="status">idle</span>
 </div>
+<div id="banner" role="alert" hidden></div>
 <div id="log"></div>
 <script>
 __ANNOUNCER__
@@ -1389,6 +1577,7 @@ __CONFIRM_GATE__
 __RERAISE__
 __OUTCOME_ROUTER__
 __TRACER__
+__WATCHDOG__
 
 const TOKEN = __TOKEN__;
 const CALLS_URL = "https://api.openai.com/v1/realtime/calls";
@@ -1430,6 +1619,60 @@ window.addEventListener("unhandledrejection", (e) => {
   log("error", "unhandled rejection: " + String(r && r.message || r), "err");
 });
 window.addEventListener("pagehide", () => tracer.flush());
+
+// --- the stall watchdog (#1191) ---------------------------------------------
+// See createStallWatchdog for what counts. The bounds: a reply normally starts
+// within ~2s of the owner finishing; tools return in about a second (a
+// project_lookup shelling out to gh can take several); a response is active
+// for as long as its AUDIO, so its ceiling is long.
+const REPLY_STALL_MS = 10000;
+const RESPONSE_STALL_MS = 60000;
+const TOOL_STALL_MS = 30000;
+// The browser voice says a given notice at most once per this gap: it is not
+// echo-cancelled, so it can re-enter the mic, be transcribed, go unanswered by
+// a dead service, and stall again — a loop this bound breaks.
+const STALL_SPEAK_GAP_MS = 60000;
+const STALL_WORDS = {
+  no_reply: "I heard you, but nothing came back from the voice service. It's logged.",
+  response_stuck: "My reply is stuck. It's logged. Try stopping and starting me.",
+  tool_stuck: "One of my tools hasn't answered. It's logged.",
+  empty_reply: "The voice service answered with nothing. It's logged.",
+  channel_closed: "The voice connection dropped. Start me again.",
+};
+const $banner = document.getElementById("banner");
+$banner.hidden = true;
+$banner.addEventListener("click", () => { $banner.hidden = true; });
+const lastStallSpoken = {};
+const watchdog = createStallWatchdog({
+  setTimer: (fn, ms) => window.setTimeout(fn, ms),
+  clearTimer: (handle) => window.clearTimeout(handle),
+  now: () => Date.now(),
+  onStall: (kind, info) => onStall(kind, info),
+  onClear: () => { $banner.hidden = true; },
+  replyMs: REPLY_STALL_MS,
+  responseMs: RESPONSE_STALL_MS,
+  toolMs: TOOL_STALL_MS,
+});
+
+// A stall is traced (with the whole state machine, flushed NOW — the page
+// may be about to be reloaded), shown, and SAID. Said by the browser voice,
+// never the announcer: every stall here is a sign the model voice may be dead,
+// and the announcer's first move is to ask the model.
+function onStall(kind, info) {
+  const known = info.reason && info.reason !== "unknown";
+  const words = kind === "failure" || (kind === "channel_closed" && known)
+    ? describeFailure(info.reason)
+    : STALL_WORDS[kind] || "Something stalled. It's logged.";
+  tracer.event("stall", Object.assign({ stall: kind }, info, stateSnapshot()));
+  tracer.flush();
+  log("error", "stalled (" + kind + (known ? ": " + info.reason : "") + ") — " + words, "err");
+  $banner.textContent = words;
+  $banner.hidden = false;
+  const t = Date.now();
+  if (lastStallSpoken[words] && t - lastStallSpoken[words] < STALL_SPEAK_GAP_MS) return;
+  lastStallSpoken[words] = t;
+  try { window.speechSynthesis.speak(fallbackUtterance(words)); } catch (e) {}
+}
 tracer.event("page.load", { ua: navigator.userAgent });
 
 // The voice this page will mint with. Seeded from the bridge, which resolved
@@ -1877,6 +2120,7 @@ async function handleFunctionCall(item) {
   let result;
   const toolStarted = Date.now();
   tracer.event("tool.start", { name: item.name, call_id: item.call_id });
+  watchdog.toolStarted(item.call_id, item.name);
   try {
     // The bridge's own discipline is "errors come back as data, never
     // exceptions — a stalled function call leaves the conversation hanging."
@@ -1886,6 +2130,7 @@ async function handleFunctionCall(item) {
     result = await post("/tool", { name: item.name, arguments: args });
   } catch (err) {
     tracer.event("tool.end", { name: item.name, call_id: item.call_id, ms: Date.now() - toolStarted, failed: String(err) });
+    watchdog.toolEnded(item.call_id);
     log("error", "tool dispatch failed: " + err, "err");
     sendFunctionCallOutput(item.call_id, {
       success: false, error: "bridge unreachable: " + err,
@@ -1917,6 +2162,7 @@ async function handleFunctionCall(item) {
   // A QUEUED send is also the observable "acted on it" (#967) that
   // retires the target session's reminders — a cancel is not acting, so the
   // reminder stands. The router holds both rules.
+  watchdog.toolEnded(item.call_id);
   tracer.event("tool.end", {
     name: item.name, call_id: item.call_id, ms: Date.now() - toolStarted,
     success: result && result.success, reason: result && result.reason,
@@ -2112,7 +2358,15 @@ async function start() {
     });
     // A data channel carries no close reason; the peer connection's state at
     // that moment is the closest thing to one, so it rides along.
+    const thisDc = dc;
     dc.addEventListener("close", () => {
+      // stop() nulls `dc` BEFORE closing it, so a close it asked for never
+      // matches. Anything else is the service (or the network) hanging up.
+      if (dc === thisDc) {
+        watchdog.channelClosed({
+          pc: pc ? pc.connectionState : null, ice: pc ? pc.iceConnectionState : null,
+        });
+      }
       setStatus("closed");
       tracer.event("dc.close", {
         pc: pc ? pc.connectionState : null, ice: pc ? pc.iceConnectionState : null,
@@ -2158,6 +2412,7 @@ async function start() {
         case "response.created":
           responseActive = true;
           if (announcer) announcer.onResponseCreated();
+          watchdog.responseCreated(payload.response && payload.response.id);
           traceState("response.created");
           break;
         // A CANCELLED response only clears the in-flight flag. It is never
@@ -2168,11 +2423,18 @@ async function start() {
         case "response.cancelled":
           responseActive = false;
           if (announcer) announcer.onResponseCancelled();
+          watchdog.responseCancelled(payload.response && payload.response.id);
           traceState("response.cancelled");
           break;
         case "response.done": {
           responseActive = false;
           const output = (payload.response && payload.response.output) || [];
+          {
+            const r = payload.response || {};
+            const details = r.status_details || {};
+            watchdog.responseDone(r.id, r.status, output.length, failureReason(details),
+              (details.error && details.error.message) || "");
+          }
           const said = spokenText(output);
           // The anchor is driven from the announcer's own confirmation that
           // the proposal text was spoken (see onSpoken below), NOT from "the
@@ -2233,6 +2495,7 @@ async function start() {
           // this line is what lets a "talked through me" report be correlated
           // with what was actually playing.
           if (responseActive) log("speak", "barge-in during a model response — server VAD truncates it", "tool");
+          if (payload.item_id) watchdog.speechStarted(payload.item_id);
           if (payload.item_id) {
             const startSeq = nextSeq();
             speechSeq[payload.item_id] = startSeq;
@@ -2253,6 +2516,7 @@ async function start() {
           break;
         case "conversation.item.input_audio_transcription.completed":
           if (payload.transcript) log("you", payload.transcript, "you");
+          if (payload.item_id && payload.transcript) watchdog.transcript(payload.item_id, payload.transcript);
           traceState("transcript");
           if (payload.item_id) {
             forward("/utterance", {
@@ -2274,6 +2538,14 @@ async function start() {
           // (#950 defect 2): nothing was missed, nothing to say.
           const code = payload.error && payload.error.code;
           if (code === "response_cancel_not_active") break;
+          // The SERVICE saying no (credits, rate limit, key, expiry) is not "I
+          // may have missed that": it is every turn from here on. Specific,
+          // loud, and in the browser voice — see onStall.
+          const reason = failureReason(payload.error);
+          if (isServiceFailure(reason)) {
+            watchdog.failure("error", reason, payload.error && payload.error.message);
+            break;
+          }
           if (!errorNoticePending) {
             errorNoticePending = true;
             announce("The voice service reported an error, so I may have missed that.",
@@ -2304,7 +2576,14 @@ async function start() {
     }
     await pc.setRemoteDescription({ type: "answer", sdp: await answer.text() });
   } catch (err) {
-    log("error", String(err && err.message || err), "err");
+    const message = String(err && err.message || err);
+    log("error", message, "err");
+    // describeApiFailure / the bridge's describe_error_body put OpenAI's code
+    // in brackets. A coded refusal is the service saying no before the call
+    // even starts — the out-of-credits case most of all. Uncoded failures (a
+    // denied microphone) stay as they were.
+    const coded = /\[([a-z_]+)\]/.exec(message);
+    if (coded) watchdog.failure("connect", coded[1], message);
     setStatus("error");
     stop();
   }
@@ -2313,7 +2592,8 @@ async function start() {
 function stop() {
   traceState("stop");
   if (stateTimer) { window.clearInterval(stateTimer); stateTimer = null; }
-  if (dc) { dc.close(); dc = null; }
+  watchdog.reset();
+  if (dc) { const closing = dc; dc = null; closing.close(); }
   if (pc) { pc.close(); pc = null; }
   if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
   audioEl = null;
@@ -2441,6 +2721,15 @@ def confirm_gate_source() -> str:
     return CONFIRM_GATE_JS
 
 
+def watchdog_source() -> str:
+    """The stall watchdog + failure vocabulary, for the node-driven tests.
+
+    Same rule as :func:`announcer_source`: the code under test is
+    byte-identical to the code in the page.
+    """
+    return WATCHDOG_JS
+
+
 def tracer_source() -> str:
     """The trace batcher on its own, for the node-driven tests.
 
@@ -2488,6 +2777,7 @@ def page(buddy: str, token: str, voice: str = "") -> str:
         .replace("__RERAISE__", RERAISE_JS)
         .replace("__OUTCOME_ROUTER__", OUTCOME_ROUTER_JS)
         .replace("__TRACER__", TRACER_JS)
+        .replace("__WATCHDOG__", WATCHDOG_JS)
         .replace("__BUDDY__", html.escape(buddy))
         .replace("__VOICE_OPTIONS__", voice_options(voice))
         .replace("__VOICE__", json.dumps(voice))
