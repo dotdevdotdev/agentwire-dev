@@ -25,7 +25,7 @@ def _dispatch_source() -> str:
     """sendFunctionCallOutput … dispatchToolBatch, as the page serves them."""
     return page_slice(
         client.page("buddy", "tok"),
-        r"function maybeCreateResponse\(\)",
+        r"function maybeCreateResponse\(",
         r"async function dispatchToolBatch\(calls\) \{[\s\S]*?\n\}\n",
         "the tool-batch dispatch",
         shape=r"async function handleFunctionCall[\s\S]*async function dispatchToolBatch",
@@ -44,6 +44,9 @@ def _run_batch(calls: list[dict], results: dict[str, dict]) -> dict:
         "const spoken = [];",
         "function send(e) { wire.push(e); return true; }",
         "function log() {}",
+        "const trace = [];",
+        "const tracer = { event(kind, fields) { trace.push({ kind, ...fields }); } };",
+        "function traceState() {}",
         "function announce(text) { spoken.push(text); wire.push({ type: 'announce', text }); }",
         "const outcomeRouter = { route() {} };",
         f"const RESULTS = {json.dumps(results)};",

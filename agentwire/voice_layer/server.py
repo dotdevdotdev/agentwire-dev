@@ -46,9 +46,10 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import client, confirm, digest, identity, realtime, tools, transcript, write_tools
+from . import client, confirm, digest, identity, realtime, tools, trace, transcript, write_tools
 from . import instructions as buddy_instructions
 
 #: Not 8765 (portal SSL) and not 8100 (portal HTTP) — a spike must never
@@ -163,8 +164,11 @@ class BuddyBridge:
         voice: str = "",
         runner=None,
         roster=None,
+        tracer: "trace.TraceLog | None" = None,
     ):
         self.buddy = buddy
+        # This run's durable trace (#1191). Injected so a test reads its own.
+        self.trace = tracer or trace.TraceLog()
         # The opening fleet roster (#1179), injected so a test mints without
         # shelling out to the live fleet.
         self.roster = roster or digest.build_digest
@@ -241,6 +245,10 @@ class BuddyBridge:
         if commit_seq:
             self.ring.commit(item_id, commit_seq)
         entry = self.ring.transcribe(item_id, text)
+        self.trace.record("bridge", "utterance.transcript", {
+            "item_id": item_id, "transcript": text,
+            "speech_started_seq": entry.speech_started_seq, "estimated": entry.estimated,
+        })
         return {
             "success": True,
             "recorded": "transcript",
@@ -273,6 +281,9 @@ class BuddyBridge:
             return {"success": False, "error": f"sequence exceeds {MAX_SEQ}"}
         self.ring.note_seq(seq)
         anchored = self.spine.announce(proposal_id.strip(), seq)
+        self.trace.record("bridge", "anchor", {
+            "proposal_id": proposal_id.strip(), "seq": seq, "anchored": anchored,
+        })
         return {"success": True, "anchored": anchored, "seq": seq}
 
     def switch_voice(self, voice: str) -> dict:
@@ -378,9 +389,13 @@ class BuddyBridge:
             voice=requested or self.voice,
         )
         switched = self.switch_voice(requested)
+        self.trace.record("bridge", "mint", {
+            "model": self.model, "voice": requested or self.voice, "seq_base": seq_base,
+        })
         return {
             "success": True,
             "seq_base": seq_base,
+            "trace_run": self.trace.run_id,
             "voice": self.voice,
             "voice_changed": switched["changed"],
             **{k: v for k, v in switched.items() if k.startswith("voice_")},
@@ -399,7 +414,22 @@ class BuddyBridge:
                 return {"success": False, "error": "malformed arguments JSON"}
         if not isinstance(args, dict):
             return {"success": False, "error": "arguments must be an object"}
-        return tools.dispatch(name, args, self.buddy, self.spine)
+        self.trace.record("bridge", "tool.start", {"name": name, "args": args})
+        started = time.monotonic()
+        result = tools.dispatch(name, args, self.buddy, self.spine)
+        outcome = result if isinstance(result, dict) else {}
+        self.trace.record("bridge", "tool.end", {
+            "name": name,
+            "ms": round((time.monotonic() - started) * 1000),
+            "success": outcome.get("success"),
+            "reason": outcome.get("reason"),
+            "error": outcome.get("error"),
+            "must_speak": outcome.get("must_speak"),
+            "confirm_terminal": outcome.get("confirm_terminal"),
+            "proposal_id": outcome.get("proposal_id") or outcome.get("anchor_proposal_id"),
+            "say": outcome.get("say"),
+        })
+        return result
 
 
 def _handler_factory(bridge: BuddyBridge):
@@ -417,6 +447,11 @@ def _handler_factory(bridge: BuddyBridge):
             self.wfile.write(body)
 
         def _json(self, code: int, payload: dict) -> None:
+            if code >= 400:
+                bridge.trace.record("bridge", "http.error", {
+                    "path": self.path.split("?", 1)[0], "code": code,
+                    "error": payload.get("error"),
+                })
             self._send(code, json.dumps(payload).encode("utf-8"), "application/json")
 
         def _host_ok(self) -> bool:
@@ -491,6 +526,22 @@ def _handler_factory(bridge: BuddyBridge):
                 self._json(400, {"success": False, "error": "malformed request body"})
                 return
 
+            try:
+                self._route(path, payload)
+            except Exception as exc:  # noqa: BLE001
+                # Was an unhandled raise: the stdlib printed a traceback to a
+                # stdout nobody reads and dropped the connection, and the page
+                # saw only "Failed to fetch". Now it is a 500 the page can
+                # report AND a line in this run's trace.
+                bridge.trace.record("bridge", "bridge.exception", {
+                    "path": path, "error": f"{type(exc).__name__}: {exc}",
+                })
+                self._json(500, {"success": False, "error": "bridge error"})
+
+        def _route(self, path: str, payload) -> None:
+            if path == "/trace":
+                self._json(200, {"success": True, "written": bridge.trace.ingest(payload)})
+                return
             if path == "/mint":
                 try:
                     self._json(200, bridge.mint(payload))
@@ -522,6 +573,7 @@ def serve(
     token = secrets.token_urlsafe(24)
     bridge = BuddyBridge(buddy, token, model=model, voice=voice)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), _handler_factory(bridge))
+    httpd.bridge = bridge  # the CLI prints where this run's trace goes
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     return httpd, f"http://127.0.0.1:{httpd.server_address[1]}/"

@@ -794,6 +794,33 @@ something it can quietly swallow and retry around.
 
 ---
 
+### Traces: every run leaves a record (#1191)
+
+The voice channel has no screen to read afterwards, so every bridge run writes
+`~/.agentwire/logs/buddy/<run-id>.jsonl` (one file per `buddy serve`; capped at
+8 MB, newest 30 runs kept). Each line has `ts` (ms), `run`, `seq`, `source`
+(`client` | `bridge`), `kind`, `fields`. The page batches events to `POST /trace`
+(it drops on error and never throws). The bridge writes its own events into the
+same file.
+
+| Source | Kinds |
+|--------|-------|
+| page | `log` (every on-screen row), `rt.<type>` (every Realtime server event TYPE except deltas, with ids/status/`status_details`/output shape, never audio or text bodies), `response.create` (who sent it, why, or why it was declined), `batch.decision`, `tool.start`/`tool.end`, `state` (the client state machine, every 15 s and at turn edges), `dc.*`/`pc.*`, `window.error`, `unhandledrejection`, `fetch.failed`, `bridge.http` |
+| bridge | `mint`, `anchor`, `utterance.transcript`, `tool.start`/`tool.end` (ms, reason, must_speak, confirm_terminal), `http.error`, `bridge.exception` (an unhandled route error is now a traced 500, not a dropped connection) |
+
+Redaction is structural (`voice_layer/trace.py`). Credential-named keys
+(token, secret, key, authorization, audio, sdp) are replaced. `sk-`/`ek_`/Bearer
+values and `"…token": "…"` inside strings are replaced. `untrusted_content` is
+cut to a marked preview, and every long string is truncated with a marker.
+
+```bash
+agentwire buddy log                  # latest run, last 200 events
+agentwire buddy log --tail           # follow it live
+agentwire buddy log --stalls         # stalls + crash-shaped events, every run
+agentwire buddy log --run <id> --json
+agentwire buddy log --list
+```
+
 ## 4. What this slice does and does not do
 
 **Does:**

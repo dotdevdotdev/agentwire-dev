@@ -381,6 +381,7 @@ def cmd_buddy_serve(args) -> int:
     print(f"buddy '{args.name}' listening on {url}")
     print(f"voice: {identity.resolve_voice(args.name, args.voice)} "
           f"(switch it on the page — no restart needed)")
+    print(f"trace: {httpd.bridge.trace.path}  (agentwire buddy log --tail)")
     print("Open that URL in a browser and click Start talking. Ctrl-C to stop.")
     try:
         while True:
@@ -391,6 +392,63 @@ def cmd_buddy_serve(args) -> int:
         httpd.shutdown()
         httpd.server_close()
     return 0
+
+
+def cmd_buddy_log(args) -> int:
+    """Read the bridge's per-run traces (#1191) — diagnosis without the owner."""
+    import time
+
+    from .voice_layer import trace
+
+    json_mode = getattr(args, "json", False)
+    if args.list:
+        runs = [
+            {"run": r.stem, "path": str(r), "bytes": r.stat().st_size}
+            for r in trace.list_runs()
+        ]
+        return _emit({"success": True, "runs": runs}, json_mode,
+                     [f"{r['run']}  {r['bytes']:>9} B" for r in runs] or ["no buddy runs traced yet"])
+
+    if args.stalls and args.run is None:
+        paths = trace.list_runs()
+    else:
+        path = trace.resolve_run(args.run or "latest")
+        if path is None:
+            return _fail(f"no buddy run matching {args.run or 'latest'!r} "
+                         f"under {trace.TRACE_DIR}", json_mode)
+        paths = [path]
+
+    events = [e for p in reversed(paths) for e in trace.read_events(p)]
+    if args.stalls:
+        events = [e for e in events if e.get("kind") in trace.STALL_KINDS]
+    if args.lines and not args.stalls:
+        events = events[-args.lines:]
+    if json_mode and not args.tail:
+        return _emit({"success": True, "runs": [p.stem for p in paths], "events": events}, True)
+    for event in events:
+        print(json.dumps(event) if json_mode else trace.format_event(event))
+    if not args.tail:
+        if not events:
+            print("no stalls recorded" if args.stalls else "run is empty")
+        return 0
+    path = paths[0]
+    with path.open(encoding="utf-8") as fh:
+        fh.seek(0, 2)
+        try:
+            while True:
+                line = fh.readline()
+                if not line:
+                    time.sleep(0.5)
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if args.stalls and event.get("kind") not in trace.STALL_KINDS:
+                    continue
+                print(json.dumps(event) if json_mode else trace.format_event(event), flush=True)
+        except KeyboardInterrupt:
+            return 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -644,6 +702,26 @@ def register_buddy_parser(subparsers) -> None:
     srv.add_argument("--model", default="")
     srv.add_argument("--voice", default="", metavar="VOICE", help=_VOICE_HELP)
     srv.set_defaults(func=beta_gated(cmd_buddy_serve))
+
+    lg = sub.add_parser(
+        "log",
+        help="Read the bridge's per-run traces (stalls, tool calls, server events)",
+        description=(
+            "Every bridge run writes ~/.agentwire/logs/buddy/<run-id>.jsonl: the page's "
+            "log lines, Realtime event types, response.create decisions, state "
+            "snapshots, tool calls with timings, and stall records. Redacted."
+        ),
+    )
+    lg.add_argument("--run", default=None, metavar="ID",
+                    help="Run id or prefix (default: latest; --stalls alone scans every run)")
+    lg.add_argument("--tail", action="store_true", help="Follow the run as it is written")
+    lg.add_argument("--stalls", action="store_true",
+                    help="Only stalls and crash-shaped events (window errors, closes)")
+    lg.add_argument("--list", action="store_true", help="List traced runs")
+    lg.add_argument("-n", "--lines", type=int, default=200,
+                    help="Last N events (default 200; 0 = all)")
+    lg.add_argument("--json", action="store_true", help="Output JSON")
+    lg.set_defaults(func=beta_gated(cmd_buddy_log))
 
     svc = sub.add_parser(
         "service",
