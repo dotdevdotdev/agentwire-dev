@@ -14,7 +14,10 @@ This module holds that exchange in one place so two consumers can share it:
   ``response.create``. Offline, under a second.
 - :func:`main` replays the whole conversation (:data:`STEPS` — the opening
   question plus the failures that followed it: refusing to re-run, declining
-  to look from the project, a long refusal, and tools that went unused)
+  to look from the project, a long refusal, tools that went unused, and the
+  #1190 confirm handshake: propose, the announcer's scripted proposal, then
+  "Confirm Bravo." — which must come back as ``send_session_message`` with
+  the proposal's token)
   against the live Realtime API with the real instructions, roster and tool
   definitions, answers every call from :data:`CANNED_OUTPUTS`, and lets
   :func:`judge` score each step — the right tool, one call round, no
@@ -23,7 +26,9 @@ This module holds that exchange in one place so two consumers can share it:
 
       uv run python -m agentwire.voice_layer.replay
 
-  Exit 0 means the replay passed; exit 1 prints what the judge objected to.
+  Exit 0 means the replay passed; exit 1 prints what the judge objected to;
+  exit 2 means the SERVICE refused (credits, rate limit, key) and the model
+  was never judged.
 """
 
 from __future__ import annotations
@@ -33,9 +38,12 @@ import json
 import os
 import re
 import sys
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+from .client import SCRIPTED_INSTRUCTION
 from .project_read import UNTRUSTED_NOTE as _UNTRUSTED_NOTE
+from .write_tools import SESSION_MESSAGE_SPEC
 
 #: What the owner said.
 UTTERANCE = "What's left to work on in agentwire-dev?"
@@ -142,6 +150,42 @@ CANNED_OUTPUTS: dict[str, dict] = {
     },
 }
 
+#: The confirm handshake (#1190). The owner proposed a message, heard the
+#: scripted proposal, said "Confirm Bravo." — and the buddy never called
+#: send_session_message. These are the spine's real payload shapes: the
+#: propose result takes the client's announcer path (must_speak), and so does
+#: the queued send.
+REPLAY_CONFIRM_TOKEN = "replay-confirm-token-1"
+REPLAY_SESSION = "agentwire"
+REPLAY_MESSAGE = "The buddy conversation has been going well; slight increase in latency."
+_PHRASE = "confirm bravo"
+CANNED_OUTPUTS["propose_session_message"] = {
+    "success": True,
+    "confirm_token": REPLAY_CONFIRM_TOKEN,
+    "proposal_id": "e49a53",
+    "session": REPLAY_SESSION,
+    "message": REPLAY_MESSAGE,
+    "confirm_phrase": _PHRASE,
+    "needs_spoken_approval": True,
+    "must_speak": True,
+    "anchor_proposal_id": "e49a53",
+    "say": SESSION_MESSAGE_SPEC.announce_template.format(
+        phrase=_PHRASE, session=REPLAY_SESSION, instruction=REPLAY_MESSAGE),
+    "fallback_say": SESSION_MESSAGE_SPEC.fallback_template.format(
+        session=REPLAY_SESSION, instruction=REPLAY_MESSAGE),
+    "model_guidance": (
+        "Say the code word clearly, as a word; do not spell it out. "
+        "Do not call send_session_message until you have said the "
+        "proposal aloud and the owner has answered."
+    ),
+}
+CANNED_OUTPUTS["send_session_message"] = {
+    "success": True, "reason": "queued", "queued": True, "sent": False,
+    "approved_by": "Confirm Bravo.",
+    "say": "Queued it — it'll land when that session is free.",
+    "must_speak": True, "confirm_terminal": True, "acted_session": REPLAY_SESSION,
+}
+
 NO_DATA = {"success": True, "note": "no data in this replay"}
 
 
@@ -191,6 +235,9 @@ class Step:
     must_call: tuple[str, ...] = ()
     max_words: int = MAX_ANSWER_WORDS
     max_call_rounds: int = 1
+    #: ``(tool, argument, value)`` — some call to *tool* must carry exactly
+    #: this argument. How the confirm step checks the token was passed back.
+    require_args: tuple[tuple[str, str, str], ...] = ()
 
 
 #: The conversation, in order — the #1179 exchange and the failures that
@@ -210,6 +257,12 @@ STEPS: tuple[Step, ...] = (
     # Tools that existed and went unused in the failed session.
     Step("What did I miss in the last hour?", must_call=("fleet_activity",)),
     Step("Have we hit that taskbar flicker before?", must_call=("fleet_wiki_search",)),
+    # #1190: propose, hear the scripted proposal, say the phrase. The
+    # proposal is ~25 words read verbatim, so its cap is the template's.
+    Step(f"Let's tell the {REPLAY_SESSION} session: {REPLAY_MESSAGE}",
+         must_call=("propose_session_message",), max_words=60),
+    Step("Confirm Bravo.", must_call=("send_session_message",),
+         require_args=(("send_session_message", "confirm_token", REPLAY_CONFIRM_TOKEN),)),
 )
 
 
@@ -236,6 +289,11 @@ def judge(turns: list[dict], step: Step = STEPS[0]) -> list[str]:
     called = {c for t in rounds for c in t["calls"]}
     if step.must_call and not called & set(step.must_call):
         problems.append(f"never called any of {list(step.must_call)}")
+    for tool, arg, value in step.require_args:
+        sent = [a.get(arg) for t in rounds for name, a in zip(t["calls"], t.get("args", []))
+                if name == tool]
+        if sent and value not in sent:
+            problems.append(f"{tool} called with {arg}={sent!r}, want {value!r}")
     if len(rounds) > step.max_call_rounds:
         problems.append(
             f"{len(rounds)} call rounds, want <= {step.max_call_rounds}: "
@@ -263,15 +321,29 @@ _WS_URL = "wss://api.openai.com/v1/realtime?model={model}"
 _MAX_ROUNDS = 4
 
 
+class ServiceRefusedError(RuntimeError):
+    """The SERVICE refused the turn — out of credits, rate-limited, bad key.
+
+    Distinct from a judged failure on purpose: a ``status=failed`` response
+    has no output, and judging it would blame the model ("never called
+    send_session_message") for what was an empty account. That is the exact
+    misreading #1190 invited.
+    """
+
+
 async def _next_done(ws) -> dict:
-    """Read events until a ``response.done``; raise on a server error."""
+    """Read events until a ``response.done``; raise on a server error or a
+    failed response."""
     async for msg in ws:
         event = json.loads(msg.data)
         if event.get("type") == "error":
-            raise RuntimeError(json.dumps(event.get("error")))
+            raise ServiceRefusedError(json.dumps(event.get("error")))
         if event.get("type") == "response.done":
-            return event["response"]
-    raise RuntimeError("socket closed before response.done")
+            response = event["response"]
+            if response.get("status") == "failed":
+                raise ServiceRefusedError(json.dumps(response.get("status_details")))
+            return response
+    raise ServiceRefusedError("socket closed before response.done")
 
 
 def _turn(response: dict) -> tuple[dict, list[dict]]:
@@ -281,7 +353,14 @@ def _turn(response: dict) -> tuple[dict, list[dict]]:
         for item in response.get("output", []) if item.get("type") == "message"
         for part in item.get("content", [])
     ).strip()
-    return {"calls": [c["name"] for c in calls], "said": said}, calls
+    args = []
+    for c in calls:
+        try:
+            parsed = json.loads(c.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        args.append(parsed if isinstance(parsed, dict) else {})
+    return {"calls": [c["name"] for c in calls], "said": said, "args": args}, calls
 
 
 def replay_roster() -> str:
@@ -301,47 +380,75 @@ def replay_roster() -> str:
     )
 
 
-async def replay(api_key: str, steps: tuple[Step, ...] = STEPS) -> list[list[dict]]:
-    """Run *steps* as ONE live conversation; return each step's turns.
-
-    Answers calls exactly as the client does since #1179: every output
-    submitted, then ONE ``response.create``.
-    """
+@asynccontextmanager
+async def _connect_live(api_key: str):
     import aiohttp
 
-    from . import instructions, realtime, tools
+    from . import realtime
 
-    results: list[list[dict]] = []
     async with aiohttp.ClientSession() as http:
         async with http.ws_connect(
             _WS_URL.format(model=realtime.DEFAULT_MODEL),
             headers={"Authorization": f"Bearer {api_key}"},
         ) as ws:
-            await ws.send_json({"type": "session.update", "session": {
-                "type": "realtime",
-                "instructions": instructions.build_instructions(extra=replay_roster()),
-                "tools": tools.realtime_tool_defs(),
-                "output_modalities": ["text"],
+            yield ws
+
+
+async def replay(api_key: str, steps: tuple[Step, ...] = STEPS, *,
+                 connect=_connect_live) -> list[list[dict]]:
+    """Run *steps* as ONE live conversation; return each step's turns.
+
+    Answers calls exactly as the client does: every output submitted, then
+    ONE response for the batch (#1179). When an output must be spoken
+    (``must_speak`` + ``say`` — a proposal, a queued send, a refusal) that one
+    response is the ANNOUNCER's scripted turn, carrying the same instruction
+    the page sends (:data:`~agentwire.voice_layer.client.SCRIPTED_INSTRUCTION`),
+    and no ordinary response follows — the conversation the model then sees
+    is the owner's. *connect* is injectable so the event sequence itself is
+    testable offline.
+    """
+    from . import instructions, tools
+
+    results: list[list[dict]] = []
+    async with connect(api_key) as ws:
+        await ws.send_json({"type": "session.update", "session": {
+            "type": "realtime",
+            "instructions": instructions.build_instructions(extra=replay_roster()),
+            "tools": tools.realtime_tool_defs(),
+            "output_modalities": ["text"],
+        }})
+        for step in steps:
+            await ws.send_json({"type": "conversation.item.create", "item": {
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": step.utterance}],
             }})
-            for step in steps:
-                await ws.send_json({"type": "conversation.item.create", "item": {
-                    "type": "message", "role": "user",
-                    "content": [{"type": "input_text", "text": step.utterance}],
-                }})
-                await ws.send_json({"type": "response.create"})
-                turns: list[dict] = []
-                for _ in range(_MAX_ROUNDS):
-                    turn, calls = _turn(await _next_done(ws))
-                    turns.append(turn)
-                    if not calls:
-                        break
-                    for c in calls:
-                        await ws.send_json({"type": "conversation.item.create", "item": {
-                            "type": "function_call_output", "call_id": c["call_id"],
-                            "output": json.dumps(canned(c["name"], c.get("arguments", ""))),
-                        }})
+            await ws.send_json({"type": "response.create"})
+            turns: list[dict] = []
+            for _ in range(_MAX_ROUNDS):
+                turn, calls = _turn(await _next_done(ws))
+                turns.append(turn)
+                if not calls:
+                    break
+                to_say = []
+                for c in calls:
+                    output = canned(c["name"], c.get("arguments", ""))
+                    await ws.send_json({"type": "conversation.item.create", "item": {
+                        "type": "function_call_output", "call_id": c["call_id"],
+                        "output": json.dumps(output),
+                    }})
+                    if output.get("must_speak") and output.get("say"):
+                        to_say.append(output["say"])
+                if not to_say:
                     await ws.send_json({"type": "response.create"})
-                results.append(turns)
+                    continue
+                for say in to_say:
+                    await ws.send_json({"type": "response.create", "response": {
+                        "instructions": SCRIPTED_INSTRUCTION + say,
+                    }})
+                    turn, _ = _turn(await _next_done(ws))
+                    turns.append(turn)
+                break
+            results.append(turns)
     return results
 
 
@@ -356,7 +463,12 @@ def main() -> int:
         print(missing_env_message(API_KEY_ENV), file=sys.stderr)
         return 2
     failed = 0
-    for step, turns in zip(STEPS, asyncio.run(replay(api_key))):
+    try:
+        results = asyncio.run(replay(api_key))
+    except ServiceRefusedError as exc:
+        print(f"SERVICE FAILURE — the model was never judged: {exc}", file=sys.stderr)
+        return 2
+    for step, turns in zip(STEPS, results):
         print(f"> {step.utterance}")
         for t in turns:
             print(f"  calls={t['calls']} said={t['said']!r}")
