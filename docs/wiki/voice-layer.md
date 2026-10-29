@@ -821,6 +821,30 @@ agentwire buddy log --run <id> --json
 agentwire buddy log --list
 ```
 
+### Stalls and service failures are loud (#1191)
+
+`createStallWatchdog` (client.py) turns silence into an event. Each stall is
+traced as `kind: "stall"` with the whole client state machine, shown in a red
+banner, and said aloud by the **browser voice**. It never goes through the
+announcer, because a stall means the model voice may be dead. The same words
+are spoken at most once a minute: the browser voice isn't echo-cancelled, so
+this stops a stall → mic → transcript → stall loop. The next healthy turn
+clears the banner.
+
+| `stall` | When |
+|---------|------|
+| `no_reply` | the owner's speech was transcribed and no response or tool call followed within 10 s (a VAD response created at the commit, before the transcript, counts as answered) |
+| `response_stuck` | a response is active for more than 60 s (over WebRTC a response lasts as long as its audio) |
+| `tool_stuck` | a bridge tool call takes more than 30 s |
+| `empty_reply` | a response completed with no output at all |
+| `failure` | the service said no, with `reason` = OpenAI's code: a `response.done` with `status=failed` (any code; unknown → `"unknown"`), an `error` event with a service-failure code (`insufficient_quota`, `credit_balance_exhausted`, `rate_limit_exceeded`, `invalid_api_key`, `session_expired`, `server_error`), or a coded connect/mint refusal |
+| `channel_closed` | the data channel closed without Stop being pressed. It carries the last failure's `reason`, because the service names the problem and then hangs up, and the close event has no reason of its own |
+
+Out of credits sounds like this: *"OpenAI says the account is out of
+credits. Add credits, then start me again."* Any other `error` event (a bug in
+one of our own events) keeps the old generic notice.
+`agentwire buddy log --stalls` lists all of them across every run.
+
 ## 4. What this slice does and does not do
 
 **Does:**
