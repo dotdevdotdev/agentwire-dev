@@ -150,6 +150,8 @@ data. Where the design hypothesis and the docs disagreed, the docs won.
 "gpt-voice-2". Everything else in the prompt's architecture survived contact
 with the docs.
 
+**Default model (2026-10-29):** `gpt-realtime-2.1-mini`, chosen for cost (audio $10 in / $20 out per 1M tokens vs $32 / $64 for `gpt-realtime-2.1`; both 128k context, both function-calling). The old `gpt-realtime-mini` is deprecated. Switch per run with `agentwire buddy serve --model gpt-realtime-2.1`. The text replay (`python -m agentwire.voice_layer.replay`) is the check that a model still batches tools and stays terse.
+
 ### How the model id was actually verified — and the footgun found doing it
 
 The claim above was re-challenged and re-verified against the live API on

@@ -38,7 +38,9 @@ CALLS_URL = "https://api.openai.com/v1/realtime/calls"
 #: does not validate the model and returns 200 with a usable secret for an id
 #: that does not exist (measured 2026-08-06 — "gpt-voice-2" minted fine, while
 #: /v1/models 404s it). A mint that succeeds proves nothing about the model.
-DEFAULT_MODEL = "gpt-realtime-2.1"
+#: The cheaper sibling of the flagship (`gpt-realtime-2.1`: $32/$64 audio in/out
+#: per 1M tokens vs $10/$20 here). Override per run with `buddy serve --model`.
+DEFAULT_MODEL = "gpt-realtime-2.1-mini"
 
 #: Every voice the Realtime API accepts, newest first (docs, fetched
 #: 2026-08-11). ``cedar`` and ``marin`` are the two the docs single out as the
