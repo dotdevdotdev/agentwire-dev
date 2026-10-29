@@ -2582,7 +2582,7 @@ async function start() {
     // in brackets. A coded refusal is the service saying no before the call
     // even starts — the out-of-credits case most of all. Uncoded failures (a
     // denied microphone) stay as they were.
-    const coded = /\[([a-z_]+)\]/.exec(message);
+    const coded = /\\[([a-z_]+)\\]/.exec(message);
     if (coded) watchdog.failure("connect", coded[1], message);
     setStatus("error");
     stop();
