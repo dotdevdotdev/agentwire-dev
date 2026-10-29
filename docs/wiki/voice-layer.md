@@ -2292,7 +2292,14 @@ changing underneath the conversation.**
   running". `dispatchToolBatch` now submits every output, then creates ONE
   response (or lets the announcer's scripted one take the turn). Live check:
   `uv run python -m agentwire.voice_layer.replay` replays the failed exchange
-  and judges one batched call round + one short answer.
+  and judges one batched call round + one short answer. Since #1190 it also
+  replays the confirm handshake. The propose result takes the announcer path,
+  so the replay sends the page's own scripted `response.create` (one shared
+  `client.SCRIPTED_INSTRUCTION`) and no ordinary create. "Confirm Bravo." must
+  then come back as `send_session_message` carrying the proposal's token. A
+  `status=failed` response or an `error` event exits **2** (`ServiceRefusedError`,
+  e.g. out of credits) instead of being misjudged as the model never calling
+  the tool.
 - **The `<voice_mode>` addendum shape**: a base prompt plus an explicit
   addendum that overrides text-mode habits the spoken channel breaks.
 - **"Say the specifics out loud."** Their hardest-won prompt lesson: "I've got

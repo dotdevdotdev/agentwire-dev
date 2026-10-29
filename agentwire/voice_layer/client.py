@@ -97,6 +97,12 @@ import json
 
 from . import realtime
 
+#: The instruction the announcer's scripted ``response.create`` carries, ahead
+#: of the literal text. ONE definition: the live replay
+#: (:mod:`~agentwire.voice_layer.replay`) has to send exactly what the page
+#: sends, or it judges a turn the owner never has.
+SCRIPTED_INSTRUCTION = "Say exactly this to the user, word for word, and say nothing else: "
+
 #: The announcer, kept separate from the page so tests can run it under ``node``
 #: with a fake ``send``/``speak``/timer and assert on the DATA CHANNEL. Spliced
 #: into the page by :func:`page`; also exported by :func:`announcer_source` for
@@ -545,7 +551,7 @@ function createAnnouncer(deps) {
       type: "response.create",
       response: {
         instructions:
-          "Say exactly this to the user, word for word, and say nothing else: " +
+          __SCRIPTED_INSTRUCTION__ +
           item.text,
       },
     });
@@ -712,6 +718,8 @@ function createAnnouncer(deps) {
   };
 }
 """
+
+ANNOUNCER_JS = ANNOUNCER_JS.replace("__SCRIPTED_INSTRUCTION__", json.dumps(SCRIPTED_INSTRUCTION))
 
 #: The buddy's clock (#962), same discipline as the announcer: a standalone
 #: factory with injected deps so the whole loop — peek, gate, coalesce,
