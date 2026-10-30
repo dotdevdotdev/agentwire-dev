@@ -139,7 +139,7 @@ def _get_remote_session_posture(machine_id: str, path: str) -> str | None:
     return None
 
 
-def list_local_sessions(show_context: bool = False) -> list[dict]:
+def list_local_sessions(show_context: bool = False, show_state: bool = False) -> list[dict]:
     """List local tmux sessions in-process (no CLI subprocess).
 
     Single source of truth for local session listing — used by ``cmd_list``
@@ -187,6 +187,9 @@ def list_local_sessions(show_context: bool = False) -> list[dict]:
                 "flagged": ctx.flagged,
                 "note": ctx.note,
             }
+        if show_state:
+            from .session_state import session_state
+            session_info["state"] = session_state(parts[0])
         sessions.append(session_info)
     return sessions
 
@@ -246,7 +249,9 @@ def cmd_list(args) -> int:
     remote_only = getattr(args, 'remote', False)
     machine_filter = getattr(args, 'machine', None)
     show_context = getattr(args, 'context', False)
-    show_sessions = getattr(args, 'sessions', False) or show_context or getattr(args, 'services', False)
+    show_state = getattr(args, 'state', False)
+    show_sessions = (getattr(args, 'sessions', False) or show_context or show_state
+                     or getattr(args, 'services', False))
 
     # Check if we're inside a tmux session
     current_session = pane_manager.get_current_session()
@@ -281,7 +286,7 @@ def cmd_list(args) -> int:
         return 0
 
     # Show sessions (original behavior)
-    local_sessions = [] if remote_only else list_local_sessions(show_context=show_context)
+    local_sessions = [] if remote_only else list_local_sessions(show_context=show_context, show_state=show_state)
     remote_by_machine = {} if local_only else list_remote_sessions(machine_filter)
 
     all_sessions = list(local_sessions)
@@ -335,6 +340,7 @@ def cmd_list(args) -> int:
                 # Remove @machine suffix for display within machine group
                 display_name = s['name'].rsplit('@', 1)[0] if '@' in s['name'] else s['name']
                 parked_marker = " [parked: usage limit]" if s.get("usage_limit") else ""
+                state_marker = f"  [{s['state']}]" if s.get("state") else ""
                 ctx_marker = ""
                 if show_context:
                     ctx = s.get("context")
@@ -350,7 +356,7 @@ def cmd_list(args) -> int:
                     svc_marker = (f" [service — UNHEALTHY: {s.get('service_detail')}]"
                                   if s.get("service_healthy") is False
                                   else " [service]")
-                print(f"  {display_name}: {s['windows']} window(s) ({s['path']}){parked_marker}{ctx_marker}{svc_marker}")
+                print(f"  {display_name}: {s['windows']} window(s) ({s['path']}){parked_marker}{state_marker}{ctx_marker}{svc_marker}")
         else:
             print("  (no sessions)")
         print()
@@ -1168,6 +1174,9 @@ def register_pane_parser(subparsers) -> None:
     list_parser.add_argument("--context", action="store_true",
                              help="Annotate each session with its Claude Code context headroom "
                                   "(remaining %%); flags sessions running low (implies --sessions)")
+    list_parser.add_argument("--state", action="store_true",
+                             help="Annotate each local session with busy / idle / blocked / unknown, "
+                                  "read from its live status row (implies --sessions)")
     list_parser.set_defaults(func=cmd_list)
 
     # === output command (top-level) ===

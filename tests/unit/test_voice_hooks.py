@@ -53,7 +53,7 @@ class TestScope:
         role = RoleConfig(name="voice-assistant", instructions="x")
         settings = _settings_from(build_agent_command("bypass", [role]).command)
         assert set(settings["hooks"]) == {
-            "UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "Notification",
+            "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "Notification",
         }
         assert settings["hooks"]["PostToolUse"][0]["matcher"] == "mcp__agentwire__say"
         assert all("-m agentwire.voice_hooks" in e["hooks"][0]["command"]

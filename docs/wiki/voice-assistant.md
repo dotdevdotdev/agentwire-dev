@@ -130,9 +130,33 @@ portal is never answered twice.
 The assistant's own spoken confirms ("That kills the scheduler session. Go ahead?")
 are ordinary turns: your "yes" goes to the model as a request.
 
+## System digest
+
+What the assistant knows without asking, from `agentwire voice digest`
+(`agentwire/voice_digest.py`):
+
+- **Sessions**, each with its live state: `busy`, `idle`, `BLOCKED on a dialog`, or
+  nothing when unreadable. This is the shared budgeted roster
+  (`voice_layer/digest.build_roster`), the same one the buddy reads, so the two never
+  disagree about the fleet.
+- **Projects**, each with one line from its README/CLAUDE.md, ranked by recent activity.
+- **Scheduler**: tasks in flight, overdue, or whose last run failed (capped).
+- **Config**: TTS/STT tiers, projects dir, custom services, outbound channels, beta flags.
+- **Tool index**: its own MCP tools and skills, and how to refresh.
+
+Budgeted (roster 6000 chars, digest 9000), and a failing section says so in one line
+while the rest still ships. A `SessionStart` speech hook prints it, so Claude Code
+adds it to the context on startup, resume and after compaction. The role says to
+refresh before answering anything about live state.
+
+**Live state** comes from `agentwire list --state` (`agentwire/session_state.py`). It
+reads the pane's live status row, the rows directly above the input box, and stops at
+the first transcript or turn-end row, so a spinner in scrollback is history. While a
+turn runs that row is the spinner (`· Discombobulating… (31s · ↓ 2.8k tokens)`; older
+builds add `esc to interrupt`); after it, `✻ Worked for 6s · done 8:08 AM`. A live
+dialog is `blocked`. Anything without a readable input box is `unknown`, never `idle`.
+
 ## Known gaps (tracked in #1198)
 
-- `sessions_list` reports no busy/idle state, so "which sessions are busy" needs the
-  system digest from slice 4.
 - Claude Code fires the permission `Notification` a few seconds after the dialog
   appears, so the spoken approval request lags the dialog slightly.
