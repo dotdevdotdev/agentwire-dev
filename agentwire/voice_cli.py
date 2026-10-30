@@ -30,8 +30,10 @@ change.
 """
 
 import argparse
+import json
 import re
 import sys
+from pathlib import Path
 
 from .core import EFFORT_LEVELS, _output_json, _output_result
 from .voice_hooks import SESSION
@@ -44,10 +46,24 @@ DEFAULT_EFFORT = "medium"
 #: What the portal's status chip can show; set by the session's speech hooks.
 STATES = ("working", "done", "failed", "approval")
 
-#: A spoken answer to a live approval dialog. Anything else is refused while
-#: one is pending, so a stray request can't slip past an unanswered prompt.
-_YES = re.compile(r"^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|approve[d]?|confirm(ed)?)\b")
-_NO = re.compile(r"^(no|nope|nah|don'?t|do not|cancel|stop|deny|denied|reject(ed)?)\b")
+#: While an approval dialog is pending, the ENTIRE utterance is judged against
+#: the dialog's intent by one short model call (``classify_reply``) — never a
+#: first-word match. approve → the plain one-time Yes; deny → the dialog's
+#: "No" (tell Claude what to do differently) with the full utterance as the
+#: feedback; anything else, or a classifier failure, fails CLOSED: one spoken
+#: "yes or no?" and the full text stays queued. Nothing the owner says is
+#: dropped, and nothing is approved on a guess.
+CLASSIFIER_MODEL = "claude-haiku-5-5"
+CLASSIFIER_EFFORT = "low"
+CLASSIFIER_TIMEOUT_S = 10
+REPLY_VERDICTS = ("approve", "approve_and_more", "deny", "other")
+
+#: Which dialog was already met with "say yes or no", so it is spoken once.
+REMINDED_FILE = Path.home() / ".agentwire" / "voice" / "approval-reminded"
+
+#: Sender name for the owner's queued requests: the assistant's ack hook treats
+#: ``[MSG from owner · request]`` as a request from the owner.
+OWNER_SENDER = "owner"
 
 
 def service_entry(*, project: str, effort: str, autostart: bool) -> dict:
@@ -218,33 +234,99 @@ def cmd_voice_status(args) -> int:
     return 0 if status["healthy"] else 1
 
 
-def spoken_answer(text: str) -> str | None:
-    """``"yes"``, ``"no"``, or None for a spoken reply to an approval."""
-    t = re.sub(r"[^a-z' ]+", " ", text.lower()).strip()
-    if _NO.match(t):
-        return "no"
-    if _YES.match(t):
-        return "yes"
-    return None
+def classify_reply(intent: str, utterance: str, run=None) -> str:
+    """One of ``REPLY_VERDICTS`` for *utterance* as a reply to *intent*.
+
+    One tool-less ``claude -p`` call on Haiku at low effort (~2 s measured),
+    bounded by ``CLASSIFIER_TIMEOUT_S``. Fails closed: a timeout, an error,
+    or any reply that is not exactly a verdict is ``"other"``.
+    """
+    import subprocess
+
+    prompt = (
+        "A spoken reply must be matched to a pending approval.\n"
+        f"Pending action: {intent}\n"
+        f'Owner\'s entire utterance: "{utterance}"\n'
+        "Answer with exactly one word:\n"
+        "approve - they clearly approve, and say nothing more\n"
+        "approve_and_more - they clearly approve AND say or ask something further\n"
+        "deny - they reject it, or want something different done instead\n"
+        "other - anything else, unclear, or unrelated\n"
+        "If in any doubt, answer other."
+    )
+    cmd = ["claude", "-p", prompt, "--model", CLASSIFIER_MODEL, "--effort", CLASSIFIER_EFFORT,
+           "--tools", "", "--strict-mcp-config", "--no-session-persistence",
+           "--disable-slash-commands"]
+    try:
+        result = (run or subprocess.run)(cmd, capture_output=True, text=True,
+                                         stdin=subprocess.DEVNULL, timeout=CLASSIFIER_TIMEOUT_S)
+    except Exception:  # noqa: BLE001  # timeout / missing binary: fail closed
+        return "other"
+    verdict = (result.stdout or "").strip().lower().strip(".")
+    return verdict if result.returncode == 0 and verdict in REPLY_VERDICTS else "other"
+
+
+def _pending_intent(info) -> str:
+    """The announced approval's intent; the dialog's own text as fallback."""
+    from .voice_hooks import APPROVAL_FILE
+
+    try:
+        intent = json.loads(APPROVAL_FILE.read_text()).get("intent")
+    except (OSError, ValueError, AttributeError):
+        intent = None
+    return intent or info.body or info.summary or info.question
 
 
 def approval_keys(options: list[dict], answer: str) -> list[str]:
-    """Keys that pick *answer* in a numbered dialog: the first "Yes…" option,
-    or the "No…" option (Escape when the dialog has none)."""
-    want = "yes" if answer == "yes" else "no"
-    for opt in options:
-        if opt.get("label", "").lower().startswith(want):
-            return [str(opt["number"])]
-    return ["Escape"] if answer == "no" else []
+    """Keys that pick *answer* in a numbered dialog.
+
+    Yes is the plain, one-time "Yes" only — never a "Yes, and don't ask
+    again" / allow-all option, which would widen a grant by voice. No is the
+    "No…" option, or Escape when the dialog has none. Empty = no safe pick.
+    """
+    def label(opt: dict) -> str:
+        return re.sub(r"[^a-z ]+", "", opt.get("label", "").lower()).strip()
+
+    if answer == "yes":
+        return [str(o["number"]) for o in options if label(o) == "yes"][:1]
+    noes = [o for o in options if label(o).startswith("no")]
+    noes.sort(key=lambda o: "tell claude" not in label(o))  # prefer "No, and tell Claude…"
+    return [str(noes[0]["number"])] if noes else ["Escape"]
+
+
+def _queue_request(text: str) -> None:
+    """Hold *text* as the owner's next request. The msg drain delivers it only
+    once no dialog is live and the input box is empty — i.e. after the dialog
+    clears — so it is never pasted into the dialog and never lost."""
+    from . import inbox
+
+    inbox.enqueue(SERVICE_NAME, text, kind="request", sender=OWNER_SENDER)
+
+
+def _remind_once(dialog_hash: str) -> None:
+    from .voice_hooks import speak
+
+    try:
+        if REMINDED_FILE.read_text().strip() == dialog_hash:
+            return
+    except OSError:
+        pass
+    try:
+        REMINDED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        REMINDED_FILE.write_text(dialog_hash)
+    except OSError:
+        pass
+    speak("An approval is waiting. Say yes or no.", kind="approval")
 
 
 def _answer_pending_approval(text: str, json_mode: bool) -> "int | None":
     """If the assistant is blocked on an approval dialog, *text* answers it.
 
     None when no dialog is live (the caller delivers *text* as a request).
-    The answer goes through ``prompt_router.answer`` — compare-and-send on the
+    Keys go through ``prompt_router.answer`` — compare-and-send on the
     dialog's content hash — so a dialog answered meanwhile in the portal is
-    never answered twice.
+    never answered twice. The full utterance is queued whenever it carries
+    more than the bare answer; it is delivered once the dialog clears.
     """
     from . import prompt_router
     from .voice_hooks import speak
@@ -252,14 +334,29 @@ def _answer_pending_approval(text: str, json_mode: bool) -> "int | None":
     info = prompt_router.detect_prompt(prompt_router.capture(SERVICE_NAME))
     if info is None or info.kind != "permission":
         return None
-    answer = spoken_answer(text)
-    keys = approval_keys(info.options, answer) if answer else []
+    verdict = classify_reply(_pending_intent(info), text)
+    if verdict == "other":
+        _queue_request(text)
+        _remind_once(info.content_hash())
+        return _output_result(False, json_mode,
+                              "An approval is pending — say yes or no. Your request is queued.",
+                              pending_approval=True, verdict=verdict, queued=True)
+    answer = "no" if verdict == "deny" else "yes"
+    keys = approval_keys(info.options, answer)
     if not keys:
-        speak("An approval is waiting. Say yes or no.", kind="approval")
-        return _output_result(False, json_mode, "An approval is pending — answer yes or no.",
-                              pending_approval=True)
+        # No plain one-time Yes on this dialog: never pick a broader grant by voice.
+        speak("I can't approve that one by voice. It's waiting in the portal.", kind="approval")
+        _queue_request(text)
+        return _output_result(False, json_mode, "No plain one-time Yes option; answer it in the portal.",
+                              pending_approval=True, verdict=verdict, queued=True)
     ok, detail = prompt_router.answer(SERVICE_NAME, 0, info.content_hash(), keys)
-    return _output_result(ok, json_mode, f"Approval {answer}: {detail}", answered=answer)
+    # deny: the full utterance is the "what to do differently" feedback.
+    # approve_and_more: the full utterance is the next request.
+    queued = verdict in ("deny", "approve_and_more")
+    if queued:
+        _queue_request(text)
+    return _output_result(ok, json_mode, f"Approval {answer}: {detail}",
+                          answered=answer, verdict=verdict, queued=queued)
 
 
 def cmd_voice_ask(args) -> int:

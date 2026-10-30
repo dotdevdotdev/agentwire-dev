@@ -99,14 +99,33 @@ tells the lane what an utterance is.
 ## Answering approvals by voice
 
 When the assistant hits a permission dialog (e.g. a damage-control confirm), the
-Notification hook says "Approval needed: … Say yes or no." The next thing you say
-answers it: `voice ask` checks the assistant's pane for a live permission dialog
-first. "Yes / yeah / ok / go ahead / do it" picks the first "Yes" option, and
-"no / nope / cancel / don't" picks the "No" option (Escape if the dialog has none).
-The keys go through `prompt_router.answer`, a compare-and-send on the dialog's content
-hash, so a dialog someone already answered in the portal is never answered twice.
-Anything else is refused while a dialog waits ("An approval is waiting. Say yes or
-no."), so a new request can't slip past an unanswered prompt.
+Notification hook speaks the **intent** in plain words, never the raw command: the
+pending tool call's own `description` (Bash carries one), else the assistant's stated
+plan, then "Yes or no?" (e.g. "Prune merged worktrees. Yes or no?"). The exact command
+goes on screen as a toast. The intent is also saved to `~/.agentwire/voice/approval.json`.
+
+Push-to-talk is deliberate, so your **whole utterance** is the answer. `voice ask`
+sees the live dialog on the assistant's pane and makes one short model call
+(`claude -p`, Haiku 5.5, low effort, no tools, 10 s timeout; ~2–5 s measured) with
+the dialog's intent and everything you said. The verdict:
+
+| Verdict | What happens |
+|---|---|
+| `approve` | the plain one-time **Yes** |
+| `approve_and_more` | the plain Yes, then your full utterance is delivered as the next request |
+| `deny` | the dialog's "No, and tell Claude what to do differently" (or plain No), then your full utterance is delivered as the feedback, so "no, do X instead" redirects |
+| `other`, a timeout, an error, or anything off-script | **fail closed**: nothing is pressed, "An approval is waiting. Say yes or no." is spoken once per dialog, and your text stays queued as the next request |
+
+Nothing you say is dropped, and nothing is approved on a guess. Voice never picks a
+persistent grant ("Yes, and don't ask again", "allow all"): if a dialog has no plain
+one-time Yes, it says it can't approve that one by voice and leaves it in the portal.
+
+Queued text goes through the msg inbox as `[MSG from owner · request]`. The drain
+pastes only once no dialog is live and the input box is empty, so it lands after the
+dialog clears (within the watchdog's ≤60 s tick). The ack hook and the role treat
+`owner` messages as the owner speaking. Keys go through `prompt_router.answer`, a
+compare-and-send on the dialog's content hash, so a dialog already answered in the
+portal is never answered twice.
 
 The assistant's own spoken confirms ("That kills the scheduler session. Go ahead?")
 are ordinary turns: your "yes" goes to the model as a request.

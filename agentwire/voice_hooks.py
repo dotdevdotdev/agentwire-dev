@@ -45,11 +45,16 @@ ACK = "On it."
 #: One small file: the current turn's prompt id and whether a result was spoken.
 STATE_FILE = Path.home() / ".agentwire" / "voice" / "turn.json"
 
+#: The pending approval's plain-language intent (and exact command), written
+#: when it is announced so ``voice ask`` can judge a spoken reply against it.
+APPROVAL_FILE = Path.home() / ".agentwire" / "voice" / "approval.json"
+
 #: Prompts that are not a request from the owner: slash commands (the context
-#: policy's /compact) and msg-inbox deliveries (a report from a session the
-#: assistant started). Those get no "On it." — the Stop hook still speaks
-#: whatever the turn produced.
-_NOT_A_REQUEST = re.compile(r"^\s*(?:/|\[MSG from )")
+#: policy's /compact) and msg-inbox deliveries from other sessions (a report
+#: from a session the assistant started). Those get no "On it." — the Stop hook
+#: still speaks whatever the turn produced. ``[MSG from owner …]`` IS the
+#: owner: a request queued behind an approval dialog (``voice ask``).
+_NOT_A_REQUEST = re.compile(r"^\s*(?:/|\[MSG from (?!owner ))")
 
 #: StopFailure ``error`` values → what to say. Unknown values are spoken as-is.
 _FAILURE_REASONS = {
@@ -239,13 +244,68 @@ def on_stop_failure(payload: dict) -> None:
     speak(f"That failed: {_FAILURE_REASONS.get(error, error.replace('_', ' '))}.", kind="failure")
 
 
+def pending_tool_call(transcript_path: str | None) -> tuple[str, dict, str]:
+    """(tool name, tool input, the assistant's text alongside it) for the
+    newest tool call in the transcript — the one the dialog is asking about.
+    Empty values when the transcript can't be read."""
+    try:
+        lines = Path(transcript_path).read_text().splitlines() if transcript_path else []
+    except OSError:
+        lines = []
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("type") != "assistant":
+            continue
+        content = (row.get("message") or {}).get("content") or []
+        if not isinstance(content, list):
+            continue
+        calls = [c for c in content if isinstance(c, dict) and c.get("type") == "tool_use"]
+        if calls:
+            text = " ".join(c.get("text", "") for c in content
+                            if isinstance(c, dict) and c.get("type") == "text")
+            return calls[-1].get("name", ""), calls[-1].get("input") or {}, text
+    return "", {}, ""
+
+
+def approval_request(payload: dict) -> tuple[str, str]:
+    """(what to say, what to show) for a pending approval.
+
+    Spoken: the INTENT in plain words — the tool call's own ``description``
+    (Bash carries one), else the assistant's stated plan — then "Yes or no?".
+    Never the raw command: it is unreadable aloud. The exact command goes in
+    the on-screen card instead.
+    """
+    intent, exact, tool = approval_intent(payload)
+    headline, _ = speech_headline(intent, max_words=MAX_SPOKEN_WORDS - 3)
+    display = f"**Approval needed** ({tool or 'tool'})\n{exact}" if exact else None
+    return f"{headline.rstrip('.!?…')}. Yes or no?", display
+
+
+def approval_intent(payload: dict) -> tuple[str, str, str]:
+    """(intent in plain words, exact command/target, tool name)."""
+    tool, tool_input, plan = pending_tool_call(payload.get("transcript_path"))
+    intent = (tool_input.get("description") or plan
+              or payload.get("message") or f"use {tool or 'a tool'}")
+    exact = tool_input.get("command") or tool_input.get("file_path") or (
+        json.dumps(tool_input)[:DISPLAY_LIMIT] if tool_input else "")
+    return intent, exact, tool
+
+
 def on_notification(payload: dict) -> None:
     if payload.get("notification_type") not in _APPROVAL_TYPES:
         return
     signal("approval")
-    detail = spoken_summary(payload.get("message") or "", limit=140).rstrip(".")
-    speak(f"Approval needed: {detail}. Say yes or no." if detail
-          else "Approval needed. Say yes or no.", kind="approval")
+    intent, exact, _tool = approval_intent(payload)
+    try:
+        APPROVAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        APPROVAL_FILE.write_text(json.dumps({"intent": intent, "command": exact}))
+    except OSError:
+        pass
+    text, display = approval_request(payload)
+    speak(text, kind="approval", display=display)
 
 
 HANDLERS = {

@@ -120,7 +120,7 @@ class TestApprovals:
         fire("notification", notification_type="idle_prompt", message="Claude is waiting")
         fire("notification", notification_type="permission_prompt",
              message="Claude needs your permission to use Bash")
-        assert spoken == ["Approval needed: Claude needs your permission to use Bash. Say yes or no."]
+        assert spoken == ["Claude needs your permission to use Bash. Yes or no?"]
 
 
 def test_a_hook_never_fails_the_turn(spoken, monkeypatch):
