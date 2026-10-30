@@ -243,27 +243,29 @@ def classify_reply(intent: str, utterance: str, run=None) -> "tuple[str, str | N
     approve those for today") — the model supplies the scope, never what it
     covers (that comes from the hook's record; see ``voice_grants``).
 
-    One tool-less ``claude -p`` call on Haiku at low effort (~2 s measured),
-    bounded by ``CLASSIFIER_TIMEOUT_S``. Fails closed: a timeout, an error, or
-    any reply off the exact format is ``("other", None)``.
+    One tool-less ``claude -p`` call on Haiku at low effort (~2.5 s measured),
+    bounded by ``CLASSIFIER_TIMEOUT_S``. It answers three separate questions
+    (yes/no/unclear, also asks for something, how long) and the verdict is
+    derived from them in code: asked as one combined label, Haiku dropped the
+    "also asks" half 2 times in 3 in the #1198 eval. Fails closed: a timeout,
+    an error, or any reply off the exact format is ``("other", None)``.
     """
     import subprocess
 
-    from .voice_grants import SCOPES
-
     prompt = (
-        "A spoken reply must be matched to a pending approval.\n"
+        "A spoken reply to a pending approval. Answer three questions about it.\n"
         f"Pending action: {intent}\n"
-        f'Owner\'s entire utterance: "{utterance}"\n'
-        "Answer with exactly one word:\n"
-        "approve - they clearly approve, and say nothing more\n"
-        "approve_and_more - they clearly approve AND say or ask something further\n"
-        "deny - they reject it, or want something different done instead\n"
-        "other - anything else, unclear, or unrelated\n"
-        "If they approve AND say it should keep applying from now on (e.g. 'for today', "
-        "'for the next hour', 'for this session', 'approve all of these'), add a second word: "
-        "hour, today or session ('always' or 'all of these' means today).\n"
-        "If in any doubt, answer other."
+        f'Owner\'s entire utterance: "{utterance}"\n\n'
+        "answer: is it a yes, a no, or unclear? (asking for a different action "
+        "instead counts as no; a question or anything off-topic is unclear)\n"
+        "also_asks: besides yes or no, does the utterance ask for ANY other action "
+        "to be done, now or next? Saying how long a yes lasts is not an action.\n"
+        "lasts: how long they say the yes applies: once (nothing said), hour, today "
+        "(also 'always', 'all of these') or session.\n\n"
+        "Reply in exactly this format and nothing else:\n"
+        "answer: yes|no|unclear\n"
+        "also_asks: yes|no\n"
+        "lasts: once|hour|today|session"
     )
     cmd = ["claude", "-p", prompt, "--model", CLASSIFIER_MODEL, "--effort", CLASSIFIER_EFFORT,
            "--tools", "", "--strict-mcp-config", "--no-session-persistence",
@@ -273,14 +275,30 @@ def classify_reply(intent: str, utterance: str, run=None) -> "tuple[str, str | N
                                          stdin=subprocess.DEVNULL, timeout=CLASSIFIER_TIMEOUT_S)
     except Exception:  # noqa: BLE001  # timeout / missing binary: fail closed
         return "other", None
-    words = (result.stdout or "").strip().lower().strip(".").split()
-    if result.returncode != 0 or not 1 <= len(words) <= 2 or words[0] not in REPLY_VERDICTS:
+    if result.returncode != 0:
         return "other", None
-    if len(words) == 1:
-        return words[0], None
-    if words[0] in ("approve", "approve_and_more") and words[1] in SCOPES:
-        return words[0], words[1]
-    return "other", None
+    return parse_reply_fields(result.stdout or "")
+
+
+def parse_reply_fields(text: str) -> "tuple[str, str | None]":
+    """The classifier's three fields -> ``(verdict, scope)``. Deterministic and
+    strict: a missing or unknown field is ``("other", None)`` (fail closed)."""
+    from .voice_grants import SCOPES
+
+    fields = {}
+    for line in text.strip().lower().splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            fields[key.strip()] = value.strip().strip(".").strip()
+    answer, also, lasts = fields.get("answer"), fields.get("also_asks"), fields.get("lasts")
+    if answer not in ("yes", "no", "unclear") or also not in ("yes", "no") \
+            or lasts not in ("once", *SCOPES):
+        return "other", None
+    if answer == "unclear":
+        return "other", None
+    if answer == "no":
+        return "deny", None
+    return ("approve_and_more" if also == "yes" else "approve"), (None if lasts == "once" else lasts)
 
 
 def _pending_intent(info) -> str:
@@ -506,7 +524,10 @@ def cmd_voice_state(args) -> int:
     """
     from . import voice_grants
     from .core import _get_portal_url, portal_request
+    from .voice_hooks import record_voice_eval
 
+    if record_voice_eval({"event": "state", "state": args.state}):
+        return _output_result(True, args.json, f"state {args.state} (eval log)", state=args.state)
     try:
         r = portal_request("POST", f"{_get_portal_url()}/api/voice/state",
                            json={"state": args.state, "grants": len(voice_grants.active())},

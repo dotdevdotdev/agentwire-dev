@@ -114,6 +114,34 @@ def claude_settings() -> dict:
 # ─────────────────────────────────────────────────────────────
 
 
+#: Voice eval (#1198): when set, ``say`` and ``voice state`` append what they
+#: would have done to this JSONL file (with a timestamp and the calling tmux
+#: session) and do nothing else — so ``scripts/voice_eval.py`` can measure a
+#: real assistant session silently. Unset in normal use.
+EVAL_LOG_ENV = "AGENTWIRE_VOICE_EVAL_LOG"
+
+
+def record_voice_eval(event: dict) -> bool:
+    """Append *event* to the eval log if one is configured. True = recorded
+    (the caller must then skip the real effect)."""
+    import os
+    import time
+
+    path = os.environ.get(EVAL_LOG_ENV)
+    if not path:
+        return False
+    caller = None
+    if os.environ.get("TMUX"):
+        try:
+            caller = subprocess.run(["tmux", "display-message", "-p", "#S"], capture_output=True,
+                                    text=True, timeout=2).stdout.strip() or None
+        except (OSError, subprocess.TimeoutExpired):
+            caller = None
+    with open(path, "a") as f:
+        f.write(json.dumps({"ts": time.time(), "from": caller, **event}) + "\n")
+    return True
+
+
 def _agentwire_binary() -> str | None:
     sibling = Path(sys.executable).with_name("agentwire")
     return str(sibling) if sibling.exists() else shutil.which("agentwire")
