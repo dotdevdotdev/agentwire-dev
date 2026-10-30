@@ -286,7 +286,7 @@ class DesktopManager {
 
             case 'voice_state':
                 // The voice assistant's real state, from its speech hooks
-                this.emit('voice_state', { session: msg.session, state: msg.state });
+                this.emit('voice_state', { session: msg.session, state: msg.state, grants: msg.grants });
                 break;
 
             case 'tts_start':

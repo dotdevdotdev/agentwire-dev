@@ -381,13 +381,24 @@ class VoiceRoutesMixin:
 
     async def api_voice_state(self, request: web.Request) -> web.Response:
         """POST /api/voice/state — the assistant's speech hooks report its
-        state (working / done / failed / approval); the status chip shows it."""
+        state (working / done / failed / approval) and how many standing
+        approvals are active; the status chip shows both."""
         from ..voice_cli import STATES
 
-        state = (await request.json()).get("state")
-        if state not in STATES:
+        data = await request.json()
+        state, grants = data.get("state"), data.get("grants")
+        if state is not None and state not in STATES:
             return web.json_response({"error": f"state must be one of {', '.join(STATES)}"}, status=400)
-        await self.broadcast_dashboard("voice_state", {"session": VOICE_SESSION, "state": state})
+        if grants is not None and (not isinstance(grants, int) or isinstance(grants, bool) or grants < 0):
+            return web.json_response({"error": "grants must be a non-negative integer"}, status=400)
+        if state is None and grants is None:
+            return web.json_response({"error": "state or grants required"}, status=400)
+        payload = {"session": VOICE_SESSION}
+        if state is not None:
+            payload["state"] = state
+        if grants is not None:
+            payload["grants"] = grants
+        await self.broadcast_dashboard("voice_state", payload)
         return web.json_response({"success": True})
 
     async def api_answer(self, request: web.Request) -> web.Response:

@@ -112,7 +112,8 @@ def ask(tmp_path, monkeypatch):
     """`voice ask` against a running assistant whose pane shows *screen*,
     with the reply classifier stubbed to *verdict*."""
     calls = types.SimpleNamespace(sent=[], answered=[], spoken=[], queued=[], judged=[],
-                                  screen="", verdict="other")
+                                  screen="", verdict="other", scope=None)
+    monkeypatch.delenv("CLAUDECODE", raising=False)  # the owner's channel, not an agent
     svc = types.SimpleNamespace(name="agentwire-voice")
     monkeypatch.setattr(voice_cli, "_service", lambda: svc)
     monkeypatch.setattr(voice_cli, "REMINDED_FILE", tmp_path / "reminded")
@@ -128,7 +129,8 @@ def ask(tmp_path, monkeypatch):
                         lambda s, p, h, keys: calls.answered.append(keys) or (True, "sent"))
     monkeypatch.setattr(vh, "speak", lambda text, kind="say", display=None: calls.spoken.append(text))
     monkeypatch.setattr(voice_cli, "classify_reply",
-                        lambda intent, text: calls.judged.append((intent, text)) or calls.verdict)
+                        lambda intent, text: calls.judged.append((intent, text))
+                        or (calls.verdict, calls.scope))
 
     def run(text):
         return voice_cli.cmd_voice_ask(argparse.Namespace(text=[text], json=True))
@@ -189,10 +191,10 @@ def test_a_classifier_failure_never_approves(ask, monkeypatch):
                lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="Approve it, sure!"),
                lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="")]
     verdicts = [real_classify("x", "yes", run=r) for r in replies]
-    assert verdicts == ["other"] * 4
+    assert verdicts == [("other", None)] * 4
 
     ask.screen = APPROVAL_SCREEN
-    monkeypatch.setattr(voice_cli, "classify_reply", lambda intent, text: "other")
+    monkeypatch.setattr(voice_cli, "classify_reply", lambda intent, text: ("other", None))
     ask.run("yes")
     assert ask.answered == [] and ask.queued == [("yes", "owner")]
 
@@ -205,7 +207,7 @@ def test_the_classifier_reads_a_clean_verdict(monkeypatch):
         return types.SimpleNamespace(returncode=0, stdout="approve_and_more\n")
 
     assert real_classify("Prune worktrees", "yes and open it",
-                                                run=fake_run) == "approve_and_more"
+                                                run=fake_run) == ("approve_and_more", None)
     cmd = seen["cmd"]
     assert cmd[cmd.index("--model") + 1] == "claude-haiku-5-5"
     assert cmd[cmd.index("--effort") + 1] == "low"
@@ -292,7 +294,7 @@ def test_approval_speaks_the_intent_and_shows_the_command(tmp_path):
 # ── hooks drive the chip ────────────────────────────────────────────────
 
 
-def test_hooks_signal_working_done_failed_and_approval(tmp_path, monkeypatch):
+def test_hooks_signal_working_done_and_failed(tmp_path, monkeypatch):
     import io
     import sys
 
@@ -310,8 +312,7 @@ def test_hooks_signal_working_done_failed_and_approval(tmp_path, monkeypatch):
     fire("prompt-submit", prompt="y", prompt_id="p2")
     fire("stop-failure", prompt_id="p2", error="rate_limit")
     fire("stop", prompt_id="p2", last_assistant_message="")
-    fire("notification", notification_type="permission_prompt", message="needs Bash")
-    assert states == ["working", "done", "working", "failed", "approval"]
+    assert states == ["working", "done", "working", "failed"]
 
 
 def test_voice_state_never_fails_the_hook_when_the_portal_is_down(monkeypatch, capsys):

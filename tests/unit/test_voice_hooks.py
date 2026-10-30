@@ -116,11 +116,16 @@ class TestReport:
 
 
 class TestApprovals:
-    def test_approval_requests_are_spoken_other_notifications_are_not(self, spoken):
+    def test_approval_requests_go_to_the_grant_check_others_are_ignored(self, spoken, monkeypatch):
+        spawned = []
+        monkeypatch.setattr(vh, "_spawn", spawned.append)
+        monkeypatch.setattr(vh, "APPROVAL_FILE", vh.STATE_FILE.with_name("approval.json"))
         fire("notification", notification_type="idle_prompt", message="Claude is waiting")
         fire("notification", notification_type="permission_prompt",
              message="Claude needs your permission to use Bash")
-        assert spoken == ["Claude needs your permission to use Bash. Yes or no?"]
+        assert spawned == [["voice", "approval", "--announce",
+                            "Claude needs your permission to use Bash. Yes or no?"]]
+        assert spoken == []  # `voice approval` speaks: the grant, or the request
 
 
 def test_a_hook_never_fails_the_turn(spoken, monkeypatch):

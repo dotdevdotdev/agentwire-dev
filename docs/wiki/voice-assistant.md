@@ -130,6 +130,23 @@ portal is never answered twice.
 The assistant's own spoken confirms ("That kills the scheduler session. Go ahead?")
 are ordinary turns: your "yes" goes to the model as a request.
 
+## Risky actions and standing approvals
+
+The assistant runs bypass, but its launch carries the damage-control **voice marker**
+(`AGENTWIRE_VOICE=1`), so every ask-tier rule (push, merge, worktree removal, session
+kill, …) stays a real dialog, the spoken confirm, instead of being silently allowed.
+The marker only tightens, and other sessions are unchanged. See
+[damage-control](internals/damage-control.md#voice-assistant-marker-asks-stay-dialogs-1198).
+
+Say **"yes, for today"** (or "for the next hour", "for this session") and later dialogs
+for the same rule are approved for you: the voice layer presses the plain one-time Yes
+and says "Approved, standing OK." Grants key on the rule id the hook recorded, belong
+to agentwire-voice only, always expire, and are logged. Commands nothing can analyse
+(unverifiable) can never be standing. The status chip shows a ring while any grant is
+active. `agentwire voice grants` lists them, and `agentwire voice grants --clear [--rule <id>]`
+(or saying "stop auto-approving") removes them. Answering or granting by voice works
+only from the owner's channels, never from inside another agent session.
+
 ## System digest
 
 What the assistant knows without asking, from `agentwire voice digest`

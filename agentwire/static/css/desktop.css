@@ -5601,6 +5601,12 @@ body.sidebar-pinned .sidebar-tab {
 .sidebar-voice-indicator.failed { color: var(--error); }
 .sidebar-voice-indicator.approval { color: var(--orb-listening); }
 
+/* Standing approvals active (agentwire voice grants): a ring around the chip */
+.sidebar-voice-indicator.has-grant {
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px var(--orb-listening);
+}
+
 .sidebar-voice-indicator .stop-icon,
 .sidebar-voice-indicator .spinner,
 .sidebar-voice-indicator .generating-dots,

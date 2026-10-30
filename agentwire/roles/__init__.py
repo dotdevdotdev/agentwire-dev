@@ -364,15 +364,20 @@ ROLE_SETTINGS = {
 
 
 def role_settings(role_names: list[str]) -> dict | None:
-    """Merged ``--settings`` hooks for *role_names*, or None when none carry any."""
+    """Merged ``--settings`` (hooks + env) for *role_names*, or None when none
+    carry any. Hook lists concatenate per event; env keys merge."""
     hooks: dict[str, list] = {}
+    env: dict[str, str] = {}
     for name in role_names:
         build = ROLE_SETTINGS.get(name)
         if build is None:
             continue
-        for event, entries in build().get("hooks", {}).items():
+        built = build()
+        for event, entries in built.get("hooks", {}).items():
             hooks.setdefault(event, []).extend(entries)
-    return {"hooks": hooks} if hooks else None
+        env.update(built.get("env", {}))
+    settings = {**({"hooks": hooks} if hooks else {}), **({"env": env} if env else {})}
+    return settings or None
 
 
 def discover_role(name: str, project_path: Path | None = None) -> Path | None:
