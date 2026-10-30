@@ -146,6 +146,37 @@ class TestFlush:
         msgs = inbox.list_messages("s")
         assert len(msgs) == 1 and msgs[0].attempts == 1
 
+    def test_a_deferral_keeps_what_the_drain_saw_and_it_expires(self, isolate, monkeypatch):
+        """The inbox records only a length (#1105), so "the box was empty, why
+        did it defer?" needs the capture itself: an owner-only file with the
+        parsed box and the pane, pruned once it is older than the TTL."""
+        import os
+        import stat
+        import time
+
+        inbox.enqueue("s", "hi", sender="x")
+        _patch_delivery(monkeypatch, empty=False, box="Update installed")
+        inbox.flush_session("s")
+        root = isolate.parent / "inbox-debug" / "s"
+        files = list(root.glob("*.txt"))
+        assert len(files) == 1
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(files[0].stat().st_mode) == 0o600
+        text = files[0].read_text()
+        assert "reason=box_not_empty" in text and "'Update installed'" in text
+        assert "dummy screen" in text
+
+        old = time.time() - inbox.DEFERRAL_CAPTURE_TTL_S - 60
+        os.utime(files[0], (old, old))
+        inbox.flush_session("s")
+        assert files[0] not in list(root.glob("*.txt"))
+
+    def test_a_delivered_message_leaves_no_capture(self, isolate, monkeypatch):
+        inbox.enqueue("s", "hi", sender="x")
+        _patch_delivery(monkeypatch, empty=True)
+        inbox.flush_session("s")
+        assert not (isolate.parent / "inbox-debug").exists()
+
     def test_four_plus_coalesce_never_exceeds_line_bound(self, isolate, monkeypatch):
         # #930 regression (the chip regime): 4+ rendered lines in ONE paste
         # collapse to the "[Pasted text]" chip, blinding the #689 stuck test —
