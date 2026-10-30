@@ -42,7 +42,6 @@ import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import { setupHelp, openHelp, isHelpOpen } from './help-modal.js';
 import { createTaskbarPersistence, bindPageLifecycle } from './taskbar-persist.js';
 import { PttController } from './ptt.js';
-import { isAutoSend } from './voice/autosend-prefs.js';
 import { initAnnouncements } from './announcement-modal.js';
 
 // State - track open windows
@@ -87,10 +86,6 @@ const elements = {
     connectionStatus: document.getElementById('connectionStatus'),
     globalPtt: document.getElementById('sidebarGlobalPtt'),
     voiceIndicator: document.getElementById('sidebarVoiceIndicator'),
-    transcriptBar: document.getElementById('sidebarTranscriptBar'),
-    transcriptInput: document.getElementById('sidebarTranscriptInput'),
-    transcriptSend: document.getElementById('sidebarTranscriptSend'),
-    transcriptDismiss: document.getElementById('sidebarTranscriptDismiss'),
     instantBanner: document.getElementById('instantModeBanner'),
     instantBannerDismiss: document.getElementById('instantModeBannerDismiss'),
 };
@@ -197,7 +192,6 @@ async function init() {
     // Voice tier drives PTT path selection + the instant-mode banner
     desktop.on('voice_status', renderInstantModeBanner);
     await desktop.fetchVoiceStatus();
-    setupTranscriptBar();
 
     // Initialize tile manager for drag-to-tile window management
     tileManager.init();
@@ -1360,10 +1354,8 @@ function setupGlobalPtt() {
 const globalPttCtl = new PttController({
     getVoiceStatus: () => desktop.voiceStatus,
     onState: updateGlobalPttState,
-    onResult: (text) => {
-        if (isAutoSend()) sendGlobalVoiceText(text);
-        else showGlobalTranscript(text);
-    },
+    // Push-to-talk is deliberate, so the whole utterance goes to the assistant on release.
+    onResult: sendGlobalVoiceText,
     onError: (kind, message) => {
         if (kind === 'unsupported') {
             console.warn('[GlobalPTT] SpeechRecognition unsupported — use Chrome or set stt.backend: cloud/custom');
@@ -1402,39 +1394,6 @@ async function sendGlobalVoiceText(text) {
         updateVoiceIndicator('failed');
         console.error('[GlobalPTT] Send failed:', err);
     }
-}
-
-// --- Edit-before-send transcript bar ---
-
-function setupTranscriptBar() {
-    const { transcriptBar, transcriptInput, transcriptSend, transcriptDismiss } = elements;
-    if (!transcriptBar) return;
-
-    const send = () => {
-        const value = transcriptInput.value.trim();
-        hideGlobalTranscript();
-        if (value) sendGlobalVoiceText(value);
-    };
-    transcriptSend.addEventListener('click', send);
-    transcriptDismiss.addEventListener('click', hideGlobalTranscript);
-    transcriptInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); send(); }
-        else if (e.key === 'Escape') { e.preventDefault(); hideGlobalTranscript(); }
-        e.stopPropagation();
-    });
-}
-
-function showGlobalTranscript(text) {
-    const { transcriptBar, transcriptInput } = elements;
-    if (!transcriptBar) return;
-    transcriptBar.hidden = false;
-    transcriptInput.value = text;
-    transcriptInput.focus();
-    transcriptInput.select();
-}
-
-function hideGlobalTranscript() {
-    if (elements.transcriptBar) elements.transcriptBar.hidden = true;
 }
 
 // --- Instant-mode banner ---
