@@ -156,3 +156,10 @@ class TestRestartKeepsLaunchOverrides:
         assert run() == 0
         cmd = launched.launch[0][3]
         assert "--model claude-haiku-5-5" in cmd and "--effort medium" in cmd
+
+    def test_a_restart_regenerates_role_owned_hooks(self, store, launched):
+        """The voice assistant's speech hooks ride --settings, derived from the
+        recorded role — so a restart must bring them back."""
+        record(cwd=store.cwd, roles=["voice-assistant"])
+        assert run() == 0
+        assert "-m agentwire.voice_hooks" in launched.launch[0][3]

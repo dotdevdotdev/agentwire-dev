@@ -29,7 +29,11 @@ from .core import (
     _post_desktop_notification,
     load_config,
 )
+from .playback_lane import KINDS as PLAYBACK_KINDS
+from .playback_lane import Lane
 from .project_config import get_voice_from_config
+from .voice_hooks import SESSION as VOICE_SESSION
+from .voice_hooks import speech_headline
 
 
 def _get_current_tmux_session() -> str | None:
@@ -296,6 +300,15 @@ def cmd_say(args) -> int:
     # Determine session name (priority: flag > tmux session > path inference)
     # Tmux session is more accurate than path for forked/named sessions like "anna-fork-1"
     session = args.session or _get_current_tmux_session() or _infer_session_from_path()
+    kind = getattr(args, 'kind', None) or "say"
+
+    # The voice assistant speaks at most a short headline (#1198); anything it
+    # cut goes on screen instead of being lost.
+    if session == VOICE_SESSION:
+        full = text
+        text, trimmed = speech_headline(text)
+        if trimmed and not getattr(args, 'display', None):
+            args.display = full
 
     # Handle voice notifications
     _handle_voice_notifications(text, voice, args, session)
@@ -361,22 +374,32 @@ def cmd_say(args) -> int:
                 _record_spoken(text, "browser")
             return _say_result(rc, "browser", clients)
 
-    # No portal connections — chunk locally for better TTS quality
+    # No portal connections — chunk locally for better TTS quality. One turn
+    # in the machine-wide playback lane covers every chunk, so nothing else
+    # can talk over or in between them (#1198).
     from .utils.chunker import chunk_text
     chunks = chunk_text(text)
 
     last_sink = "os-voice"
     spoken: list[str] = []
-    for chunk in chunks:
-        result, last_sink = _local_say_dispatch(
-            chunk, voice, exaggeration, cfg_weight, tts_config,
-            backend=backend, instructions=instructions, language=language, stream=stream
-        )
-        if result != 0:
-            # Partial: the chunks before this one PLAYED. Record exactly those.
-            _record_spoken(" ".join(spoken), last_sink)
-            return _say_result(result, last_sink)
-        spoken.append(chunk)
+    with Lane().turn(kind, text, session or "") as play:
+        if not play:
+            # Superseded (an ack whose report already arrived) or trimmed from
+            # an over-long backlog: dropping it is the policy working.
+            if json_mode:
+                _output_json({"success": True, "sink": None, "dropped": True,
+                              "session": session, "toast": toast_ok, "error": None})
+            return 0
+        for chunk in chunks:
+            result, last_sink = _local_say_dispatch(
+                chunk, voice, exaggeration, cfg_weight, tts_config,
+                backend=backend, instructions=instructions, language=language, stream=stream
+            )
+            if result != 0:
+                # Partial: the chunks before this one PLAYED. Record exactly those.
+                _record_spoken(" ".join(spoken), last_sink)
+                return _say_result(result, last_sink)
+            spoken.append(chunk)
 
     _record_spoken(" ".join(spoken), last_sink)
     return _say_result(0, last_sink)
@@ -598,6 +621,10 @@ def register_channels_parser(subparsers) -> None:
     say_parser.add_argument("--no-auto-notify", action="store_true", help="Disable auto-notify to pane 0 when in worker pane")
     say_parser.add_argument("--display", type=str, metavar="TEXT", help="Also show the human a desktop toast with this (different) text — the asymmetric brief in one call")
     say_parser.add_argument("--json", action="store_true", help="Output the sink ack as JSON (which path played: browser/local/os)")
+    say_parser.add_argument("--kind", choices=PLAYBACK_KINDS, default="say",
+                            help="Utterance kind for the local playback lane: acks are dropped "
+                                 "once their report arrives; the newest report/failure/approval "
+                                 "always plays")
     say_parser.set_defaults(func=cmd_say)
 
     # === channels command ===

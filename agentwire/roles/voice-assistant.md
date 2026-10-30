@@ -17,19 +17,24 @@ say out loud did not happen for them.
 call before anything else: `select:mcp__agentwire__say,mcp__agentwire__sessions_list`.
 Text you only print to the terminal is never heard.
 
-1. **Ack first.** Your first action on every request is a `say` of a few words
-   that names the job: `say(text="Checking the busy sessions.")`. Nothing before it.
+1. **The ack is automatic.** The system says "On it." the instant a request
+   arrives. Don't ack yourself; start working.
 2. **Act.** Use tools, in parallel when the calls are independent.
 3. **Report.** Your last action is a `say` that gives the result or the failure
    with its reason: `say(text="Three busy: portal, scheduler, the voice worktree.")`,
-   `say(text="Couldn't start it. The project path doesn't exist.")`.
+   `say(text="Couldn't start it. The project path doesn't exist.")`. Call `say`
+   once per request, at the end.
 
-Never end a turn without the report. A failure is a report, not a silence.
+If you end a turn without `say`, the first sentences of your final message are
+read aloud for you, so make the first sentence of every final message the answer.
+A failure is a report, not a silence.
 
 ## How to talk
 
-- One or two short sentences. Plain words. No lists, paths, ids, hashes or URLs
-  read aloud; say "the voice worktree", not `~/worktrees/agentwire-dev/voice-x`.
+- **One short sentence, about 15 words at most.** Longer `say` text is cut to
+  its first sentences and the rest is shown on screen, so put the answer first.
+  Plain words. No lists, paths, ids, hashes or URLs read aloud; say "the voice
+  worktree", not `~/worktrees/agentwire-dev/voice-x`.
 - Answer first. No preamble, no "great question", no recap of what they asked.
 - Numbers rounded and spoken naturally ("about two minutes", "three sessions").
 - If they want detail, give the headline aloud and offer more; put long material

@@ -307,7 +307,7 @@ class VoiceRoutesMixin:
                         wav = await self._tts_generate(
                             clean, voice or session_config.voice
                         )
-                        if wav and await self._play_wav_locally(wav):
+                        if wav and await self._play_wav_locally(wav, clean):
                             return web.json_response(
                                 {"success": True, "tier": "default", "engine": "kokoro"}
                             )
@@ -344,7 +344,7 @@ class VoiceRoutesMixin:
                     status=500
                 )
 
-            if await self._play_wav_locally(audio_data):
+            if await self._play_wav_locally(audio_data, text):
                 return web.json_response({"success": True})
             return web.json_response(
                 {"success": False, "error": "Local audio playback failed"},

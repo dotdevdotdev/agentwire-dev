@@ -44,13 +44,40 @@ watchdog leaves it alone. The entry sets `resume: true`, so a respawn (watchdog 
 
 ## Speech guarantee
 
-The role tells the model to `say` an ack and a result, but a prompt is not a
-guarantee: in the first live test (Haiku, medium) the model answered correctly and
-never spoke. Naming the deferred tool (`mcp__agentwire__say`) in the role fixed that
-run (ack at ~8 s, result at ~16 s after send). Slice 2 of #1198 makes it
-deterministic with session-scoped `UserPromptSubmit` (instant ack) and `Stop`
-(completion or failure) hooks, passed with `claude --settings` so they fire only for
-this session.
+A role prompt is not a guarantee: in the first live test (Haiku, medium) the model
+answered correctly and never spoke. So the speech comes from hooks, not the model
+(`agentwire/voice_hooks.py`):
+
+| Hook | Speaks |
+|---|---|
+| `UserPromptSubmit` | "On it." the instant a request arrives. Not for slash commands or `[MSG from …]` deliveries. |
+| `PostToolUse` on `mcp__agentwire__say` | nothing; marks that the model spoke its result this turn |
+| `Stop` | if the model didn't speak: a headline of ≤15 words from `last_assistant_message`, with the full text as an on-screen card when it was cut |
+| `StopFailure` | "That failed: <reason>" (usage limit, expired login, server error, ...) |
+| `Notification` | approval requests (`permission_prompt`, `elicitation_dialog`): "Approval needed: … Check the portal." |
+
+The hooks belong to the `voice-assistant` role (`roles.ROLE_SETTINGS`) and ride the
+launch line as `claude --settings '<json>'`: only this process sees them, user-level
+hooks (damage-control) still merge in, and `agentwire restart` regenerates them from
+the recorded role. They never block a turn and fail quiet: speech is spawned
+detached, so a TTS outage costs silence, never a stuck session.
+
+**Brevity is enforced.** Any `say` to `agentwire-voice` is cut to ≤15 words at a
+sentence boundary (word boundary if the first sentence is longer), and what was cut
+goes on screen via `say --display`.
+
+## One playback lane per machine
+
+The browser plays audio through a sequential queue; the Mac speakers did not. Every
+local-speaker utterance now takes a turn in one machine-wide FIFO lane
+(`agentwire/playback_lane.py`, a `flock`-guarded ticket queue under
+`~/.agentwire/voice/lane/`): the CLI's no-browser `say` (one turn covers every chunk)
+and the portal's no-client fallback alike, across all sessions. Drop policy at
+enqueue: a session's queued acks are dropped once its report, failure or approval is
+queued, and when more than 20 s of audio is waiting the oldest items go first, except
+the newest report/failure/approval, which always plays. A holder whose process died is
+pruned, so a crashed `say` can't wedge the lane. `say --kind ack|report|failure|approval`
+tells the lane what an utterance is.
 
 ## Known gaps (tracked in #1198)
 
