@@ -171,6 +171,8 @@ agentwire buddy service uninstall              # HUMAN-ONLY: stop + remove the e
 agentwire voice ask "<text>"    # deliver a request (starts it if needed); answer is spoken.
                                 # While an approval dialog is up, "yes"/"no" answers it
 agentwire voice state working|done|failed|approval   # portal status chip (used by its hooks)
+agentwire voice digest          # sessions (busy/idle/blocked), projects, scheduler, config
+agentwire list --state          # live busy / idle / blocked / unknown per local session
 agentwire voice status|start|stop|restart   # restart = same conversation
 agentwire voice install [--effort low] [--autostart]   # HUMAN-ONLY: write the service entry
 agentwire voice uninstall       # HUMAN-ONLY: stop + remove the entry

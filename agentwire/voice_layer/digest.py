@@ -16,6 +16,12 @@ no recent activity collapse to names on one line.
 Built at mint time and appended to the instructions. A section that fails to
 build says so in one line and the rest still ships — a roster failure must
 never cost the owner the session.
+
+:func:`build_roster` is the shared, budgeted fleet block — every session with
+its live state (busy / idle / blocked, #1198) and every project. Two voices read
+it: the buddy (:func:`build_digest`, with its own tool index) and the portal
+voice assistant (``agentwire voice digest``), which names its own tools in the
+truncation hints. One roster, so the two never disagree about the fleet.
 """
 
 from __future__ import annotations
@@ -129,12 +135,29 @@ def _session_project(session: dict, projects: list[dict]) -> str:
     return ""
 
 
+#: (sessions, projects) tools a reader uses when the roster is truncated.
+BUDDY_LIST_TOOLS = ("fleet_sessions", "fleet_projects")
+
+#: How each live state reads in a session row. ``unknown`` says nothing.
+_STATE_WORDS = {"busy": "busy", "idle": "idle", "blocked": "BLOCKED on a dialog"}
+
+
 def build_digest(
     fetch: Callable[[list[str]], dict] = run_agentwire_cmd,
     now: "float | None" = None,
     overview: Callable[[str], str] = overview_line,
 ) -> str:
-    """The roster block appended to the buddy's instructions. Never raises."""
+    """The buddy's opening block: roster + its tool index + how work flows."""
+    return "\n\n".join([build_roster(fetch, now, overview), TOOLS_INDEX, WORKFLOWS])
+
+
+def build_roster(
+    fetch: Callable[[list[str]], dict] = run_agentwire_cmd,
+    now: "float | None" = None,
+    overview: Callable[[str], str] = overview_line,
+    list_tools: "tuple[str, str]" = BUDDY_LIST_TOOLS,
+) -> str:
+    """The budgeted ``<fleet_roster>`` block. Never raises."""
     now = time.time() if now is None else now
     errors: list[str] = []
 
@@ -150,7 +173,7 @@ def build_digest(
         rows = data.get(key)
         return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
 
-    sessions = get(["list", "--sessions"], "sessions")
+    sessions = get(["list", "--sessions", "--state"], "sessions")
     projects = get(["projects", "list", "--machine", "local"], "projects")
     activity = get(
         ["activity", "list", "--hours", str(ACTIVITY_HOURS), "--limit", str(ACTIVITY_LIMIT)],
@@ -176,15 +199,19 @@ def build_digest(
     def session_key(s):
         return -last.get(str(s.get("name")), (0.0, ""))[0]
 
+    states = [str(s.get("state")) for s in agents]
+    live = ", ".join(f"{states.count(k)} {w.split()[0].lower()}" for k, w in _STATE_WORDS.items()
+                     if states.count(k))
     lines = [f"<fleet_roster as_of=\"{datetime.fromtimestamp(now).strftime('%H:%M')}\">",
              "A snapshot from when this conversation started — re-check with tools for anything current.",
-             f"SESSIONS ({len(agents)} agents; {len(services)} services"
+             f"SESSIONS ({len(agents)} agents" + (f": {live}" if live else "") + f"; {len(services)} services"
              + (f", UNHEALTHY: {', '.join(str(s.get('name')) for s in unhealthy)}" if unhealthy else (", all healthy" if services else ""))
              + "):"]
     ranked = sorted(agents, key=session_key)
     for s in ranked[:MAX_SESSION_ROWS]:
         name = str(s.get("name"))
-        bits = [s.get("role") or "session"]
+        bits = [_STATE_WORDS[s["state"]]] if s.get("state") in _STATE_WORDS else []
+        bits.append(s.get("role") or "session")
         if s.get("parent"):
             bits.append(f"under {s['parent']}")
         proj = _session_project(s, projects)
@@ -195,7 +222,7 @@ def build_digest(
             bits.append(f"{ev} {_age(now - ts)} ago")
         lines.append(f"- {name}: " + ", ".join(bits))
     if len(ranked) > MAX_SESSION_ROWS:
-        lines.append(f"- +{len(ranked) - MAX_SESSION_ROWS} more (fleet_sessions)")
+        lines.append(f"- +{len(ranked) - MAX_SESSION_ROWS} more ({list_tools[0]})")
 
     # --- projects -----------------------------------------------------------
     # Activity counts toward a project even when its session has since closed:
@@ -230,14 +257,14 @@ def build_digest(
         lines.append(row)
     rest = ranked_projects[MAX_PROJECT_ROWS:]
     if rest:
-        lines.append("- also (fleet_projects): " + ", ".join(str(p.get("name")) for p in rest))
+        lines.append(f"- also ({list_tools[1]}): " + ", ".join(str(p.get("name")) for p in rest))
 
     for err in errors:
-        lines.append(f"({err} — use the fleet tools)")
+        lines.append(f"({err} — use {list_tools[0]} / {list_tools[1]})")
     lines.append("</fleet_roster>")
 
     roster = "\n".join(lines)
     if len(roster) > MAX_CHARS:
         cut = roster[:MAX_CHARS].rsplit("\n", 1)[0]
-        roster = cut + "\n- …roster truncated (fleet_sessions / fleet_projects)\n</fleet_roster>"
-    return "\n\n".join([roster, TOOLS_INDEX, WORKFLOWS])
+        roster = cut + f"\n- …roster truncated ({list_tools[0]} / {list_tools[1]})\n</fleet_roster>"
+    return roster

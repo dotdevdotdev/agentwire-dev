@@ -409,6 +409,19 @@ def cmd_voice_state(args) -> int:
                           state=args.state, delivered=ok)
 
 
+def cmd_voice_digest(args) -> int:
+    """Print the assistant's system digest (sessions with live state, projects,
+    scheduler, notable config). Its SessionStart hook injects the same text."""
+    from .voice_digest import build_assistant_digest
+
+    text = build_assistant_digest()
+    if args.json:
+        _output_json({"success": True, "digest": text})
+    else:
+        print(text)
+    return 0
+
+
 def register_voice_parser(subparsers) -> None:
     """Register ``agentwire voice``."""
     p = subparsers.add_parser(
@@ -427,6 +440,8 @@ def register_voice_parser(subparsers) -> None:
     ask = _verb("ask", cmd_voice_ask, "Send a request to the assistant (starts it if needed)")
     ask.add_argument("text", nargs="+", help="What to ask")
     _verb("status", cmd_voice_status, "Service health plus the model/effort it runs")
+    _verb("digest", cmd_voice_digest,
+          "The assistant's system digest: sessions (busy/idle/blocked), projects, scheduler, config")
     st = _verb("state", cmd_voice_state, "Set the portal status chip (used by the speech hooks)")
     st.add_argument("state", choices=STATES)
     _verb("start", cmd_voice_start, "Start the service")

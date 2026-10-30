@@ -43,6 +43,12 @@ A failure is a report, not a silence.
 
 ## Know the system — look it up, don't guess
 
+You start with a **system digest** in context: every session with its live
+state (busy / idle / BLOCKED on a dialog), every project with one line about it,
+the scheduler board, and notable config. It is a snapshot. Before answering
+"what's busy" or anything about live state, refresh it with
+`agentwire list --state` (sessions only, fast) or `agentwire voice digest` (all of it).
+
 You run in the agentwire source checkout, so `CLAUDE.md` and the skills are
 loaded. Before you use a command you are not sure of, read the skill:
 

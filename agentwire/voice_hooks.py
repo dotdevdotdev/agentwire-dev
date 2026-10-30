@@ -4,6 +4,8 @@ A role prompt cannot guarantee the assistant speaks: in the first live test it
 answered correctly and never called ``say``. These Claude Code hooks make the
 two utterances a property of the session instead of the model:
 
+- **SessionStart** injects the system digest (``agentwire voice digest``):
+  sessions with live state, projects, scheduler, config.
 - **UserPromptSubmit** speaks a fixed acknowledgement the moment a request
   arrives (no model involved), and opens the turn's state.
 - **PostToolUse** on ``mcp__agentwire__say`` marks that the model spoke a
@@ -75,6 +77,9 @@ SUMMARY_LIMIT = 220
 #: screen (``say --display``).
 MAX_SPOKEN_WORDS = 15
 
+#: Bound on building the system digest at session start.
+DIGEST_TIMEOUT_S = 20
+
 #: How much of a long report rides along as the on-screen card.
 DISPLAY_LIMIT = 1500
 
@@ -85,7 +90,10 @@ def claude_settings() -> dict:
         cmd = f"{shlex.quote(sys.executable)} -m agentwire.voice_hooks {event}"
         return [{"hooks": [{"type": "command", "command": cmd, "timeout": 10}]}]
 
+    session_start = hook("session-start")
+    session_start[0]["hooks"][0]["timeout"] = DIGEST_TIMEOUT_S + 5
     return {"hooks": {
+        "SessionStart": session_start,
         "UserPromptSubmit": hook("prompt-submit"),
         "PostToolUse": [{**hook("said")[0], "matcher": SAY_TOOL}],
         "Stop": hook("stop"),
@@ -207,6 +215,22 @@ def speech_headline(text: str, max_words: int = MAX_SPOKEN_WORDS) -> tuple[str, 
 # ─────────────────────────────────────────────────────────────
 
 
+def on_session_start(payload: dict) -> None:
+    """Print the system digest; Claude Code adds SessionStart stdout to the
+    context. Fires on startup, resume and after compaction, so the assistant
+    never starts a stretch of conversation blind. Silent on failure."""
+    binary = _agentwire_binary()
+    if not binary:
+        return
+    try:
+        result = subprocess.run([binary, "voice", "digest"], capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL, timeout=DIGEST_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if result.returncode == 0 and result.stdout.strip():
+        print(result.stdout.strip())
+
+
 def on_prompt_submit(payload: dict) -> None:
     _save_turn({"prompt_id": payload.get("prompt_id"), "spoken": False})
     signal("working")
@@ -309,6 +333,7 @@ def on_notification(payload: dict) -> None:
 
 
 HANDLERS = {
+    "session-start": on_session_start,
     "prompt-submit": on_prompt_submit,
     "said": on_said,
     "stop": on_stop,
