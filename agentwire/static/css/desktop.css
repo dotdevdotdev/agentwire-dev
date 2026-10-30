@@ -5584,6 +5584,23 @@ body.sidebar-pinned .sidebar-tab {
     opacity: 1;
 }
 
+/* Voice assistant outcome states (#1198): driven by its speech hooks */
+.sidebar-voice-indicator.listening,
+.sidebar-voice-indicator.done,
+.sidebar-voice-indicator.failed,
+.sidebar-voice-indicator.approval {
+    border-radius: 50%;
+    border: 2px solid currentColor;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.sidebar-voice-indicator.listening { color: var(--orb-listening); }
+.sidebar-voice-indicator.done { color: var(--accent); }
+.sidebar-voice-indicator.failed { color: var(--error); }
+.sidebar-voice-indicator.approval { color: var(--orb-listening); }
+
 .sidebar-voice-indicator .stop-icon,
 .sidebar-voice-indicator .spinner,
 .sidebar-voice-indicator .generating-dots,

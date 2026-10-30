@@ -42,7 +42,6 @@ import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import { setupHelp, openHelp, isHelpOpen } from './help-modal.js';
 import { createTaskbarPersistence, bindPageLifecycle } from './taskbar-persist.js';
 import { PttController } from './ptt.js';
-import { voicePromptWrap } from './voice/prompt.js';
 import { isAutoSend } from './voice/autosend-prefs.js';
 import { initAnnouncements } from './announcement-modal.js';
 
@@ -72,7 +71,11 @@ let knownSessionNames = null;
 let globalPttState = 'idle';  // idle | recording | processing (mirrors globalPttCtl)
 
 // AgentWire session activity state
-let agentwireSessionActive = false;
+let voiceSessionActive = false;
+
+// The portal voice assistant (#1198): the global PTT, the status chip and its
+// audio all belong to this one service session.
+const VOICE_SESSION = 'agentwire-voice';
 
 // DOM Elements (simplified - only what we need)
 const elements = {
@@ -145,22 +148,27 @@ async function init() {
 
     // Handle TTS/audio events for voice indicator
     desktop.on('tts_start', ({ session }) => {
-        if (session === 'agentwire') updateVoiceIndicator('generating');
+        if (session === VOICE_SESSION) updateVoiceIndicator('generating');
     });
     desktop.on('audio', ({ session }) => {
-        if (session === 'agentwire') updateVoiceIndicator('playing');
+        if (session === VOICE_SESSION) updateVoiceIndicator('playing');
     });
     desktop.on('audio_ended', ({ session }) => {
-        if (session === 'agentwire') {
+        if (session === VOICE_SESSION) {
             // Return to processing if session still active, else idle
-            updateVoiceIndicator(agentwireSessionActive ? 'processing' : 'idle');
+            updateVoiceIndicator(voiceSessionActive ? 'processing' : 'idle');
         }
+    });
+
+    // The assistant's own report of what it is doing (speech hooks → portal)
+    desktop.on('voice_state', ({ session, state }) => {
+        if (session === VOICE_SESSION) updateVoiceIndicator(state);
     });
 
     // Track agentwire session processing state (triggered when message sent)
     desktop.on('session_processing', ({ session, processing }) => {
-        if (session === 'agentwire') {
-            agentwireSessionActive = processing;
+        if (session === VOICE_SESSION) {
+            voiceSessionActive = processing;
             // Only update to processing if not in TTS states (generating/playing take priority)
             const indicator = elements.voiceIndicator;
             if (processing && indicator && !indicator.classList.contains('generating') && !indicator.classList.contains('playing')) {
@@ -171,8 +179,8 @@ async function init() {
 
     // Track agentwire session activity for processing state
     desktop.on('session_activity', ({ session, active }) => {
-        if (session === 'agentwire') {
-            agentwireSessionActive = active;
+        if (session === VOICE_SESSION) {
+            voiceSessionActive = active;
             // Only update indicator if not currently in TTS states
             const indicator = elements.voiceIndicator;
             if (indicator && !indicator.classList.contains('generating') && !indicator.classList.contains('playing')) {
@@ -675,9 +683,36 @@ function updateVoiceIndicator(state) {
     const indicator = elements.voiceIndicator;
     if (!indicator) return;
 
-    indicator.classList.remove('idle', 'processing', 'generating', 'playing');
+    indicator.classList.remove('idle', 'processing', 'generating', 'playing',
+        'listening', 'sending', 'working', 'done', 'failed', 'approval');
 
     switch (state) {
+        case 'listening':
+            indicator.textContent = '●';
+            indicator.title = 'Listening...';
+            indicator.classList.add('listening');
+            break;
+        case 'sending':
+        case 'working':
+            indicator.innerHTML = '<div class="spinner"></div>';
+            indicator.title = state === 'sending' ? 'Sending to the voice assistant...' : 'Voice assistant is working...';
+            indicator.classList.add(state);
+            break;
+        case 'done':
+            indicator.textContent = '✓';
+            indicator.title = 'Voice assistant: done';
+            indicator.classList.add('done');
+            break;
+        case 'failed':
+            indicator.textContent = '✕';
+            indicator.title = 'Voice assistant: failed (hear the reason, or open agentwire-voice)';
+            indicator.classList.add('failed');
+            break;
+        case 'approval':
+            indicator.textContent = '?';
+            indicator.title = 'Voice assistant needs approval: hold to talk and say yes or no';
+            indicator.classList.add('approval');
+            break;
         case 'processing':
             indicator.innerHTML = '<div class="spinner"></div>';
             indicator.title = 'AgentWire is working...';
@@ -1259,7 +1294,7 @@ function updateTaskbarActive(id) {
     });
 }
 
-// Global PTT - always sends to "agentwire" session
+// Global PTT - talks to the voice assistant (agentwire voice ask, #1198)
 function setupGlobalPtt() {
     const btn = elements.globalPtt;
     if (!btn) return;
@@ -1279,16 +1314,19 @@ function setupGlobalPtt() {
         stopGlobalRecording();
     });
 
-    // Global shortcut (Ctrl/Cmd + Space), claimed in the capture phase so a focused
-    // xterm can't swallow it. A focused session window owns its own PTT instead.
+    // Global shortcuts, claimed in the capture phase so a focused xterm can't
+    // swallow them. Ctrl/Cmd+Shift+Space talks to the voice assistant from
+    // anywhere; plain Ctrl/Cmd+Space does too unless a session window is
+    // focused (that window owns its own push-to-talk).
+    const onPress = () => { if (globalPttState === 'idle') startGlobalRecording(); };
+    bindHotkey({ code: 'Space', mod: true, shift: true, onRelease: stopGlobalRecording }, onPress);
     bindHotkey({
         code: 'Space',
         mod: true,
+        shift: false,
         when: () => !document.activeElement?.closest('.session-window'),
         onRelease: stopGlobalRecording,
-    }, () => {
-        if (globalPttState === 'idle') startGlobalRecording();
-    });
+    }, onPress);
 
     document.addEventListener('keydown', (e) => {
         // Cmd/Ctrl + K opens the command palette on the root list, with
@@ -1330,13 +1368,21 @@ function stopGlobalRecording() {
 }
 
 async function sendGlobalVoiceText(text) {
+    // Same endpoint as `agentwire voice ask`: starts the assistant if needed,
+    // and while an approval is pending, "yes" / "no" answers it.
     try {
-        await apiFetch('/send/agentwire', {
+        const resp = await apiFetch('/api/voice/ask', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: voicePromptWrap(text) })
+            body: JSON.stringify({ text })
         });
+        const result = await resp.json();
+        if (!result.success) {
+            updateVoiceIndicator(result.pending_approval ? 'approval' : 'failed');
+            console.warn('[GlobalPTT] voice ask:', result.error);
+        }
     } catch (err) {
+        updateVoiceIndicator('failed');
         console.error('[GlobalPTT] Send failed:', err);
     }
 }
@@ -1404,6 +1450,7 @@ function updateGlobalPttState(state) {
         case 'recording':
             btn.classList.add('recording');
             if (icon) icon.textContent = '🔴';
+            updateVoiceIndicator('listening');
             break;
         case 'processing':
             btn.classList.add('processing');
@@ -1412,5 +1459,7 @@ function updateGlobalPttState(state) {
             break;
         default:
             if (icon) icon.textContent = '🎤';
+            // Recording ended with nothing sent (empty transcript / cancelled)
+            if (elements.voiceIndicator?.classList.contains('listening')) updateVoiceIndicator('idle');
     }
 }

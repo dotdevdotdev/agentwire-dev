@@ -128,6 +128,8 @@ BASELINE_ROUTES = frozenset({
     ("HEAD", "/ws/{name}"),
     ("POST", "/api/active-session"),
     ("POST", "/api/answer/{name}"),
+    ("POST", "/api/voice/ask"),
+    ("POST", "/api/voice/state"),
     ("POST", "/api/artifacts/upload"),
     ("POST", "/api/config"),
     ("POST", "/api/config/reload"),
