@@ -42,7 +42,6 @@ import { openCommandPalette, isCommandPaletteOpen } from './command-palette.js';
 import { setupHelp, openHelp, isHelpOpen } from './help-modal.js';
 import { createTaskbarPersistence, bindPageLifecycle } from './taskbar-persist.js';
 import { PttController } from './ptt.js';
-import { isAutoSend } from './voice/autosend-prefs.js';
 import { initAnnouncements } from './announcement-modal.js';
 
 // State - track open windows
