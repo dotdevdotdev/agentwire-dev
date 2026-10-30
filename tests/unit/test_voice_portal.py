@@ -204,10 +204,11 @@ def test_the_classifier_reads_a_clean_verdict(monkeypatch):
 
     def fake_run(cmd, **kw):
         seen["cmd"], seen["timeout"] = cmd, kw.get("timeout")
-        return types.SimpleNamespace(returncode=0, stdout="approve_and_more\n")
+        return types.SimpleNamespace(returncode=0,
+                                     stdout="answer: yes\nalso_asks: yes\nlasts: once\n")
 
     assert real_classify("Prune worktrees", "yes and open it",
-                                                run=fake_run) == ("approve_and_more", None)
+                         run=fake_run) == ("approve_and_more", None)
     cmd = seen["cmd"]
     assert cmd[cmd.index("--model") + 1] == "claude-haiku-5-5"
     assert cmd[cmd.index("--effort") + 1] == "low"

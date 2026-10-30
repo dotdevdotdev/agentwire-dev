@@ -20,7 +20,6 @@ import pytest
 
 from agentwire import prompt_router, voice_cli, voice_grants
 from agentwire import voice_hooks as vh
-from agentwire.voice_cli import classify_reply as real_classify
 from tests.conftest import HOOKS_DIR
 
 HERMETIC_HOME = "/home/agentwire-hermetic"
@@ -303,14 +302,29 @@ def test_an_agent_can_neither_answer_nor_grant(voice, monkeypatch, capsys):
     assert "only the owner answers it" in capsys.readouterr().out
 
 
-def test_the_classifier_only_takes_a_scope_on_an_approval():
-    def reply(text):
-        return real_classify("x", "y", run=lambda *a, **k: types.SimpleNamespace(returncode=0, stdout=text))
+def test_the_verdict_is_derived_from_three_strict_fields():
+    """The classifier answers yes/no/unclear, also_asks and lasts separately;
+    the verdict comes from code. Anything off-format fails closed."""
+    from agentwire.voice_cli import parse_reply_fields as parse
 
-    assert reply("approve today") == ("approve", "today")
-    assert reply("approve_and_more hour") == ("approve_and_more", "hour")
-    bad = {t: reply(t) for t in ("deny today", "approve forever", "approve today please", "other session")}
-    assert all(v == ("other", None) for v in bad.values()), bad
+    def f(answer, also, lasts):
+        return f"answer: {answer}\nalso_asks: {also}\nlasts: {lasts}\n"
+
+    cases = {
+        f("yes", "no", "once"): ("approve", None),
+        f("yes", "no", "today"): ("approve", "today"),
+        f("yes", "yes", "hour"): ("approve_and_more", "hour"),
+        f("no", "yes", "today"): ("deny", None),       # a no never carries a grant
+        f("unclear", "no", "once"): ("other", None),
+        f("Yes.", "No.", "Session."): ("approve", "session"),
+        f("yes", "no", "forever"): ("other", None),     # an unbounded grant is off-format
+        f("maybe", "no", "once"): ("other", None),
+        "answer: yes\nlasts: today\n": ("other", None),  # a missing field
+        "approve": ("other", None),
+        "": ("other", None),
+    }
+    wrong = {t: (want, parse(t)) for t, want in cases.items() if parse(t) != want}
+    assert not wrong, wrong
 
 
 async def test_the_chip_hears_the_grant_count(tmp_path):
