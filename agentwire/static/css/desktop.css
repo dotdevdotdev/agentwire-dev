@@ -5469,16 +5469,10 @@ body.sidebar-pinned .sidebar-tab {
 }
 
 /* Edit-before-send transcript bars (default STT tier) */
-.sidebar-transcript-bar,
 .wb-transcript-bar {
     display: flex;
     align-items: center;
     gap: 4px;
-}
-
-.sidebar-transcript-bar {
-    flex-basis: 100%;
-    margin-bottom: var(--spacing-base);
 }
 
 .wb-transcript-bar {
@@ -5487,7 +5481,6 @@ body.sidebar-pinned .sidebar-tab {
     border-bottom: 1px solid var(--chrome-border);
 }
 
-.sidebar-transcript-input,
 .wb-transcript-input {
     flex: 1;
     min-width: 0;
@@ -5500,8 +5493,6 @@ body.sidebar-pinned .sidebar-tab {
     font-family: inherit;
 }
 
-.sidebar-transcript-send,
-.sidebar-transcript-dismiss,
 .wb-transcript-send,
 .wb-transcript-dismiss {
     border: none;
@@ -5513,13 +5504,11 @@ body.sidebar-pinned .sidebar-tab {
     line-height: 1;
 }
 
-.sidebar-transcript-dismiss,
 .wb-transcript-dismiss {
     color: inherit;
     opacity: 0.6;
 }
 
-.sidebar-transcript-dismiss:hover,
 .wb-transcript-dismiss:hover {
     opacity: 1;
 }
