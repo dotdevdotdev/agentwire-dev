@@ -2787,21 +2787,28 @@ class AgentWireServer(
         Default-tier fallback when no browser is connected anywhere.
         Absolute path on macOS — users commonly shadow `say` in PATH with an
         `agentwire say` wrapper, which would recurse into a fork bomb.
+        Takes a turn in the machine-wide playback lane (#1198); a turn the
+        lane's drop policy skipped counts as handled, not as a failure.
         """
         import sys as _sys
 
+        from .playback_lane import Lane
+
         binary = "/usr/bin/say" if _sys.platform == "darwin" else "espeak"
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                binary, text,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await proc.wait()
-            return proc.returncode == 0
-        except FileNotFoundError:
-            logger.warning(f"OS voice binary not found: {binary}")
-            return False
+        async with Lane().aturn("say", text) as play:
+            if not play:
+                return True
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    binary, text,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await proc.wait()
+                return proc.returncode == 0
+            except FileNotFoundError:
+                logger.warning(f"OS voice binary not found: {binary}")
+                return False
 
     async def _speak_no_clients_fallback(self, text: str) -> bool:
         """No browser connected: default tier plays on this machine's
@@ -2816,14 +2823,26 @@ class AgentWireServer(
         if await self._kokoro_shim_ready():
             try:
                 wav = await self._tts_generate(clean, self.config.tts.default_voice)
-                if wav and await self._play_wav_locally(wav):
+                if wav and await self._play_wav_locally(wav, clean):
                     return True
             except Exception as e:
                 logger.error(f"Kokoro local playback failed: {e}")
         return await self._os_say(clean)
 
-    async def _play_wav_locally(self, wav_bytes: bytes) -> bool:
-        """Play WAV bytes on this machine's speakers (afplay / aplay / paplay / play)."""
+    async def _play_wav_locally(self, wav_bytes: bytes, text: str) -> bool:
+        """Play WAV bytes on this machine's speakers (afplay / aplay / paplay / play).
+
+        *text* is what the audio says — it sizes the item in the machine-wide
+        playback lane (#1198), whose turn this waits for.
+        """
+        from .playback_lane import Lane
+
+        async with Lane().aturn("say", text) as play:
+            if not play:
+                return True
+            return await self._play_wav_file(wav_bytes)
+
+    async def _play_wav_file(self, wav_bytes: bytes) -> bool:
         import sys as _sys
 
         temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)

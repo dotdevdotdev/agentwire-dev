@@ -33,8 +33,9 @@ import argparse
 import sys
 
 from .core import EFFORT_LEVELS, _output_json, _output_result
+from .voice_hooks import SESSION
 
-SERVICE_NAME = "agentwire-voice"
+SERVICE_NAME = SESSION
 ROLE = "voice-assistant"
 MODEL = "claude-haiku-5-5"
 DEFAULT_EFFORT = "medium"
