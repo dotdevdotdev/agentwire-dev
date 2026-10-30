@@ -60,7 +60,20 @@ def cmd_msg_send(args) -> int:
             print(json.dumps({"success": False, "error": "empty message"}))
         return 1
 
-    sender = getattr(args, "from_session", None) or _current_session() or "unknown"
+    detected = _current_session()
+    claimed = getattr(args, "from_session", None)
+    if claimed and detected and claimed != detected:
+        # A session inside tmux speaks as itself. `--from` exists for senders
+        # that are not a tmux session (the buddy bridge, scripts); letting a
+        # session claim another's name is how a reply lands in the wrong inbox.
+        msg = (f"--from {claimed!r} refused: this is session {detected!r}. "
+               "A session cannot send as another session.")
+        if getattr(args, "json", False):
+            print(json.dumps({"success": False, "error": msg}))
+        else:
+            print(f"Error: {msg}")
+        return 1
+    sender = claimed or detected or "unknown"
     try:
         written = inbox.enqueue(args.to, text, kind=args.kind, sender=sender,
                                 ref=getattr(args, "ref", ""))
@@ -409,7 +422,7 @@ def register_msg_parser(subparsers) -> None:
     )
     send_parser.add_argument(
         "--from", dest="from_session", default=None,
-        help="Override sender (defaults to the current session)",
+        help="Sender name for a caller that is not a tmux session (defaults to the current session; refused if it names a different session)",
     )
     send_parser.add_argument(
         "--ref", default="",
