@@ -6252,6 +6252,12 @@ PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = [
         "~/.agentwire/config.yaml — host-only, run it from your own terminal (not "
         "through an agent).",
     ),
+    (
+        r'\bagentwire\s+voice\s+(?:install|uninstall)\b',
+        "agentwire voice install|uninstall writes the voice assistant's service entry "
+        "into ~/.agentwire/config.yaml — host-only, run it from your own terminal (not "
+        "through an agent).",
+    ),
 ]
 
 

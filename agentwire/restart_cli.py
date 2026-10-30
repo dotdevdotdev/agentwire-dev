@@ -185,6 +185,7 @@ def cmd_restart(args) -> int:
         posture,
         roles or None,
         model=metadata.get("model"),
+        effort=metadata.get("effort"),
         resume_session_id=resume_id,
     )
     _set_session_name_env(agent, session_name, created_by=metadata.get("created_by"))
@@ -230,6 +231,7 @@ def cmd_restart(args) -> int:
             "roles": role_names,
             "missing_roles": missing_roles,
             "model": metadata.get("model"),
+            "effort": metadata.get("effort"),
             "was_live": was_live,
             "agent_ready": ready,
             "note": note,
@@ -243,7 +245,8 @@ def cmd_restart(args) -> int:
         elif note:
             print(f"  [!!] {note}")
         print(f"  Posture: {posture}   Roles: {', '.join(role_names) or 'none'}"
-              + (f"   Model: {metadata['model']}" if metadata.get("model") else ""))
+              + (f"   Model: {metadata['model']}" if metadata.get("model") else "")
+              + (f"   Effort: {metadata['effort']}" if metadata.get("effort") else ""))
         if ready is False:
             print("  [!!] The agent did not become interactive within "
                   f"{READY_TIMEOUT:g}s — check it with `agentwire diff -s "

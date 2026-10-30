@@ -15,6 +15,7 @@ const SERVICE_SESSIONS = new Set([
     'agentwire-scheduler',
     'agentwire-notifications',
     'agentwire-buddy',
+    'agentwire-voice',  // portal voice assistant (#1198)
 ]);
 
 export function isService(name) { return SERVICE_SESSIONS.has(name); }

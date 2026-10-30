@@ -136,3 +136,23 @@ class TestDegradedRestart:
         assert "No history found" in out and "role intact" in out
 
 
+
+
+class TestRestartKeepsLaunchOverrides:
+    def test_recorded_model_and_effort_survive_a_restart(self, store, launched):
+        """#1198: the voice assistant's Haiku/medium choice lives in the
+        launch record, so a restart must regenerate both flags from it."""
+        from agentwire.core import (
+            build_agent_command,
+            load_session_metadata,
+            record_session_launch,
+        )
+
+        agent = build_agent_command("bypass", model="claude-haiku-5-5", effort="medium")
+        record_session_launch("sess", agent, store.cwd)
+        meta = load_session_metadata("sess")
+        assert (meta["model"], meta["effort"]) == ("claude-haiku-5-5", "medium")
+
+        assert run() == 0
+        cmd = launched.launch[0][3]
+        assert "--model claude-haiku-5-5" in cmd and "--effort medium" in cmd

@@ -167,6 +167,13 @@ agentwire buddy service install [--autostart]  # HUMAN-ONLY: supervise the voice
                                 # as service agentwire-buddy (beta.voice_layer)
 agentwire buddy service uninstall              # HUMAN-ONLY: stop + remove the entry
 
+# Portal voice assistant — service agentwire-voice (Haiku 5.5, medium effort; #1198)
+agentwire voice ask "<text>"    # deliver a request (starts it if needed); answer is spoken
+agentwire voice status|start|stop|restart   # restart = same conversation
+agentwire voice install [--effort low] [--autostart]   # HUMAN-ONLY: write the service entry
+agentwire voice uninstall       # HUMAN-ONLY: stop + remove the entry
+agentwire new -s <name> --effort low|medium|high|xhigh|max   # per-session effort, survives restart
+
 # TTS/STT servers
 agentwire tts start|stop|status # TTS server management
 agentwire stt start|stop|status # STT server management (host shim on :8101)
