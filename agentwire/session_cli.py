@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import chrome_tabs, pane_manager, services, worktree_registry
 from .core import (
+    EFFORT_LEVELS,
     _check_tmux_installed,
     _display_parent,
     _get_machine_config,
@@ -283,7 +284,8 @@ def cmd_new(args) -> int:
             return _output_result(False, json_mode, st_err)
 
         # Build agent command
-        agent = build_agent_command(posture, roles if roles else None, model=getattr(args, 'model', None))
+        agent = build_agent_command(posture, roles if roles else None, model=getattr(args, 'model', None),
+                                    effort=getattr(args, 'effort', None))
         agent.env.update(parse_env_args(getattr(args, 'env', None)))
 
         agent_cmd = agent.command
@@ -531,7 +533,8 @@ def cmd_new(args) -> int:
 
     # Build agent command
     model_override = getattr(args, 'model', None)
-    agent = build_agent_command(posture, roles if roles else None, model=model_override)
+    agent = build_agent_command(posture, roles if roles else None, model=model_override,
+                                effort=getattr(args, 'effort', None))
     agent.env.update(parse_env_args(getattr(args, 'env', None)))
     _set_session_name_env(agent, session_name, created_by=created_by)
 
@@ -2525,6 +2528,9 @@ def register_session_parser(subparsers) -> None:
                                  "topology by default.")
     new_parser.add_argument("--no-soul", dest="no_soul", action="store_true", help="Skip soul personality role injection for this session")
     new_parser.add_argument("--model", help="Model override (e.g., haiku, sonnet, opus)")
+    new_parser.add_argument("--effort", choices=EFFORT_LEVELS,
+                            help="Reasoning effort for this session only (claude --effort); "
+                                 "recorded, so `agentwire restart` keeps it")
     new_parser.add_argument("--persist", action="store_true", help="Write the resolved posture/--roles to .agentwire.yml (default: session-level override only)")
     new_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable, keeps secrets out of `ps`)")
     # Worktree-only flags (default None so they can be rejected unless the

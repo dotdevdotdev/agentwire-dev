@@ -407,6 +407,13 @@ class CustomServiceConfig:
     # Default "none" — a service is only auto-managed when it opts in. Stateless
     # bridges (notifications) set "clear"; stateful orchestrators "compact".
     context_policy: str = "none"
+    # Per-session launch overrides (`agentwire new --model/--effort`). They ride
+    # the session's launch record, so a restart keeps them.
+    model: Optional[str] = None
+    effort: Optional[str] = None
+    # Respawn a dead agent service with `agentwire restart` (same conversation)
+    # instead of `agentwire new` (fresh) whenever a launch record exists.
+    resume: bool = False
 
     def __post_init__(self):
         if self.project:
@@ -835,6 +842,9 @@ def _dict_to_config(data: dict) -> Config:
             command = entry.get("command") or None
             roles = entry.get("roles")
             posture = entry.get("posture")
+            model = entry.get("model")
+            effort = entry.get("effort")
+            resume = bool(entry.get("resume", False))
             if command:
                 # A command service supervises a PROCESS — there is no agent to
                 # carry a role, a posture or a context policy. Dropping these
@@ -843,6 +853,7 @@ def _dict_to_config(data: dict) -> Config:
                 stale = [
                     k for k, v in (
                         ("roles", roles), ("posture", posture),
+                        ("model", model), ("effort", effort), ("resume", resume),
                         ("context_policy", context_policy if context_policy != "none" else None),
                     ) if v
                 ]
@@ -853,7 +864,8 @@ def _dict_to_config(data: dict) -> Config:
                         "on a process service and will be ignored.",
                         file=sys.stderr,
                     )
-                roles = posture = None
+                roles = posture = model = effort = None
+                resume = False
                 context_policy = "none"
             custom_services.append(CustomServiceConfig(
                 name=entry["name"],
@@ -865,6 +877,9 @@ def _dict_to_config(data: dict) -> Config:
                 healthcheck=healthcheck,
                 context_policy=context_policy,
                 command=command,
+                model=model,
+                effort=effort,
+                resume=resume,
             ))
     services = ServicesConfig(
         portal=portal_service,

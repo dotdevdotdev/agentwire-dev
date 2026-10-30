@@ -49,7 +49,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "12159c305ffd80b227cf3e3da220ecdd77f9f67507dbbed52437b597ebf8d6a6", "generated_at": "2026-10-28T23:33:38Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "0105d7394e2df8e48d7e629afecdb0d1a710f6b1b0ffe2dcf166a324d76b12b2", "generated_at": "2026-10-30T12:07:39Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -6304,6 +6304,12 @@ PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = [
         r'\bagentwire\s+buddy\s+service\s+(?:install|uninstall)\b',
         "agentwire buddy service install|uninstall writes a supervised command into "
         "~/.agentwire/config.yaml — host-only, run it from your own terminal (not "
+        "through an agent).",
+    ),
+    (
+        r'\bagentwire\s+voice\s+(?:install|uninstall)\b',
+        "agentwire voice install|uninstall writes the voice assistant's service entry "
+        "into ~/.agentwire/config.yaml — host-only, run it from your own terminal (not "
         "through an agent).",
     ),
 ]

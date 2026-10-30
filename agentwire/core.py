@@ -230,6 +230,10 @@ def _tmux_global_option(name: str) -> str | None:
     return None
 
 
+#: Claude Code's `--effort` levels.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
 @dataclass
 class AgentCommand:
     """Result of building an agent command.
@@ -249,6 +253,7 @@ class AgentCommand:
     posture: str = BARE
     roles: list[str] = field(default_factory=list)  # Role NAMES, in merge order
     model: str | None = None  # --model override, if the launch chose one
+    effort: str | None = None  # --effort override, if the launch chose one
 
 
 _UNATTENDED_ENV_KEYS = ("AGENTWIRE_UNATTENDED", "AGENTWIRE_UNATTENDED_ALLOW")
@@ -620,6 +625,7 @@ def build_agent_command(
     roles: list[RoleConfig] | None = None,
     model: str | None = None,
     resume_session_id: str | None = None,
+    effort: str | None = None,
 ) -> AgentCommand:
     """Build the shell command + injected env for the given posture.
 
@@ -674,9 +680,12 @@ def build_agent_command(
         ]
         parts.extend(["--allowedTools", shlex.quote(",".join(core_allows))])
 
-    # Model override
+    # Model / effort overrides — per-process flags, so they scope to this one
+    # session and never touch the user's settings.json defaults.
     if model:
         parts.append(f"--model {model}")
+    if effort:
+        parts.append(f"--effort {effort}")
 
     # Role-based flags (merged roles always apply — no tool-locking posture left)
     role_prompt_path = None
@@ -702,6 +711,7 @@ def build_agent_command(
         posture=posture,
         roles=role_names,
         model=model,
+        effort=effort,
     )
 
 
@@ -1418,11 +1428,12 @@ def record_session_launch(
         "cwd_at_launch": str(cwd),
         "posture": agent.posture,
         "roles": list(agent.roles),
-        # The model override belongs with roles/posture for the same reason:
-        # these three are what REGENERATE the launch flags. Recording two of
-        # them means `agentwire restart` silently drops the third and hands the
-        # conversation back on a different model than it was running on.
+        # Model and effort belong with roles/posture for the same reason:
+        # these are what REGENERATE the launch flags. Recording only some of
+        # them means `agentwire restart` silently drops the rest and hands the
+        # conversation back on a different model/effort than it was running on.
         "model": agent.model,
+        "effort": agent.effort,
         "role_prompt_path": agent.role_prompt_path,
         "launched_at": now,
         **({"repo": None, "branch": None, "worktree_path": None}

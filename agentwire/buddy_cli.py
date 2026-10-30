@@ -503,32 +503,6 @@ def service_entry(name: str, *, port: int, autostart: bool) -> dict:
     }
 
 
-def upsert_service_entry(raw: dict, entry: dict) -> str:
-    """Put *entry* into ``raw['services']['custom']``; say what happened."""
-    services = raw.setdefault("services", {})
-    if not isinstance(services, dict):
-        raise ValueError("services: in config.yaml is not a mapping")
-    custom = services.get("custom") or []
-    for i, existing in enumerate(custom):
-        if isinstance(existing, dict) and existing.get("name") == entry["name"]:
-            if existing == entry:
-                return "unchanged"
-            custom[i] = entry
-            services["custom"] = custom
-            return "updated"
-    services["custom"] = [*custom, entry]
-    return "installed"
-
-
-def remove_service_entry(raw: dict, svc_name: str) -> bool:
-    custom = (raw.get("services") or {}).get("custom") or []
-    kept = [e for e in custom if not (isinstance(e, dict) and e.get("name") == svc_name)]
-    if len(kept) == len(custom):
-        return False
-    raw["services"]["custom"] = kept
-    return True
-
-
 def _host_gate(verb: str, json_mode: bool) -> "int | None":
     from .tasks_cli import _host_context_ok
 
@@ -555,6 +529,7 @@ def cmd_buddy_service_install(args) -> int:
     from . import services as services_mod
     from .config_cli import _load_raw, _save_raw
     from .env_loader import missing_env_message
+    from .services import upsert_service_entry
 
     json_mode = getattr(args, "json", False)
     refused = _host_gate("install", json_mode)
@@ -619,6 +594,7 @@ def cmd_buddy_service_uninstall(args) -> int:
     """Stop the buddy's service and remove its entry. The identity stays."""
     from . import services as services_mod
     from .config_cli import _load_raw, _save_raw
+    from .services import remove_service_entry
 
     json_mode = getattr(args, "json", False)
     refused = _host_gate("uninstall", json_mode)

@@ -92,6 +92,7 @@ _BUILTIN_SERVICE_SESSIONS = frozenset({
     "agentwire-kokoro",
     "agentwire-scheduler",
     "agentwire-buddy",
+    "agentwire-voice",
 })
 
 
@@ -222,6 +223,37 @@ def registry(cfg: Config) -> list[CustomServiceConfig]:
         context_policy="clear",
     )
     return [notifications, *user_services]
+
+
+# ─────────────────────────────────────────────────────────────
+# config.yaml entries (written by human-only `... service install` verbs)
+# ─────────────────────────────────────────────────────────────
+
+
+def upsert_service_entry(raw: dict, entry: dict) -> str:
+    """Put *entry* into ``raw['services']['custom']``; say what happened."""
+    services = raw.setdefault("services", {})
+    if not isinstance(services, dict):
+        raise ValueError("services: in config.yaml is not a mapping")
+    custom = services.get("custom") or []
+    for i, existing in enumerate(custom):
+        if isinstance(existing, dict) and existing.get("name") == entry["name"]:
+            if existing == entry:
+                return "unchanged"
+            custom[i] = entry
+            services["custom"] = custom
+            return "updated"
+    services["custom"] = [*custom, entry]
+    return "installed"
+
+
+def remove_service_entry(raw: dict, svc_name: str) -> bool:
+    custom = (raw.get("services") or {}).get("custom") or []
+    kept = [e for e in custom if not (isinstance(e, dict) and e.get("name") == svc_name)]
+    if len(kept) == len(custom):
+        return False
+    raw["services"]["custom"] = kept
+    return True
 
 
 # ─────────────────────────────────────────────────────────────
@@ -581,6 +613,15 @@ def start_service(svc: CustomServiceConfig) -> tuple[bool, str]:
     if _tmux_session_exists(svc.name):
         return True, "already running"
 
+    if svc.resume and _has_launch_record(svc.name):
+        # Same conversation, flags regenerated from the record (incl. model
+        # and effort). A record whose cwd is gone fails loudly here rather
+        # than silently falling back to a fresh session.
+        return _run_service_cmd(
+            [sys.executable, "-m", "agentwire", "restart", "-s", svc.name, "--json"],
+            svc.name, "restarted",
+        )
+
     project = svc.project or _source_dir()
     # --allow-shared-dir: registering a service is explicit intent — skip the
     # guard that refuses a second session on a project dir with active sessions
@@ -588,20 +629,40 @@ def start_service(svc: CustomServiceConfig) -> tuple[bool, str]:
     # Deliberately NOT --force: concurrent spawns (autostart + watchdog + manual
     # `services up`) must degrade to a harmless "already exists", never
     # kill-replace a healthy instance that won the race.
+    # --created-by '': a service is infrastructure, never the child of
+    # whichever session happened to run `services up` in the same project.
     cmd = [sys.executable, "-m", "agentwire", "new", "-s", svc.name, "-p", project,
-           "--allow-shared-dir", "--no-cohort", "--json"]
+           "--allow-shared-dir", "--no-cohort", "--created-by", "", "--json"]
     if svc.roles:
         cmd.extend(["--roles", svc.roles])
     if svc.posture:
         cmd.extend(["--posture", svc.posture])
+    if svc.model:
+        cmd.extend(["--model", svc.model])
+    if svc.effort:
+        cmd.extend(["--effort", svc.effort])
+    return _run_service_cmd(cmd, svc.name, "started")
+
+
+def _has_launch_record(name: str) -> bool:
+    """Does *name* have a launch record `agentwire restart` can regenerate from?"""
+    from .core import load_session_metadata
+
+    meta = load_session_metadata(name)
+    return bool(meta.get("cwd_at_launch") and meta.get("posture"))
+
+
+def _run_service_cmd(cmd: list[str], name: str, ok_msg: str) -> tuple[bool, str]:
+    """Run a session-creating CLI command for a service; a lost race is success."""
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=60)
-        return True, "started"
+        return True, ok_msg
     except subprocess.CalledProcessError as e:
-        if _tmux_session_exists(svc.name):
+        if _tmux_session_exists(name):
             return True, "already running"  # lost a benign spawn race
         stderr = (e.stderr or b"").decode(errors="replace").strip()
-        return False, stderr or str(e)
+        stdout = (e.stdout or b"").decode(errors="replace").strip()
+        return False, stderr or stdout or str(e)
     except Exception as e:
         return False, str(e)
 

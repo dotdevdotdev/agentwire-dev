@@ -27,6 +27,12 @@ class TestBuildAgentCommand:
             posture, roles=roles, model=model, resume_session_id=resume_session_id
         )
 
+    def test_effort_flag_only_when_chosen(self):
+        from agentwire.core import build_agent_command
+
+        assert "--effort" not in build_agent_command("bypass").command
+        assert "--effort low" in build_agent_command("bypass", effort="low").command
+
     def test_bypass(self):
         cmd = self._build("bypass")
         assert "claude" in cmd.command
