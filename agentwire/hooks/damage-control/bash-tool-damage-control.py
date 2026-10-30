@@ -34,7 +34,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "0105d7394e2df8e48d7e629afecdb0d1a710f6b1b0ffe2dcf166a324d76b12b2", "generated_at": "2026-10-30T12:07:39Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "29b6b8ea5df086ed9bfdb9a94b6b3ba475379ab628f3e3ef97089b9402f87fe6", "generated_at": "2026-10-30T13:30:44Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -62,6 +62,7 @@ import shutil
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
@@ -99,7 +100,11 @@ DELETE_RECURSIVE_OP = "delete-recursive"
 
 WRITE_PATTERNS = [
     (r'>\s*{path}', "write"),
-    (r'\btee\s+(?!.*-a).*{path}', "write"),
+    # Not an append: no ``-a`` / ``--append`` OPTION token anywhere (GNU tee
+    # takes options after operands too). A bare ``-a`` substring is not an
+    # option — ``(?!.*-a)`` here once let ``tee <protected> /tmp/my-app.log``
+    # through, since neither this nor any append pattern matched (#1198).
+    (r'\btee(?!.*\s(?:-[a-zA-Z]*a[a-zA-Z]*|--append)(?=\s|$))\s+.*{path}', "write"),
     (r'\bdd\s+.*\bof=\S*{path}', "write"),
     # rsync writes its DESTINATION: the last operand (options may trail it)
     (r'\brsync\b[^\n|;&]*\s["\']?{path}[^\s|;&]*(?:\s+--?[\w-]+(?:=\S*)?(?:\s+[^-\s]\S*)?)*\s*(?:$|[;&|#]|\d*[<>])', "write"),
@@ -111,6 +116,8 @@ APPEND_PATTERNS = [
     (r'>>\s*{path}', "append"),
     (r'\btee\s+-a\s+.*{path}', "append"),
     (r'\btee\s+.*-a.*{path}', "append"),
+    # ...and the option after the path: ``tee <file> -a``.
+    (r'\btee\b.*{path}.*\s(?:-[a-zA-Z]*a[a-zA-Z]*|--append)(?=\s|$)', "append"),
 ]
 
 EDIT_PATTERNS = [
@@ -1695,6 +1702,62 @@ def is_unattended() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Voice-assistant marker (#1198)
+# ---------------------------------------------------------------------------
+#
+# The portal voice assistant runs bypass, which demotes every ask-tier rule
+# (push, merge, worktree removal, session kill, ...) to a silent allow — so
+# "destructive actions get a spoken confirm" rested on a role prompt alone.
+# ``AGENTWIRE_VOICE=1`` (set on that one session's launch via its role's
+# ``--settings`` env) makes an ask stay an ask: a real dialog the voice layer
+# reads out. It only ever TIGHTENS — it never turns an ask or a block into an
+# allow — and a session without it is byte-for-byte unchanged.
+#
+# Under the marker the dialog also names its rule (``[rule: <id>]``) and the
+# hook records the pending ask in ``~/.agentwire/voice-approvals/pending-ask.json``: the
+# standing-approval grant store keys on that RECORD, never on pane text (the
+# dialog shows the command too, and a command can contain any text).
+# Unverifiable asks and scan-budget overruns are recorded never-grantable.
+
+
+def is_voice_session() -> bool:
+    """True for the portal voice assistant's session (see above)."""
+    return os.environ.get("AGENTWIRE_VOICE") == "1"
+
+
+#: The protected directory (see PROTECTED_CONTROL_PLANE_PATHS) holding the
+#: grant store and the hook's record of the ask on screen.
+VOICE_APPROVALS_DIR = "voice-approvals"
+VOICE_PENDING_ASK_FILE = "pending-ask.json"
+
+
+def voice_pending_ask_path() -> Path:
+    """Where the HOOK records the ask now on screen. ``AGENTWIRE_DIR`` moves it,
+    like the audit log — safe here because a hook's environment is the agent
+    process's, which a tool call cannot change. The reader (``voice_grants``)
+    resolves the real home itself."""
+    base = Path(os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire")))
+    return base / VOICE_APPROVALS_DIR / VOICE_PENDING_ASK_FILE
+
+
+def voice_ask_reason(reason: str, rule_id: "str | None", tool: str, grantable: bool) -> str:
+    """Record this ask for the voice grant store; return the dialog reason with
+    its rule named. Best-effort record: a failed write leaves the ask a plain
+    dialog (answerable once, never covered by a grant)."""
+    rule = rule_id or "unknown"
+    grantable = grantable and bool(rule_id)
+    try:
+        path = voice_pending_ask_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "rule_id": rule_id, "tool": tool, "grantable": grantable, "ts": time.time(),
+        }))
+    except OSError:
+        pass
+    return f"{reason} [rule: {rule}{'' if grantable else '; never grantable'}]"
+
+
+# ---------------------------------------------------------------------------
 # Grant parsing
 # ---------------------------------------------------------------------------
 
@@ -2728,6 +2791,15 @@ PROTECTED_CONTROL_PLANE_PATHS = [
     # (``agentwire tasks review``) and promotes (``agentwire tasks promote``) —
     # the agent never writes the live file. See ``agentwire/tasks_cli.py``.
     "*.agentwire.tasks.yml",            # project task-execution config (any dir)
+    # The voice assistant's standing-approval store and the hook's record of
+    # the pending ask (#1198). A grant presses Yes on a damage-control dialog,
+    # so writing either file is approving by hand: only the hook process and
+    # the owner's `agentwire voice` CLI write them — never a tool call. A
+    # PREFIX entry, so it covers the directory itself too: otherwise it could
+    # be moved away and a fake one (grants.json and all) moved into its place.
+    # Its own directory, named so that the prefix matches nothing else
+    # (~/.agentwire/voices/ holds TTS voice samples and stays agent-writable).
+    "~/.agentwire/voice-approvals",
 ]
 
 
@@ -10583,7 +10655,7 @@ def main() -> None:
                   file=sys.stderr)
         sys.exit(2)
     elif decision == "ask" and (
-        permission_mode not in bypass_modes or result.get("unverifiable")
+        permission_mode not in bypass_modes or result.get("unverifiable") or is_voice_session()
     ):
         # `unverifiable` (#934): a verb-concealing shape — eval, base64-pipe,
         # a substitution deciding what runs or feeding a wrapper's payload —
@@ -10592,6 +10664,11 @@ def main() -> None:
         # things you can't see", and demoting these made obscuring a payload
         # the permissive path (`psql -c "$(cat drop.sql)"` ran with no gate
         # while the literal statement blocked).
+        # The voice assistant (#1198) keeps EVERY ask as a dialog — its spoken
+        # confirm — and names the rule for its grant store.
+        if is_voice_session():
+            reason = voice_ask_reason(reason, result.get("id"), "Bash",
+                                      grantable=not result.get("unverifiable"))
         log_asked("Bash", command, reason)
         output = {
             "hookSpecificOutput": {

@@ -15,9 +15,11 @@ two utterances a property of the session instead of the model:
   payload carries — no transcript parsing), with the full text on screen
   when it had to be cut.
 - **StopFailure** speaks why the turn died (rate limit, expired login, ...).
-- **Notification** speaks approval requests, which would otherwise sit
+- **Notification** hands approval requests to ``agentwire voice approval``:
+  a standing grant covering the dialog's rule (``voice_grants``) presses the
+  one-time Yes; otherwise the request is spoken, since it would otherwise sit
   silently in a root session with no screen in front of it. The owner answers
-  them by voice: ``agentwire voice ask "yes"`` answers the live dialog.
+  by voice: ``agentwire voice ask "yes"`` answers the live dialog.
 
 Each event also signals the portal (``agentwire voice state``) so the status
 chip shows working / done / failed / approval from the session's real state.
@@ -92,14 +94,19 @@ def claude_settings() -> dict:
 
     session_start = hook("session-start")
     session_start[0]["hooks"][0]["timeout"] = DIGEST_TIMEOUT_S + 5
-    return {"hooks": {
-        "SessionStart": session_start,
-        "UserPromptSubmit": hook("prompt-submit"),
-        "PostToolUse": [{**hook("said")[0], "matcher": SAY_TOOL}],
-        "Stop": hook("stop"),
-        "StopFailure": hook("stop-failure"),
-        "Notification": hook("notification"),
-    }}
+    return {
+        # The damage-control voice marker: every ask stays a dialog (the
+        # spoken confirm) and names its rule — see safety._core.is_voice_session.
+        "env": {"AGENTWIRE_VOICE": "1"},
+        "hooks": {
+            "SessionStart": session_start,
+            "UserPromptSubmit": hook("prompt-submit"),
+            "PostToolUse": [{**hook("said")[0], "matcher": SAY_TOOL}],
+            "Stop": hook("stop"),
+            "StopFailure": hook("stop-failure"),
+            "Notification": hook("notification"),
+        },
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -321,15 +328,17 @@ def approval_intent(payload: dict) -> tuple[str, str, str]:
 def on_notification(payload: dict) -> None:
     if payload.get("notification_type") not in _APPROVAL_TYPES:
         return
-    signal("approval")
     intent, exact, _tool = approval_intent(payload)
     try:
         APPROVAL_FILE.parent.mkdir(parents=True, exist_ok=True)
         APPROVAL_FILE.write_text(json.dumps({"intent": intent, "command": exact}))
     except OSError:
         pass
+    # `voice approval` decides: a standing grant covering this dialog's rule
+    # presses the one-time Yes and says so; otherwise the request is spoken.
     text, display = approval_request(payload)
-    speak(text, kind="approval", display=display)
+    _spawn(["voice", "approval", "--announce", text,
+            *(["--display", display] if display else [])])
 
 
 HANDLERS = {

@@ -31,6 +31,7 @@ change.
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -234,14 +235,21 @@ def cmd_voice_status(args) -> int:
     return 0 if status["healthy"] else 1
 
 
-def classify_reply(intent: str, utterance: str, run=None) -> str:
-    """One of ``REPLY_VERDICTS`` for *utterance* as a reply to *intent*.
+def classify_reply(intent: str, utterance: str, run=None) -> "tuple[str, str | None]":
+    """``(verdict, scope)`` for *utterance* as a reply to *intent*.
+
+    *verdict* is one of ``REPLY_VERDICTS``; *scope* (``hour`` / ``today`` /
+    ``session``) only on an approval the owner meant to keep applying ("yes,
+    approve those for today") — the model supplies the scope, never what it
+    covers (that comes from the hook's record; see ``voice_grants``).
 
     One tool-less ``claude -p`` call on Haiku at low effort (~2 s measured),
-    bounded by ``CLASSIFIER_TIMEOUT_S``. Fails closed: a timeout, an error,
-    or any reply that is not exactly a verdict is ``"other"``.
+    bounded by ``CLASSIFIER_TIMEOUT_S``. Fails closed: a timeout, an error, or
+    any reply off the exact format is ``("other", None)``.
     """
     import subprocess
+
+    from .voice_grants import SCOPES
 
     prompt = (
         "A spoken reply must be matched to a pending approval.\n"
@@ -252,6 +260,9 @@ def classify_reply(intent: str, utterance: str, run=None) -> str:
         "approve_and_more - they clearly approve AND say or ask something further\n"
         "deny - they reject it, or want something different done instead\n"
         "other - anything else, unclear, or unrelated\n"
+        "If they approve AND say it should keep applying from now on (e.g. 'for today', "
+        "'for the next hour', 'for this session', 'approve all of these'), add a second word: "
+        "hour, today or session ('always' or 'all of these' means today).\n"
         "If in any doubt, answer other."
     )
     cmd = ["claude", "-p", prompt, "--model", CLASSIFIER_MODEL, "--effort", CLASSIFIER_EFFORT,
@@ -261,9 +272,15 @@ def classify_reply(intent: str, utterance: str, run=None) -> str:
         result = (run or subprocess.run)(cmd, capture_output=True, text=True,
                                          stdin=subprocess.DEVNULL, timeout=CLASSIFIER_TIMEOUT_S)
     except Exception:  # noqa: BLE001  # timeout / missing binary: fail closed
-        return "other"
-    verdict = (result.stdout or "").strip().lower().strip(".")
-    return verdict if result.returncode == 0 and verdict in REPLY_VERDICTS else "other"
+        return "other", None
+    words = (result.stdout or "").strip().lower().strip(".").split()
+    if result.returncode != 0 or not 1 <= len(words) <= 2 or words[0] not in REPLY_VERDICTS:
+        return "other", None
+    if len(words) == 1:
+        return words[0], None
+    if words[0] in ("approve", "approve_and_more") and words[1] in SCOPES:
+        return words[0], words[1]
+    return "other", None
 
 
 def _pending_intent(info) -> str:
@@ -319,6 +336,18 @@ def _remind_once(dialog_hash: str) -> None:
     speak("An approval is waiting. Say yes or no.", kind="approval")
 
 
+def _from_an_agent() -> bool:
+    """Is this ``voice ask`` running inside a Claude Code session?
+
+    Claude Code sets ``CLAUDECODE=1`` for every tool subprocess (and hook).
+    Answering an approval, or minting a standing grant, is the OWNER's to do
+    (portal button, terminal, Hammerspoon) — never another agent's, or any
+    session could approve the assistant's destructive dialogs by running
+    ``agentwire voice ask "yes for today"``.
+    """
+    return os.environ.get("CLAUDECODE") == "1"
+
+
 def _answer_pending_approval(text: str, json_mode: bool) -> "int | None":
     """If the assistant is blocked on an approval dialog, *text* answers it.
 
@@ -326,15 +355,22 @@ def _answer_pending_approval(text: str, json_mode: bool) -> "int | None":
     Keys go through ``prompt_router.answer`` — compare-and-send on the
     dialog's content hash — so a dialog answered meanwhile in the portal is
     never answered twice. The full utterance is queued whenever it carries
-    more than the bare answer; it is delivered once the dialog clears.
+    more than the bare answer; it is delivered once the dialog clears. An
+    approval with a scope also records a standing grant for the dialog's rule
+    (when the hook recorded it grantable).
     """
-    from . import prompt_router
+    from . import prompt_router, voice_grants
     from .voice_hooks import speak
 
     info = prompt_router.detect_prompt(prompt_router.capture(SERVICE_NAME))
     if info is None or info.kind != "permission":
         return None
-    verdict = classify_reply(_pending_intent(info), text)
+    if _from_an_agent():
+        return _output_result(False, json_mode,
+                              "An approval is pending on agentwire-voice; only the owner answers it "
+                              "(portal, terminal or Hammerspoon), not another agent.",
+                              pending_approval=True)
+    verdict, scope = classify_reply(_pending_intent(info), text)
     if verdict == "other":
         _queue_request(text)
         _remind_once(info.content_hash())
@@ -349,6 +385,14 @@ def _answer_pending_approval(text: str, json_mode: bool) -> "int | None":
         _queue_request(text)
         return _output_result(False, json_mode, "No plain one-time Yes option; answer it in the portal.",
                               pending_approval=True, verdict=verdict, queued=True)
+    grant = None
+    if scope:
+        pending = voice_grants.pending_ask()
+        if pending and pending.get("grantable") and pending.get("rule_id"):
+            grant = voice_grants.add(pending["rule_id"], scope)
+            speak(f"Approved. Standing OK {voice_grants.SCOPE_PHRASES[scope]}.", kind="approval")
+        else:
+            speak("Approved this once. That kind can't be a standing OK.", kind="approval")
     ok, detail = prompt_router.answer(SERVICE_NAME, 0, info.content_hash(), keys)
     # deny: the full utterance is the "what to do differently" feedback.
     # approve_and_more: the full utterance is the next request.
@@ -356,7 +400,69 @@ def _answer_pending_approval(text: str, json_mode: bool) -> "int | None":
     if queued:
         _queue_request(text)
     return _output_result(ok, json_mode, f"Approval {answer}: {detail}",
-                          answered=answer, verdict=verdict, queued=queued)
+                          answered=answer, verdict=verdict, queued=queued,
+                          grant=grant and grant["rule_id"])
+
+
+def cmd_voice_approval(args) -> int:
+    """Called by the Notification hook when the assistant hits an approval.
+
+    A standing grant covering the dialog's rule (from the hook's own record,
+    never the pane text) presses the plain one-time Yes and says "Approved,
+    standing OK." Otherwise the approval request (*--announce*) is spoken and
+    the chip shows it. Grants are only ever APPLIED here, never created.
+    """
+    from . import prompt_router, voice_grants
+    from .voice_hooks import signal, speak
+
+    info = prompt_router.detect_prompt(prompt_router.capture(SERVICE_NAME))
+    pending = voice_grants.pending_ask()
+    grant = (voice_grants.covering(pending.get("rule_id"))
+             if info is not None and info.kind == "permission"
+             and pending and pending.get("grantable") else None)
+    keys = approval_keys(info.options, "yes") if grant else []
+    if grant and keys:
+        ok, detail = prompt_router.answer(SERVICE_NAME, 0, info.content_hash(), keys)
+        if ok:
+            voice_grants.log("used", rule_id=grant["rule_id"], scope=grant["scope"])
+            speak("Approved, standing OK.", kind="approval")
+            signal("working")
+            return _output_result(True, args.json, f"Standing grant {grant['rule_id']}: {detail}",
+                                  granted=grant["rule_id"])
+    speak(args.announce, kind="approval", display=args.display)
+    signal("approval")
+    return _output_result(True, args.json, "Approval announced", granted=None)
+
+
+def cmd_voice_grants(args) -> int:
+    """List the standing grants, or clear them ("stop auto-approving")."""
+    from . import voice_grants
+
+    if args.clear:
+        removed = voice_grants.clear(args.rule)
+        _push_grant_count()
+        return _output_result(True, args.json, f"Cleared {removed} standing grant(s).", cleared=removed)
+    grants = voice_grants.active()
+    if args.json:
+        _output_json({"success": True, "grants": grants})
+        return 0
+    if not grants:
+        print("No standing grants.")
+    for g in grants:
+        print(f"  {g['rule_id']}: {voice_grants.SCOPE_PHRASES.get(g['scope'], g['scope'])}")
+    return 0
+
+
+def _push_grant_count() -> None:
+    """Refresh the portal chip's standing-grant badge (best-effort)."""
+    from . import voice_grants
+    from .core import _get_portal_url, portal_request
+
+    try:
+        portal_request("POST", f"{_get_portal_url()}/api/voice/state",
+                       json={"grants": len(voice_grants.active())}, timeout=3)
+    except Exception:  # noqa: BLE001  # portal down: the badge catches up on the next state push
+        pass
 
 
 def cmd_voice_ask(args) -> int:
@@ -395,13 +501,16 @@ def cmd_voice_state(args) -> int:
     """Push the assistant's state to the portal's status chip (best-effort).
 
     Called by the session's speech hooks; a portal that is down costs a stale
-    chip, never an error in the hook.
+    chip, never an error in the hook. Carries the standing-grant count so the
+    chip shows when auto-approval is on.
     """
+    from . import voice_grants
     from .core import _get_portal_url, portal_request
 
     try:
         r = portal_request("POST", f"{_get_portal_url()}/api/voice/state",
-                           json={"state": args.state}, timeout=3)
+                           json={"state": args.state, "grants": len(voice_grants.active())},
+                           timeout=3)
         ok = r.ok
     except Exception:  # noqa: BLE001  # portal down: nothing to update
         ok = False
@@ -444,6 +553,13 @@ def register_voice_parser(subparsers) -> None:
           "The assistant's system digest: sessions (busy/idle/blocked), projects, scheduler, config")
     st = _verb("state", cmd_voice_state, "Set the portal status chip (used by the speech hooks)")
     st.add_argument("state", choices=STATES)
+    ap = _verb("approval", cmd_voice_approval,
+               "Apply a standing grant to the live approval, or announce it (used by the speech hooks)")
+    ap.add_argument("--announce", required=True, help="What to say when no grant covers it")
+    ap.add_argument("--display", help="On-screen card for the announcement")
+    gr = _verb("grants", cmd_voice_grants, "List standing approvals, or --clear them")
+    gr.add_argument("--clear", action="store_true", help="Remove standing grants (all, or --rule)")
+    gr.add_argument("--rule", help="With --clear: only this rule id")
     _verb("start", cmd_voice_start, "Start the service")
     _verb("stop", cmd_voice_stop, "Stop the service (the next start is a fresh conversation)")
     _verb("restart", cmd_voice_restart, "Relaunch in place, same conversation")

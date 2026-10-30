@@ -172,6 +172,7 @@ agentwire voice ask "<text>"    # deliver a request (starts it if needed); answe
                                 # While an approval dialog is up, "yes"/"no" answers it
 agentwire voice state working|done|failed|approval   # portal status chip (used by its hooks)
 agentwire voice digest          # sessions (busy/idle/blocked), projects, scheduler, config
+agentwire voice grants [--clear [--rule <id>]]   # standing approvals ("yes, for today"): list / revoke
 agentwire list --state          # live busy / idle / blocked / unknown per local session
 agentwire voice status|start|stop|restart   # restart = same conversation
 agentwire voice install [--effort low] [--autostart]   # HUMAN-ONLY: write the service entry

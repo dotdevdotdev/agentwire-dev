@@ -161,8 +161,10 @@ async function init() {
     });
 
     // The assistant's own report of what it is doing (speech hooks → portal)
-    desktop.on('voice_state', ({ session, state }) => {
-        if (session === VOICE_SESSION) updateVoiceIndicator(state);
+    desktop.on('voice_state', ({ session, state, grants }) => {
+        if (session !== VOICE_SESSION) return;
+        if (state) updateVoiceIndicator(state);
+        if (grants !== undefined) updateGrantBadge(grants);
     });
 
     // Track agentwire session processing state (triggered when message sent)
@@ -679,6 +681,16 @@ function updateConnectionStatus(connected) {
 }
 
 // Voice indicator - shows agentwire session and TTS activity state
+/** Standing approvals active on the voice assistant: a ring on the chip. */
+function updateGrantBadge(count) {
+    const indicator = elements.voiceIndicator;
+    if (!indicator) return;
+    indicator.classList.toggle('has-grant', count > 0);
+    indicator.dataset.grants = count > 0
+        ? `${count} standing approval${count === 1 ? '' : 's'} active (agentwire voice grants)`
+        : '';
+}
+
 function updateVoiceIndicator(state) {
     const indicator = elements.voiceIndicator;
     if (!indicator) return;
@@ -686,6 +698,10 @@ function updateVoiceIndicator(state) {
     indicator.classList.remove('idle', 'processing', 'generating', 'playing',
         'listening', 'sending', 'working', 'done', 'failed', 'approval');
 
+    // Re-append the standing-grant note after the switch sets the title.
+    const grantNote = () => {
+        if (indicator.dataset.grants) indicator.title += ` · ${indicator.dataset.grants}`;
+    };
     switch (state) {
         case 'listening':
             indicator.textContent = '●';
@@ -733,6 +749,7 @@ function updateVoiceIndicator(state) {
             indicator.title = 'AgentWire idle';
             indicator.classList.add('idle');
     }
+    grantNote();
 }
 
 // "Voice follows the focused tab" — mirror the focused session name to the

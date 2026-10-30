@@ -44,6 +44,10 @@ CONTROL_PLANE_FILES = [
     # Per-project task-execution config (#720) — NOT .agentwire.yml, which was
     # split out and is agent-writable again.
     "/some/repo/.agentwire.tasks.yml",
+    # The voice assistant's standing-approval store + the hook's pending-ask
+    # record (#1198): writing either is approving a damage-control dialog.
+    os.path.expanduser("~/.agentwire/voice-approvals/grants.json"),
+    os.path.expanduser("~/.agentwire/voice-approvals/pending-ask.json"),
 ]
 
 
@@ -152,6 +156,13 @@ INDIRECT_WRITES = [
     # a program piped to a remote shell, inside a compound body (#1112)
     "case x in a) echo 'touch ~/.agentwire/damagecontrol.yml' | ssh host;; esac",
     "if true; then echo 'touch ~/.agentwire/damagecontrol.yml' | ssh host; fi",
+    # tee with a "-a" that is NOT the append option (#1198): the old write
+    # pattern's (?!.*-a) rejected any -a substring, and the append patterns only
+    # looked before the path, so these matched nothing at all.
+    "echo x | tee ~/.agentwire/config.yaml /tmp/my-app.log",
+    "echo x | tee ~/.agentwire/scheduler.yaml # my-app",
+    "echo x | tee ~/.agentwire/damagecontrol.yml -a",
+    "echo x | tee ~/.agentwire/damagecontrol.yml --append",
 ]
 
 
