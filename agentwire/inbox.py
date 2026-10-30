@@ -1158,6 +1158,49 @@ def _set_paste_stamp(messages: list[Message], ts: int) -> None:
                 raise
 
 
+#: A deferral on a non-empty box keeps what the drain actually saw, so "the box
+#: was empty, why did it defer?" is answerable from the capture instead of from
+#: a length. Owner-only files that expire: a box can hold a half-typed secret,
+#: which is why ``detail`` records only the length (#1105).
+DEFERRAL_CAPTURE_TTL_S = 3600
+_DEFERRAL_CAPTURE_LINES = 30
+
+
+def _record_deferral_capture(session: str, reason: str, box_content: str) -> None:
+    """Best-effort: write the pane (plain and with SGR) the drain just judged
+    non-empty to ``inbox-debug/<session>/`` (0700 dir, 0600 files), and drop
+    captures older than ``DEFERRAL_CAPTURE_TTL_S``. Never raises — diagnosis
+    must not cost a delivery."""
+    try:
+        from agentwire import prompt_router
+
+        root = INBOX_ROOT.parent / "inbox-debug" / session_dir(session).name
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(root, 0o700)
+        now = time.time()
+        for old in root.glob("*.txt"):
+            if now - old.stat().st_mtime > DEFERRAL_CAPTURE_TTL_S:
+                old.unlink()
+
+        def tail(text: str) -> str:
+            return "\n".join(text.splitlines()[-_DEFERRAL_CAPTURE_LINES:])
+
+        body = (
+            f"session={session} reason={reason} ts={now:.0f}\n"
+            f"parsed box content ({len(box_content)} chars): {box_content!r}\n\n"
+            f"--- plain capture (last {_DEFERRAL_CAPTURE_LINES} lines) ---\n"
+            f"{tail(prompt_router.capture(session))}\n\n"
+            f"--- capture with SGR escapes (repr) ---\n"
+            f"{tail(prompt_router.capture(session, escapes=True))!r}\n"
+        )
+        path = root / f"{int(now * 1000)}-{reason}.txt"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(body)
+    except Exception:  # noqa: BLE001 — see docstring
+        pass
+
+
 def _draft_evidence(box_content: str) -> str:
     """Draft-free description of the box for ``Message.detail`` (#1105).
 
@@ -1427,6 +1470,7 @@ def flush_session(session: str, force: bool = False) -> dict:
                 else:
                     reason = "box_not_empty"
                 detail = _draft_evidence(box_content)
+                _record_deferral_capture(session, reason, box_content)
                 dead = _bump_attempts(messages, reason, detail)
                 _log_event(
                     "deferred", to=session, count=len(messages), reason=reason,
