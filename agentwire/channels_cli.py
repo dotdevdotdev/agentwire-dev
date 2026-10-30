@@ -33,7 +33,7 @@ from .playback_lane import KINDS as PLAYBACK_KINDS
 from .playback_lane import Lane
 from .project_config import get_voice_from_config
 from .voice_hooks import SESSION as VOICE_SESSION
-from .voice_hooks import record_voice_eval, speech_headline
+from .voice_hooks import speech_headline
 
 
 def _get_current_tmux_session() -> str | None:
@@ -309,12 +309,6 @@ def cmd_say(args) -> int:
         text, trimmed = speech_headline(text)
         if trimmed and not getattr(args, 'display', None):
             args.display = full
-
-    # Voice eval (#1198, scripts/voice_eval.py): record what WOULD be spoken,
-    # with its time and the calling session, instead of playing it.
-    if record_voice_eval({"event": "say", "session": session, "kind": kind,
-                          "text": text, "display": getattr(args, 'display', None)}):
-        return 0
 
     # Handle voice notifications
     _handle_voice_notifications(text, voice, args, session)
