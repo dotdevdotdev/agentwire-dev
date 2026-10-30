@@ -23,6 +23,8 @@ def isolate(tmp_path, monkeypatch):
     # so the host's real session list can't leak into these tests; gone-target
     # scenarios override with a controlled live set.
     monkeypatch.setattr(inbox, "live_sessions", lambda: None)
+    # The host's real tmux session must not leak into the sender (--from checks).
+    monkeypatch.setattr(msg_cli, "_current_session", lambda: None)
     return tmp_path
 
 
@@ -126,3 +128,22 @@ class TestSendBodyFile:
         assert msgs[0].text == self.HOSTILE
 
 
+
+
+class TestSenderCannotBeForged:
+    """A session inside tmux speaks as itself: `--from` naming another session
+    is refused, so a reply can't land in the wrong inbox. Callers outside tmux
+    (the buddy bridge, scripts) keep `--from`."""
+
+    def test_in_tmux_a_different_from_is_refused_and_queues_nothing(self, isolate, monkeypatch, capsys):
+        monkeypatch.setattr(msg_cli, "_current_session", lambda: "agentwire-voice")
+        rc = msg_cli.cmd_msg_send(_ns(to="agentwire", kind="request", text=["hi"], from_session="minecraft"))
+        assert rc == 1
+        assert "refused" in capsys.readouterr().out
+
+    def test_in_tmux_from_equal_to_the_real_session_is_fine(self, isolate, monkeypatch):
+        monkeypatch.setattr(msg_cli, "_current_session", lambda: "agentwire-voice")
+        assert msg_cli.cmd_msg_send(_ns(to="agentwire", text=["hi"], from_session="agentwire-voice")) == 0
+
+    def test_outside_tmux_from_is_honored(self, isolate):
+        assert msg_cli.cmd_msg_send(_ns(to="agentwire", text=["hi"], from_session="buddy")) == 0

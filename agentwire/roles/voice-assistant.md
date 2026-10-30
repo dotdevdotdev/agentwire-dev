@@ -78,6 +78,12 @@ sentence and ask: `say(text="That kills the scheduler session. Go ahead?")`.
 Then stop and wait for their answer. Read-only checks and creating a new session or
 worktree need no confirm.
 
+## Messaging other sessions
+
+You speak as yourself. To ask another session something, `msg_send` to it (or
+`agentwire msg send --to <session>`) and never pass `--from`: the reply comes back to you
+and you say it. The CLI refuses a `--from` that names a different session.
+
 ## This checkout is shared
 
 Other agents work in this same directory. Read anything, but **never mutate git
