@@ -14,7 +14,11 @@ two utterances a property of the session instead of the model:
   when it had to be cut.
 - **StopFailure** speaks why the turn died (rate limit, expired login, ...).
 - **Notification** speaks approval requests, which would otherwise sit
-  silently in a root session with no screen in front of it.
+  silently in a root session with no screen in front of it. The owner answers
+  them by voice: ``agentwire voice ask "yes"`` answers the live dialog.
+
+Each event also signals the portal (``agentwire voice state``) so the status
+chip shows working / done / failed / approval from the session's real state.
 
 Scope: these hooks reach ONE process. ``claude_settings()`` is passed as
 ``claude --settings '<json>'`` on the voice-assistant's launch line (see
@@ -90,29 +94,44 @@ def claude_settings() -> dict:
 # ─────────────────────────────────────────────────────────────
 
 
-def speak(text: str, kind: str = "say", display: str | None = None) -> None:
-    """Fire-and-forget ``agentwire say`` to the assistant session.
-
-    ``say`` owns routing (portal browser vs local speakers), the machine-wide
-    playback lane (``--kind`` drives its drop policy) and the TTS-off case.
-    Detached so the hook returns in milliseconds and a dead TTS server can
-    only cost silence.
-    """
+def _agentwire_binary() -> str | None:
     sibling = Path(sys.executable).with_name("agentwire")
-    binary = str(sibling) if sibling.exists() else shutil.which("agentwire")
-    if not binary or not text.strip():
+    return str(sibling) if sibling.exists() else shutil.which("agentwire")
+
+
+def _spawn(args: list[str]) -> None:
+    """Run ``agentwire <args>`` detached: the hook returns in milliseconds and
+    a dead TTS server or portal can only cost silence."""
+    binary = _agentwire_binary()
+    if not binary:
         return
-    cmd = [binary, "say", "-s", SESSION, "--kind", kind]
-    if display:
-        cmd += ["--display", display]
     try:
         subprocess.Popen(
-            [*cmd, text],
+            [binary, *args],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
         )
     except OSError:
         pass
+
+
+def speak(text: str, kind: str = "say", display: str | None = None) -> None:
+    """Fire-and-forget ``agentwire say`` to the assistant session.
+
+    ``say`` owns routing (portal dashboard vs local speakers), the machine-wide
+    playback lane (``--kind`` drives its drop policy) and the TTS-off case.
+    """
+    if not text.strip():
+        return
+    args = ["say", "-s", SESSION, "--kind", kind]
+    if display:
+        args += ["--display", display]
+    _spawn([*args, text])
+
+
+def signal(state: str) -> None:
+    """Tell the portal what the assistant is doing (its status chip)."""
+    _spawn(["voice", "state", state])
 
 
 def _load_turn() -> dict:
@@ -185,6 +204,7 @@ def speech_headline(text: str, max_words: int = MAX_SPOKEN_WORDS) -> tuple[str, 
 
 def on_prompt_submit(payload: dict) -> None:
     _save_turn({"prompt_id": payload.get("prompt_id"), "spoken": False})
+    signal("working")
     if not _NOT_A_REQUEST.match(payload.get("prompt") or ""):
         speak(ACK, kind="ack")
 
@@ -195,7 +215,12 @@ def on_said(payload: dict) -> None:
 
 def on_stop(payload: dict) -> None:
     prompt_id = payload.get("prompt_id")
-    if _already_spoken(prompt_id):
+    turn = _load_turn()
+    this_turn = turn.get("prompt_id") == prompt_id
+    if this_turn and turn.get("state") == "failed":
+        return  # StopFailure already spoke and signalled
+    signal("done")
+    if this_turn and turn.get("spoken"):
         return
     _mark_spoken(prompt_id)
     message = (payload.get("last_assistant_message") or "").strip()
@@ -206,9 +231,10 @@ def on_stop(payload: dict) -> None:
 
 def on_stop_failure(payload: dict) -> None:
     prompt_id = payload.get("prompt_id")
+    signal("failed")
     if _already_spoken(prompt_id):
         return
-    _mark_spoken(prompt_id)
+    _save_turn({"prompt_id": prompt_id, "spoken": True, "state": "failed"})
     error = str(payload.get("error") or "unknown error")
     speak(f"That failed: {_FAILURE_REASONS.get(error, error.replace('_', ' '))}.", kind="failure")
 
@@ -216,9 +242,10 @@ def on_stop_failure(payload: dict) -> None:
 def on_notification(payload: dict) -> None:
     if payload.get("notification_type") not in _APPROVAL_TYPES:
         return
+    signal("approval")
     detail = spoken_summary(payload.get("message") or "", limit=140).rstrip(".")
-    speak(f"Approval needed: {detail}. Check the portal." if detail
-          else "Approval needed. Check the portal.", kind="approval")
+    speak(f"Approval needed: {detail}. Say yes or no." if detail
+          else "Approval needed. Say yes or no.", kind="approval")
 
 
 HANDLERS = {

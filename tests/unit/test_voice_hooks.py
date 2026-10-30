@@ -21,6 +21,7 @@ def spoken(tmp_path, monkeypatch):
     said: list[str] = []
     monkeypatch.setattr(vh, "STATE_FILE", tmp_path / "turn.json")
     monkeypatch.setattr(vh, "speak", lambda text, kind="say", display=None: said.append(text))
+    monkeypatch.setattr(vh, "signal", lambda state: None)
     return said
 
 
@@ -119,7 +120,7 @@ class TestApprovals:
         fire("notification", notification_type="idle_prompt", message="Claude is waiting")
         fire("notification", notification_type="permission_prompt",
              message="Claude needs your permission to use Bash")
-        assert spoken == ["Approval needed: Claude needs your permission to use Bash. Check the portal."]
+        assert spoken == ["Approval needed: Claude needs your permission to use Bash. Say yes or no."]
 
 
 def test_a_hook_never_fails_the_turn(spoken, monkeypatch):
@@ -135,6 +136,7 @@ class TestBrevity:
     def test_a_long_report_speaks_a_headline_and_shows_the_rest(self, tmp_path, monkeypatch):
         calls = []
         monkeypatch.setattr(vh, "STATE_FILE", tmp_path / "turn.json")
+        monkeypatch.setattr(vh, "signal", lambda state: None)
         monkeypatch.setattr(vh, "speak", lambda text, kind="say", display=None:
                             calls.append((text, kind, display)))
         long = ("Four sessions are running. The portal and the scheduler are busy, "
@@ -151,6 +153,7 @@ class TestBrevity:
     def test_a_short_report_is_spoken_whole_with_nothing_on_screen(self, tmp_path, monkeypatch):
         calls = []
         monkeypatch.setattr(vh, "STATE_FILE", tmp_path / "turn.json")
+        monkeypatch.setattr(vh, "signal", lambda state: None)
         monkeypatch.setattr(vh, "speak", lambda text, kind="say", display=None:
                             calls.append((text, display)))
         fire("stop", prompt_id="p", last_assistant_message="Three busy. One idle.")

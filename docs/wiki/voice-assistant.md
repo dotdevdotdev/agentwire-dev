@@ -79,10 +79,41 @@ the newest report/failure/approval, which always plays. A holder whose process d
 pruned, so a crashed `say` can't wedge the lane. `say --kind ack|report|failure|approval`
 tells the lane what an utterance is.
 
+## In the portal
+
+- **Talk:** the sidebar mic button, or hold **Ctrl+Shift+Space** from anywhere (plain
+  Ctrl+Space too, unless a session window has focus, since that window owns its own
+  push-to-talk). Both post to `POST /api/voice/ask`, a thin wrapper over
+  `agentwire voice ask`, so the button, the hotkey, Hammerspoon and a shell all
+  land in the same place.
+- **Hear:** `agentwire-voice` has no window, so its audio goes to the dashboard
+  socket every open portal page holds, and plays through the page's one sequential
+  queue. The connections check counts those pages as its listeners, so `say` stops
+  falling back to the speakers while a portal page is open. With no page open it still
+  plays on the speakers, through the playback lane.
+- **Status chip** (next to the mic): listening → sending → working → done ✓ /
+  failed ✕ / approval ?. Its state comes from the session's own speech hooks
+  (`agentwire voice state <state>` → `POST /api/voice/state` → `voice_state` on the
+  dashboard socket), not from guessing at output.
+
+## Answering approvals by voice
+
+When the assistant hits a permission dialog (e.g. a damage-control confirm), the
+Notification hook says "Approval needed: … Say yes or no." The next thing you say
+answers it: `voice ask` checks the assistant's pane for a live permission dialog
+first. "Yes / yeah / ok / go ahead / do it" picks the first "Yes" option, and
+"no / nope / cancel / don't" picks the "No" option (Escape if the dialog has none).
+The keys go through `prompt_router.answer`, a compare-and-send on the dialog's content
+hash, so a dialog someone already answered in the portal is never answered twice.
+Anything else is refused while a dialog waits ("An approval is waiting. Say yes or
+no."), so a new request can't slip past an unanswered prompt.
+
+The assistant's own spoken confirms ("That kills the scheduler session. Go ahead?")
+are ordinary turns: your "yes" goes to the model as a request.
+
 ## Known gaps (tracked in #1198)
 
-- Audio from `say` reaches only browser clients attached to *this session's* socket.
-  With no `agentwire-voice` window open it falls back to the local speakers (default
-  TTS tier). Slice 3 routes it to the portal.
 - `sessions_list` reports no busy/idle state, so "which sessions are busy" needs the
   system digest from slice 4.
+- Claude Code fires the permission `Notification` a few seconds after the dialog
+  appears, so the spoken approval request lags the dialog slightly.

@@ -30,6 +30,7 @@ change.
 """
 
 import argparse
+import re
 import sys
 
 from .core import EFFORT_LEVELS, _output_json, _output_result
@@ -39,6 +40,14 @@ SERVICE_NAME = SESSION
 ROLE = "voice-assistant"
 MODEL = "claude-haiku-5-5"
 DEFAULT_EFFORT = "medium"
+
+#: What the portal's status chip can show; set by the session's speech hooks.
+STATES = ("working", "done", "failed", "approval")
+
+#: A spoken answer to a live approval dialog. Anything else is refused while
+#: one is pending, so a stray request can't slip past an unanswered prompt.
+_YES = re.compile(r"^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|approve[d]?|confirm(ed)?)\b")
+_NO = re.compile(r"^(no|nope|nah|don'?t|do not|cancel|stop|deny|denied|reject(ed)?)\b")
 
 
 def service_entry(*, project: str, effort: str, autostart: bool) -> dict:
@@ -209,9 +218,55 @@ def cmd_voice_status(args) -> int:
     return 0 if status["healthy"] else 1
 
 
+def spoken_answer(text: str) -> str | None:
+    """``"yes"``, ``"no"``, or None for a spoken reply to an approval."""
+    t = re.sub(r"[^a-z' ]+", " ", text.lower()).strip()
+    if _NO.match(t):
+        return "no"
+    if _YES.match(t):
+        return "yes"
+    return None
+
+
+def approval_keys(options: list[dict], answer: str) -> list[str]:
+    """Keys that pick *answer* in a numbered dialog: the first "Yes…" option,
+    or the "No…" option (Escape when the dialog has none)."""
+    want = "yes" if answer == "yes" else "no"
+    for opt in options:
+        if opt.get("label", "").lower().startswith(want):
+            return [str(opt["number"])]
+    return ["Escape"] if answer == "no" else []
+
+
+def _answer_pending_approval(text: str, json_mode: bool) -> "int | None":
+    """If the assistant is blocked on an approval dialog, *text* answers it.
+
+    None when no dialog is live (the caller delivers *text* as a request).
+    The answer goes through ``prompt_router.answer`` — compare-and-send on the
+    dialog's content hash — so a dialog answered meanwhile in the portal is
+    never answered twice.
+    """
+    from . import prompt_router
+    from .voice_hooks import speak
+
+    info = prompt_router.detect_prompt(prompt_router.capture(SERVICE_NAME))
+    if info is None or info.kind != "permission":
+        return None
+    answer = spoken_answer(text)
+    keys = approval_keys(info.options, answer) if answer else []
+    if not keys:
+        speak("An approval is waiting. Say yes or no.", kind="approval")
+        return _output_result(False, json_mode, "An approval is pending — answer yes or no.",
+                              pending_approval=True)
+    ok, detail = prompt_router.answer(SERVICE_NAME, 0, info.content_hash(), keys)
+    return _output_result(ok, json_mode, f"Approval {answer}: {detail}", answered=answer)
+
+
 def cmd_voice_ask(args) -> int:
     """Send a request to the assistant, starting it first if needed.
 
+    While an approval dialog is live, the request IS the answer: "yes" / "no"
+    picks the option, anything else is refused with a spoken reminder.
     Returns once the text is delivered; the answer is spoken by the assistant.
     """
     from . import services as services_mod
@@ -229,10 +284,32 @@ def cmd_voice_ask(args) -> int:
     ok, msg = services_mod.start_service(svc)
     if not ok:
         return _output_result(False, json_mode, f"Could not start {SERVICE_NAME}: {msg}")
+    if msg == "already running":
+        answered = _answer_pending_approval(text, json_mode)
+        if answered is not None:
+            return answered
     return cmd_send(argparse.Namespace(
         session=SERVICE_NAME, pane=None, prompt=[text], json=json_mode,
         wait_ready=True, verify=False, caller_session=None,
     ))
+
+
+def cmd_voice_state(args) -> int:
+    """Push the assistant's state to the portal's status chip (best-effort).
+
+    Called by the session's speech hooks; a portal that is down costs a stale
+    chip, never an error in the hook.
+    """
+    from .core import _get_portal_url, portal_request
+
+    try:
+        r = portal_request("POST", f"{_get_portal_url()}/api/voice/state",
+                           json={"state": args.state}, timeout=3)
+        ok = r.ok
+    except Exception:  # noqa: BLE001  # portal down: nothing to update
+        ok = False
+    return _output_result(True, args.json, f"state {args.state}" + ("" if ok else " (portal unreachable)"),
+                          state=args.state, delivered=ok)
 
 
 def register_voice_parser(subparsers) -> None:
@@ -253,6 +330,8 @@ def register_voice_parser(subparsers) -> None:
     ask = _verb("ask", cmd_voice_ask, "Send a request to the assistant (starts it if needed)")
     ask.add_argument("text", nargs="+", help="What to ask")
     _verb("status", cmd_voice_status, "Service health plus the model/effort it runs")
+    st = _verb("state", cmd_voice_state, "Set the portal status chip (used by the speech hooks)")
+    st.add_argument("state", choices=STATES)
     _verb("start", cmd_voice_start, "Start the service")
     _verb("stop", cmd_voice_stop, "Stop the service (the next start is a fresh conversation)")
     _verb("restart", cmd_voice_restart, "Relaunch in place, same conversation")
