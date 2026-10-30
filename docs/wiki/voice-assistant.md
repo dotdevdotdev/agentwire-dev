@@ -173,32 +173,6 @@ turn runs that row is the spinner (`· Discombobulating… (31s · ↓ 2.8k toke
 builds add `esc to interrupt`); after it, `✻ Worked for 6s · done 8:08 AM`. A live
 dialog is `blocked`. Anything without a readable input box is `unknown`, never `idle`.
 
-## Eval
-
-```
-uv run python scripts/voice_eval.py [--efforts medium,low] [--skip-approvals] [--out DIR]
-```
-
-Drives real throwaway assistant sessions (`va-eval-<effort>`: the role, Haiku 5.5, its
-real hooks) over the text path and writes `results.md` / `results.json`:
-
-- **latency:** ack and report time, measured from the start of the send
-- **brevity:** words per utterance
-- **every request gets a start AND an end utterance**
-- **busy/idle correctness:** answers checked against `agentwire list --state`, with a
-  real busy fixture session
-- **failure reporting**
-- **the four approval flows:** approve, deny+redirect, unclear, standing grant, on real
-  dialogs
-- **the playback lane:** non-overlap across processes, plus the stale-ack drop
-- **tokens per request**
-
-It is silent: `AGENTWIRE_VOICE_EVAL_LOG` makes `say` and `voice state` append to the
-run's log instead of playing or posting. It is isolated: the sessions get this
-checkout's damage-control hooks in their own `--settings`, `AGENTWIRE_DIR` and the grant
-store point into the run directory, and every session is killed at the end. Nothing
-machine-wide changes. Results from the first runs are on #1198.
-
 ## Known gaps (tracked in #1198)
 
 - Claude Code fires the permission `Notification` a few seconds after the dialog

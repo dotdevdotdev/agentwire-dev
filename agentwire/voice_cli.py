@@ -524,10 +524,6 @@ def cmd_voice_state(args) -> int:
     """
     from . import voice_grants
     from .core import _get_portal_url, portal_request
-    from .voice_hooks import record_voice_eval
-
-    if record_voice_eval({"event": "state", "state": args.state}):
-        return _output_result(True, args.json, f"state {args.state} (eval log)", state=args.state)
     try:
         r = portal_request("POST", f"{_get_portal_url()}/api/voice/state",
                            json={"state": args.state, "grants": len(voice_grants.active())},

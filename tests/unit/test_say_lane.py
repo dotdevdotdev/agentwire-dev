@@ -68,31 +68,3 @@ def test_a_turn_the_lane_dropped_plays_nothing(local_say, monkeypatch):
     assert _say("On it.", "agentwire-voice", kind="ack") == 0
     assert played == []
     assert [i["kind"] for i in lane._read()["items"]] == ["say", "report"]
-
-
-def test_the_eval_log_records_instead_of_speaking(local_say, tmp_path, monkeypatch):
-    """scripts/voice_eval.py measures a real assistant silently: with the eval
-    log set, `say` and `voice state` record (time, kind, capped text) and do
-    nothing else — no playback, no portal."""
-    import argparse
-    import json
-
-    from agentwire import voice_cli
-
-    played, toasts, _ = local_say
-    log = tmp_path / "eval.jsonl"
-    monkeypatch.setenv("AGENTWIRE_VOICE_EVAL_LOG", str(log))
-    monkeypatch.delenv("TMUX", raising=False)
-    posted = []
-    monkeypatch.setattr("agentwire.core.portal_request", lambda *a, **k: posted.append(a))
-
-    long = ("Three sessions are busy. The rest is a long tail of detail that nobody "
-            "wants read aloud to them.")
-    assert _say(long, "agentwire-voice", kind="report") == 0
-    assert voice_cli.cmd_voice_state(argparse.Namespace(state="done", json=False)) == 0
-
-    rows = [json.loads(line) for line in log.read_text().splitlines()]
-    assert [(r["event"], r.get("kind"), r.get("text"), r.get("state")) for r in rows] == [
-        ("say", "report", "Three sessions are busy.", None), ("state", None, None, "done")]
-    assert rows[0]["display"] == long
-    assert played == [] and toasts == [] and posted == []
