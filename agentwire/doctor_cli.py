@@ -660,6 +660,31 @@ def _render_damage_control_section() -> int:
     else:
         print("  [ok] Damage-control hook timeouts match the scan budget")
 
+    # Fail-open vs fail-closed (#1219): Claude Code runs the tool call anyway when
+    # a hook crashes, times out or cannot start, unless the registration says
+    # onFailure:block (Claude Code >= 2.1.295).
+    cc_version = safety_commands.claude_code_version()
+    cc_text = safety_commands._version_text(cc_version)
+    supported = safety_commands.onfailure_supported(cc_version)
+    if supported is False:
+        print(f"  [!!] Claude Code {cc_text} predates onFailure:block (>= "
+              f"{safety_commands._version_text(safety_commands.ONFAILURE_MIN_CLAUDE_VERSION)}): "
+              "damage-control FAILS OPEN on a hook crash, timeout or missing interpreter")
+        print("       Fix: upgrade Claude Code")
+        issues += 1
+    elif supported is None:
+        print("  [..] Claude Code version unknown (`claude --version` failed); cannot confirm onFailure support")
+    else:
+        print(f"  [ok] Claude Code {cc_text} supports onFailure:block")
+    onfailure_drift = safety_commands.damage_control_onfailure_drift()
+    if onfailure_drift:
+        print(f"  [!!] Damage-control hooks registered WITHOUT onFailure:block (fail open): "
+              f"{', '.join(onfailure_drift)}")
+        print("       Fix: agentwire hooks install")
+        issues += 1
+    else:
+        print("  [ok] Damage-control hooks fail closed (onFailure:block)")
+
     # Built-in unattended grants that name no live rule (#914 / #916). These
     # read as working policy and are inert — the whole `DEFAULT_UNATTENDED_ALLOW`
     # set went silently dead on this machine because the installed tooldefs are

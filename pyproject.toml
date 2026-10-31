@@ -242,6 +242,8 @@ markers = [
     # deployment paths (#893). READ-ONLY by intent — the session-scoped backstop
     # still fails the run if an opted-out test writes anything.
     "real_agentwire_home: sees the real ~/.agentwire paths instead of the tmp redirect (#893)",
+    # Keeps the real hook selftest + `claude --version` probe (#1219); every other test gets stubs.
+    "real_hook_probe: runs the real damage-control selftest and claude --version probe (#1219)",
 ]
 asyncio_mode = "auto"
 
