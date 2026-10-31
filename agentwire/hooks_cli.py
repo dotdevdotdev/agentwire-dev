@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
+from .claude_settings import SettingsError, edit_claude_settings, settings_path
 from .utils.paths import claude_dir
 
 
@@ -302,7 +303,8 @@ def register_hook_in_settings(event: str, hook_name: str) -> bool:
     """Register a hook under `event` in Claude's settings.json.
 
     Returns True if settings were updated (added, or its matcher corrected to
-    the current :func:`hook_matcher`), False if already configured.
+    the current :func:`hook_matcher`), False if already configured. Raises
+    ``SettingsError`` (file untouched) when settings.json is unparseable (#1220).
 
     Claude Code hook format:
     {
@@ -318,31 +320,16 @@ def register_hook_in_settings(event: str, hook_name: str) -> bool:
       }
     }
     """
-    settings_file = claude_dir() / "settings.json"
     # Use ~ for portability
     hook_command = f"~/.claude/hooks/{hook_name}"
-
-    # Load existing settings or create new
-    if settings_file.exists():
-        try:
-            settings = json.loads(settings_file.read_text())
-        except json.JSONDecodeError:
-            settings = {}
-    else:
-        settings = {}
-
-    # Ensure hooks structure exists
-    if "hooks" not in settings:
-        settings["hooks"] = {}
-    if event not in settings["hooks"]:
-        settings["hooks"][event] = []
-
     matcher = hook_matcher(hook_name)
 
-    # Check if already registered (check nested hooks array)
-    for entry in settings["hooks"][event]:
-        if "hooks" in entry:
-            for h in entry["hooks"]:
+    def mutate(settings: dict) -> bool:
+        entries = settings.setdefault("hooks", {}).setdefault(event, [])
+
+        # Check if already registered (check nested hooks array)
+        for entry in entries:
+            for h in entry.get("hooks", ()):
                 if h.get("command") == hook_command:
                     if entry.get("matcher") == matcher or matcher == ".*":
                         # Already registered. A default-matcher hook keeps
@@ -350,23 +337,15 @@ def register_hook_in_settings(event: str, hook_name: str) -> bool:
                         return False
                     # Registered under an older matcher: correct it in place.
                     entry["matcher"] = matcher
-                    settings_file.write_text(json.dumps(settings, indent=2))
                     return True
 
-    # Add hook with correct Claude Code format
-    hook_entry = {
-        "matcher": matcher,
-        "hooks": [
-            {"type": "command", "command": hook_command}
-        ]
-    }
-    settings["hooks"][event].append(hook_entry)
+        entries.append({
+            "matcher": matcher,
+            "hooks": [{"type": "command", "command": hook_command}],
+        })
+        return True
 
-    # Write back
-    settings_file.parent.mkdir(parents=True, exist_ok=True)
-    settings_file.write_text(json.dumps(settings, indent=2))
-
-    return True
+    return edit_claude_settings(mutate)
 
 
 class ManagedHook(NamedTuple):
@@ -533,6 +512,10 @@ def install_hooks(
             from agentwire.safety_commands import unattended_grant_notice
             for line in unattended_grant_notice():
                 print(line)
+        if dc.get("settings_error"):
+            raise SettingsError(dc["settings_error"])
+    except SettingsError:
+        raise
     except Exception as e:
         print(f"  Warning: damage-control heal failed: {e}")
 
@@ -549,7 +532,7 @@ def cmd_hooks_install(args) -> int:
     allow_foreign = getattr(args, "allow_foreign_source", False)
     try:
         results = install_hooks(force=args.force, copy=args.copy, allow_foreign=allow_foreign)
-    except LinkRefusedError as e:
+    except (LinkRefusedError, SettingsError) as e:
         print(str(e))
         return 1
     if any(state == "refused-foreign" for state in results.values()):
@@ -589,48 +572,32 @@ def cmd_hooks_install(args) -> int:
 def unregister_hook_from_settings(event: str, hook_name: str) -> bool:
     """Remove a hook registered under `event` from Claude's settings.json.
 
-    Returns True if settings were updated, False if not found.
+    Returns True if settings were updated, False if not found. Raises
+    ``SettingsError`` (file untouched) when settings.json is unparseable.
     """
-    settings_file = claude_dir() / "settings.json"
     hook_command = f"~/.claude/hooks/{hook_name}"
 
-    if not settings_file.exists():
-        return False
-
-    try:
-        settings = json.loads(settings_file.read_text())
-    except json.JSONDecodeError:
-        return False
-
-    if "hooks" not in settings or event not in settings["hooks"]:
-        return False
-
-    # Filter out entries containing our hook
-    original_len = len(settings["hooks"][event])
-    new_entries = []
-    for entry in settings["hooks"][event]:
-        if "hooks" in entry:
-            # Check if any hook in this entry matches ours
-            has_our_hook = any(h.get("command") == hook_command for h in entry["hooks"])
-            if not has_our_hook:
-                new_entries.append(entry)
+    def mutate(settings: dict) -> bool:
+        entries = settings.get("hooks", {}).get(event)
+        if not entries:
+            return False
+        kept = [
+            entry for entry in entries
+            if not any(h.get("command") == hook_command for h in entry.get("hooks", ()))
+        ]
+        if len(kept) == len(entries):
+            return False  # Hook wasn't registered
+        if kept:
+            settings["hooks"][event] = kept
         else:
-            new_entries.append(entry)
+            del settings["hooks"][event]
+            if not settings["hooks"]:
+                del settings["hooks"]
+        return True
 
-    settings["hooks"][event] = new_entries
-
-    if len(settings["hooks"][event]) == original_len:
-        return False  # Hook wasn't registered
-
-    # Clean up empty structures
-    if not settings["hooks"][event]:
-        del settings["hooks"][event]
-    if not settings["hooks"]:
-        del settings["hooks"]
-
-    # Write back
-    settings_file.write_text(json.dumps(settings, indent=2))
-    return True
+    if not settings_path().exists():
+        return False
+    return edit_claude_settings(mutate)
 
 
 def is_hook_registered(event: str, hook_name: str) -> bool:
@@ -668,7 +635,12 @@ def cmd_hooks_uninstall(args) -> int:
             print(f"Removed: {target}")
             removed_any = True
         for ev in event:
-            if unregister_hook_from_settings(ev, hook_name):
+            try:
+                unregistered = unregister_hook_from_settings(ev, hook_name)
+            except SettingsError as e:
+                print(str(e))
+                return 1
+            if unregistered:
                 print(f"Unregistered {hook_name} ({ev}) from Claude settings.json")
 
     if not removed_any:

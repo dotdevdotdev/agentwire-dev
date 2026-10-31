@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agentwire.claude_settings import SettingsError, edit_claude_settings
 from agentwire.utils.paths import claude_dir
 
 try:
@@ -765,55 +766,50 @@ def register_damage_control_in_settings() -> int:
 
     Idempotent: appends missing matchers/commands and sets the expected
     ``timeout`` on existing agentwire-owned entries. Returns the number of
-    entries added or updated.
+    entries added or updated. Raises ``SettingsError`` (file untouched) when
+    the settings file is unparseable (#1220).
     """
-    settings_file = claude_dir() / "settings.json"
-    if settings_file.exists():
-        try:
-            settings = json.loads(settings_file.read_text())
-        except json.JSONDecodeError:
-            settings = {}
-    else:
-        settings = {}
-
-    hooks = settings.setdefault("hooks", {}) if isinstance(settings, dict) else None
-    pre = hooks.setdefault("PreToolUse", []) if isinstance(hooks, dict) else None
-    if not isinstance(pre, list):
-        # Malformed settings.json: rewriting it would destroy what the user has.
-        print("settings.json has a malformed hooks.PreToolUse — damage-control "
-              "hooks not registered; fix the file and re-run", file=sys.stderr)
-        return 0
-
     added = 0
-    for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
-        command = f"~/.agentwire/hooks/damage-control/{hook_file}"
-        # Dedup on the (matcher, command) pair, not the command alone: several
-        # matchers (Read/Grep/Glob) legitimately share one hook script, so a
-        # command-only check would register only the first and silently drop the
-        # rest.
-        owned = _owned_hook_entries(pre, matcher, command)
-        if owned:
-            # An existing agentwire-owned entry keeps its place but gets the
-            # timeout: one registered without it (every pre-#1108 install)
-            # runs under the harness default, far above the scan deadline.
-            for h in owned:
-                if h.get("timeout") != HOOK_TIMEOUT_SECONDS:
-                    h["timeout"] = HOOK_TIMEOUT_SECONDS
-                    added += 1
-            continue
-        pre.append({
-            "matcher": matcher,
-            # An explicit timeout: a hook that outlives it is killed and the
-            # tool call RUNS (fail-open), so the scan's own deadline
-            # (SCAN_DEADLINE_SECONDS) must sit well inside this value (#1108).
-            "hooks": [{"type": "command", "command": command,
-                       "timeout": HOOK_TIMEOUT_SECONDS}],
-        })
-        added += 1
 
-    if added:
-        settings_file.parent.mkdir(parents=True, exist_ok=True)
-        settings_file.write_text(json.dumps(settings, indent=2))
+    def mutate(settings: Dict[str, Any]) -> bool:
+        nonlocal added
+        added = 0
+        hooks = settings.setdefault("hooks", {})
+        pre = hooks.setdefault("PreToolUse", []) if isinstance(hooks, dict) else None
+        if not isinstance(pre, list):
+            # Malformed hooks.PreToolUse: rewriting it would destroy what the user has.
+            print("settings.json has a malformed hooks.PreToolUse — damage-control "
+                  "hooks not registered; fix the file and re-run", file=sys.stderr)
+            return False
+
+        for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
+            command = f"~/.agentwire/hooks/damage-control/{hook_file}"
+            # Dedup on the (matcher, command) pair, not the command alone: several
+            # matchers (Read/Grep/Glob) legitimately share one hook script, so a
+            # command-only check would register only the first and silently drop the
+            # rest.
+            owned = _owned_hook_entries(pre, matcher, command)
+            if owned:
+                # An existing agentwire-owned entry keeps its place but gets the
+                # timeout: one registered without it (every pre-#1108 install)
+                # runs under the harness default, far above the scan deadline.
+                for h in owned:
+                    if h.get("timeout") != HOOK_TIMEOUT_SECONDS:
+                        h["timeout"] = HOOK_TIMEOUT_SECONDS
+                        added += 1
+                continue
+            pre.append({
+                "matcher": matcher,
+                # An explicit timeout: a hook that outlives it is killed and the
+                # tool call RUNS (fail-open), so the scan's own deadline
+                # (SCAN_DEADLINE_SECONDS) must sit well inside this value (#1108).
+                "hooks": [{"type": "command", "command": command,
+                           "timeout": HOOK_TIMEOUT_SECONDS}],
+            })
+            added += 1
+        return bool(added)
+
+    edit_claude_settings(mutate)
     return added
 
 
@@ -1283,7 +1279,7 @@ def heal_damage_control(
         "rules_removed": [], "rules_kept_edited": [],
         "tooldefs_removed": [], "tooldefs_kept_edited": [],
         "packs_migrated": [],
-        "matchers_added": 0, "policy_scaffolded": False,
+        "matchers_added": 0, "policy_scaffolded": False, "settings_error": None,
         "refused": False, "provenance": "",
     }
 
@@ -1368,7 +1364,12 @@ def heal_damage_control(
         for line in unattended_grant_notice():
             log(line)
 
-    added = register_damage_control_in_settings()
+    try:
+        added = register_damage_control_in_settings()
+    except SettingsError as e:
+        summary["settings_error"] = str(e)
+        log(f"⚠️  {e}")
+        added = 0
     summary["matchers_added"] = added
     if added:
         log(f"✓ Registered or updated {added} damage-control matcher{'s' if added != 1 else ''}")
@@ -1456,7 +1457,7 @@ def safety_install_cmd(
     print()
     summary = heal_damage_control(force=force, allow_foreign=allow_foreign)
 
-    if summary["refused"]:
+    if summary["refused"] or summary["settings_error"]:
         return 1
 
     touched = any(
