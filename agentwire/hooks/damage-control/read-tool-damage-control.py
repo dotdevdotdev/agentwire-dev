@@ -36,7 +36,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "29b6b8ea5df086ed9bfdb9a94b6b3ba475379ab628f3e3ef97089b9402f87fe6", "generated_at": "2026-10-30T13:30:44Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "e8b843f7c6cf9b512d4284f424effcad8545ed9fa6fd19fc1ba7425bb448bf33", "generated_at": "2026-10-31T14:18:13Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -532,8 +532,25 @@ def matches_path_in_command(pattern: str, command: str) -> bool:
     return True
 
 
+_DRVFS_RE = re.compile(r"^/mnt/[a-zA-Z](?:/|$)")
+
+
+def _casefolds_paths(path: str) -> bool:
+    """Whether ``path`` lives on a filesystem that is case-insensitive by default.
+
+    macOS (APFS) and Windows (NTFS) always; Linux only under a WSL drvfs mount
+    (``/mnt/<drive>/``). Linux stays exact-case: ``~/.SSH`` and ``~/.ssh`` are
+    different files there, and folding would block the innocent one (#1217).
+    """
+    return sys.platform in ("darwin", "win32") or bool(_DRVFS_RE.match(path))
+
+
 def match_path(file_path: str, pattern: str) -> bool:
-    """Match a single absolute file path against a pattern (glob or prefix)."""
+    """Match a single absolute file path against a pattern (glob or prefix).
+
+    On a case-insensitive filesystem both sides are casefolded, so a case
+    variant that reaches the same file matches the same pattern (#1217).
+    """
     expanded_pattern = os.path.expanduser(pattern)
     normalized = os.path.normpath(file_path)
     expanded_normalized = os.path.expanduser(normalized)
@@ -546,10 +563,30 @@ def match_path(file_path: str, pattern: str) -> bool:
         if fnmatch.fnmatch(basename.lower(), lower_pattern):
             return True
         return False
+    if _casefolds_paths(expanded_normalized):
+        expanded_normalized = expanded_normalized.lower()
+        expanded_pattern = expanded_pattern.lower()
     return (
         expanded_normalized.startswith(expanded_pattern)
         or expanded_normalized == expanded_pattern.rstrip('/')
     )
+
+
+def _path_forms(file_path: str) -> List[str]:
+    """The lexical path plus its symlink-resolved form, when they differ.
+
+    A symlink into a guarded directory must be judged by where it lands, while
+    the lexical form is kept so a path that does not exist yet (a Write target)
+    is still matched as spelled — same pairing the Bash channel uses (#1217).
+    """
+    forms = [file_path]
+    try:
+        resolved = os.path.realpath(os.path.expanduser(file_path))
+    except (OSError, ValueError):
+        return forms
+    if resolved != file_path:
+        forms.append(resolved)
+    return forms
 
 
 def _parse_allowed_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -10340,6 +10377,15 @@ def _decide_rules(
 
 
 def check_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
+    """:func:`_check_path_form` over the lexical and symlink-resolved path (#1217)."""
+    for form in _path_forms(file_path):
+        blocked, reason = _check_path_form(form, config)
+        if blocked:
+            return True, reason
+    return False, ""
+
+
+def _check_path_form(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
     """File-path-only check used by edit/write hooks. Returns ``(blocked, reason)``.
 
     The protected control plane is checked FIRST, before the kill switch — the
@@ -10372,6 +10418,15 @@ def check_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def check_read_path(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
+    """:func:`_check_read_path_form` over the lexical and resolved path (#1217)."""
+    for form in _path_forms(file_path):
+        blocked, reason = _check_read_path_form(form, config)
+        if blocked:
+            return True, reason
+    return False, ""
+
+
+def _check_read_path_form(file_path: str, config: Dict[str, Any]) -> Tuple[bool, str]:
     """File-path-only check for content-reading tools (Read/Grep/Glob).
 
     The Bash/Edit/Write hooks never see native ``Read``/``Grep``/``Glob`` tool
