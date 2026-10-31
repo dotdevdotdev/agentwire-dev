@@ -150,3 +150,21 @@ class TestSettingsRegistration:
 
 
 
+
+
+def test_tracked_hook_scripts_stay_executable():
+    """Hooks are symlinked into ~/.claude/hooks and exec'd directly; a lost
+    exec bit (e.g. a tool rewriting the file) silently stops them running."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    out = subprocess.run(
+        ["git", "ls-files", "-s", "agentwire/hooks"], cwd=root,
+        capture_output=True, text=True, check=True,
+    ).stdout
+    bad = [
+        line.split("\t", 1)[1] for line in out.splitlines()
+        if line.split("\t", 1)[1].endswith(".sh") and not line.startswith("100755")
+    ]
+    assert not bad, bad
