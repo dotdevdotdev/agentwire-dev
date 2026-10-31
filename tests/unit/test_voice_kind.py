@@ -19,10 +19,6 @@ Three things are asserted here and nowhere else:
    dead-lettered voice message email the owner on one path and vanish on
    another. :func:`inbox.load_bearing` is the one implementation; the
    set-equality assertion is what stops a future kind escaping it.
-
-3. **The ``_cohort_held`` interaction**, which is the non-obvious part: it
-   filters by SENDER, not kind, so a brand-new kind silently inherits the hold
-   while ``cohort.REPORT_KINDS`` (which does filter by kind) does not know it.
 """
 
 import pytest

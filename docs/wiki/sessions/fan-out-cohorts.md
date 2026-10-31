@@ -117,14 +117,19 @@ already flags. The children of the 2026-08-01 leak were `agentwire new`
 sessions — `main` topology — and those *are* torn down, because nothing else
 ever reaps them.
 
-Reports are read **straight off the inbox files**, not waited for as a paste
-into the parent's box — the parent is mid-tool-call, and a long report pasted
-into an input box is exactly the delivery path #851 covers. The drain
-cooperates: while a child is still `pending`, its messages to the parent are
-**held** (deferred with no attempt penalty, reason `cohort_held`) so the paste
-can't race the collection and leave the child unresolved until its deadline.
-The hold is bounded by the ledger — once the cohort resolves or the sweeper
-drops it, anything left delivers normally.
+Reports are read **straight off the inbox files**, and the drain does **not**
+hold them (#1224). A child's report is an ordinary message: if the parent never
+calls `wait` (an interactive orchestrator driven by a human) the drain pastes it
+within one tick like any other. A hold here silently muted exactly the sessions
+that most needed the report — 580 `cohort_held` deferrals, indistinguishable
+from a broken queue. Instead every confirmed delivery calls
+`cohort.record_delivery`, which resolves the child in the ledger
+(`reported` / `resolved_idle`, `delivered: true`, report text kept) so a
+delivered report can never leave a child `pending` until its deadline. The
+kill is a separate step: `collect` and the sweep tear down delivered children
+(`_finish_delivered`) *after* delivery is confirmed, so collect → consume → kill
+still holds. `wait` and the drain can both see one message; the worst case is a
+report both pasted and returned, never a lost one.
 
 > **Collect-then-kill is load-bearing.** `agentwire kill` runs
 > `inbox.gc_sender()`, which dead-letters the killed session's still-pending
@@ -137,7 +142,9 @@ A file-existence + `jq` check at the top of `idle-handler.sh`, the same shape
 as the usage-limit park guard (#274) and the prompt-router guard (#276):
 pending children and the deadline not yet passed → `exit 0`. It covers the
 parent going idle *between* `wait` calls, which is where the silent version of
-this failure lives.
+this failure lives. It applies only on paths that **kill** (a worker pane's
+reap, a scheduled task's summary/`/exit`); a plain pane-0 interactive
+orchestrator reaches no kill, so its idle notice is no longer suppressed (#1224).
 
 A sibling gate in the same hook (#1103) swallows an idle while the session's
 *own* background shell/monitor is still running (or may be — unknown holds), so a child waiting on a

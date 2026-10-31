@@ -3,9 +3,7 @@
 Three things carry real risk and are tested accordingly:
 
 1. **The drain seam.** The adapter must intercept before the gone gate (or the
-   buddy's mail dead-letters in ~5 ticks) and after the cohort hold (or it
-   consumes a report ``wait --children`` is about to collect). Both orderings
-   are asserted, plus the inertness guarantee for every session that hasn't
+   buddy's mail dead-letters in ~5 ticks). That ordering is asserted, plus the inertness guarantee for every session that hasn't
    opted in.
 2. **The tool allowlist.** Voice adds mis-transcription as a failure mode, so
    the model must never be able to name a command — only pick a tool. A garbled

@@ -79,6 +79,81 @@ class TestCollect:
         assert isolate["killed"] == [children[0]]
 
 
+class TestDrainDeliveredReports:
+    """#1224 — there is no cohort hold: a child's report is delivered like any
+    other message, and the delivery resolves the child in the ledger so it can
+    never sit `pending` until the deadline (then be killed as a `timeout`)."""
+
+    @staticmethod
+    def _drain(monkeypatch):
+        from agentwire import prompt_router
+
+        monkeypatch.setattr(prompt_router, "input_box_content_sgr", lambda v: "")
+        monkeypatch.setattr(prompt_router, "capture", lambda *a, **k: "")
+        monkeypatch.setattr(prompt_router, "is_agent_pane", lambda s, p=0: True)
+        monkeypatch.setattr(inbox, "_dedup_landed", lambda s, m: [])
+        sent = []
+        monkeypatch.setattr(prompt_router, "safe_deliver",
+                            lambda s, p, text: (sent.append(text) or (True, "ok")))
+        return sent
+
+    def test_report_from_pending_child_is_delivered_not_held(self, isolate, monkeypatch):
+        children = _fan_out(isolate, n=1)
+        inbox.enqueue("memory-manager", "all merged", kind="done", sender=children[0])
+        sent = self._drain(monkeypatch)
+        res = inbox.flush_session("memory-manager")
+        assert res["delivered"] == 1 and res["reason"] == "delivered"
+        assert "all merged" in sent[0]
+
+    def test_delivered_report_does_not_leave_the_child_pending(self, isolate, monkeypatch):
+        children = _fan_out(isolate, n=2)
+        for c in children:
+            inbox.enqueue("memory-manager", f"report {c}", kind="done", sender=c)
+        self._drain(monkeypatch)
+        inbox.flush_session("memory-manager")
+        assert cohort.pending("memory-manager") == []
+        assert not cohort.blocking("memory-manager")
+
+    def test_wait_returns_drain_delivered_reports_and_kills_after(self, isolate, monkeypatch):
+        children = _fan_out(isolate, n=1)
+        inbox.enqueue("memory-manager", "shipped", kind="done", sender=children[0])
+        self._drain(monkeypatch)
+        inbox.flush_session("memory-manager")
+        assert isolate["killed"] == []  # delivery alone never kills
+        result = cohort.wait("memory-manager", timeout=5)
+        assert result["resolved"] and result["failed"] == []
+        assert result["reports"] == [{"session": children[0], "report": "shipped"}]
+        assert isolate["killed"] == children
+
+    def test_sweep_tears_down_a_delivered_child_when_wait_never_runs(self, isolate, monkeypatch):
+        children = _fan_out(isolate, n=1)
+        inbox.enqueue("memory-manager", "shipped", kind="done", sender=children[0])
+        self._drain(monkeypatch)
+        inbox.flush_session("memory-manager")
+        cohort.sweep()
+        assert isolate["killed"] == children
+
+    def test_idle_placeholder_resolves_idle_and_a_report_outranks_it(self, isolate, monkeypatch):
+        a, b = _fan_out(isolate, n=2)
+        inbox.enqueue("memory-manager", "is idle", kind="idle", sender=a)
+        inbox.enqueue("memory-manager", "is idle", kind="idle", sender=b)
+        inbox.enqueue("memory-manager", "real", kind="done", sender=b)
+        self._drain(monkeypatch)
+        inbox.flush_session("memory-manager")
+        states = {c["session"]: c["state"]
+                  for c in cohort.load("memory-manager")["children"]}
+        assert states == {a: cohort.IDLE, b: cohort.REPORTED}
+
+    def test_worktree_child_delivered_is_left_alive(self, isolate, monkeypatch):
+        isolate["live"].update({"orchestrator", "proj-feature"})
+        cohort.enroll("orchestrator", "proj-feature", topology=cohort.WORKTREE)
+        inbox.enqueue("orchestrator", "PR up", kind="done", sender="proj-feature")
+        self._drain(monkeypatch)
+        inbox.flush_session("orchestrator")
+        result = cohort.wait("orchestrator", timeout=5)
+        assert result["left_alive"] == ["proj-feature"] and isolate["killed"] == []
+
+
 class TestWorktreeChildrenAreNotTornDown:
     """#756 — a worktree child holds a branch and possibly an open PR, whose
     teardown follows merge verification, and its session is where a reviewer
