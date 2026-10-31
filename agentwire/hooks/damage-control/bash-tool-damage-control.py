@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.8"
+# requires-python = ">=3.9"
 # dependencies = ["pyyaml"]
 # ///
 """
@@ -16,6 +16,27 @@ Implementation: the body of ``agentwire/safety/_core.py`` is inlined below
 between the BEGIN/END GENERATED markers. Edit ``_core.py``, then run
 ``scripts/regen_damage_control_hooks.py`` — never edit between the markers.
 """
+
+from __future__ import annotations
+
+import os as _os
+import sys as _sys
+
+
+def _fail_closed_on_crash(exc_type, exc, tb):
+    """Any uncaught error (import-time included) must BLOCK: exit 1 is non-blocking (#1223)."""
+    try:
+        import traceback
+
+        traceback.print_exception(exc_type, exc, tb)
+        _sys.stderr.write("damage-control hook crashed before deciding — blocking (fail closed)\n")
+        _sys.stderr.flush()
+    finally:
+        _os._exit(2)
+
+
+_sys.excepthook = _fail_closed_on_crash
+
 
 import json
 import os
