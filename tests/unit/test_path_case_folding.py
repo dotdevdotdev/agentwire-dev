@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from agentwire.safety import _core
 from agentwire.safety._core import check_path, check_read_path, load_config, match_path
 
 pytestmark = pytest.mark.real_agentwire_home
@@ -65,7 +66,11 @@ def test_symlink_into_zero_access_dir_is_blocked(tmp_path, monkeypatch, config):
     target.mkdir()
     link = tmp_path / "innocent"
     link.symlink_to(target)
-    cfg = dict(config, zeroAccessPaths=[str(target) + "/"])
+    # tmp_path sits under /tmp on Linux, which core.yaml allowlists; an allowlist
+    # entry outranks zero-access, so isolate the symlink behavior from it.
+    monkeypatch.setattr(_core, "_read_global_allowed_paths", lambda: [])
+    monkeypatch.setattr(_core, "_find_project_config", lambda: ("", []))
+    cfg = dict(config, zeroAccessPaths=[str(target) + "/"], allowedPaths=[])
     path = str(link / "key")
     assert check_read_path(path, cfg)[0]
     assert check_path(path, cfg)[0]
