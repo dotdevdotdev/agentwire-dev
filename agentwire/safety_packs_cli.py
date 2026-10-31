@@ -72,6 +72,10 @@ def _heal_after_change() -> int:
         print("State recorded, but files were NOT synced: this checkout is not the "
               "installed tool. Run `agentwire safety install --yes` from it.", file=sys.stderr)
         return 1
+    if summary.get("settings_error"):
+        print("State recorded, but Claude settings were NOT updated: "
+              f"{summary['settings_error']}", file=sys.stderr)
+        return 1
     return 0
 
 
