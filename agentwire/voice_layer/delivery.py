@@ -14,13 +14,8 @@ addressed to it dead-letters in ~5 ticks (``GONE_MAX_ATTEMPTS``).
 
 Rather than fork the inbox (the explicit non-goal), this module is the seam:
 :func:`adapter_for` answers "does this recipient want non-tmux delivery?" and
-``flush_session`` consults it once, immediately after the cohort hold and
-BEFORE the gone gate. Ordering matters in both directions:
-
-- **After the cohort hold** — a report from a child the recipient is still
-  waiting on belongs to ``agentwire wait --children``, which reads it straight
-  off disk. Spooling it first would consume it out from under that collection.
-- **Before the gone gate** — that gate is the one that would kill the message.
+``flush_session`` consults it once, BEFORE the gone gate — that gate is the
+one that would kill the message.
 
 Delivery here means *handed to the buddy's spool*, an append-only JSONL file the
 voice layer reads. Nothing pushes into the conversation from THIS side: the drain

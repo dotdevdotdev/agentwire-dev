@@ -68,7 +68,8 @@ class TestCohortGuard:
                     return "\n".join(lines[start:end + 1])
         raise AssertionError("cohort guard block is unterminated")
 
-    def _run(self, tmp_path, ledger: dict | str | None, session="memory-manager"):
+    def _run(self, tmp_path, ledger: dict | str | None, session="memory-manager",
+             pane_index="1"):
         """Run the guard with a fake HOME. Returns True if idle handling continues."""
         if ledger is not None:
             path = tmp_path / ".agentwire" / "cohorts"
@@ -78,6 +79,7 @@ class TestCohortGuard:
         script = (
             "log() { :; }\n"
             f'tmux_session="{session}"\n'
+            f'pane_index="{pane_index}"\n'
             f"{self._guard_block()}\n"
             "echo CONTINUED\n"
         )
@@ -99,6 +101,17 @@ class TestCohortGuard:
 
     def test_pending_children_suppress_idle_handling(self, tmp_path):
         assert not self._run(tmp_path, self._ledger(["pending", "reported"]))
+
+    def test_interactive_pane0_parent_is_not_suppressed(self, tmp_path):
+        # #1224: pane 0 with no scheduled task reaches no kill path, only the
+        # parent notice — the guard must not mute it.
+        assert self._run(tmp_path, self._ledger(["pending"]), pane_index="0")
+
+    def test_scheduled_task_pane0_is_still_protected(self, tmp_path):
+        tasks = tmp_path / ".agentwire" / "tasks"
+        tasks.mkdir(parents=True)
+        (tasks / "memory-manager.json").write_text("{}")
+        assert not self._run(tmp_path, self._ledger(["pending"]), pane_index="0")
 
     def test_corrupt_ledger_fails_open(self, tmp_path):
         assert self._run(tmp_path, "{ this is not json")

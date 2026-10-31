@@ -42,17 +42,26 @@ if [[ "$notification_type" == "idle_prompt" ]]; then
   fi
 
   # Fan-out cohort guard (#852): this session spawned children that haven't
-  # reported yet. Idle here means "waiting", not "done" — the summary prompt
-  # would elicit a roll-up with nothing in it, and the second-idle /exit would
-  # reap the parent while its children are still working (and orphan their
-  # report-backs into dead-letter + owner email).
+  # reported yet. On a path that KILLS (a worker pane's reap, a scheduled
+  # task's summary/exit pass) idle means "waiting", not "done" — the second
+  # idle would /exit the parent while its children are still working and
+  # orphan their report-backs into dead-letter + owner email.
+  #
+  # A plain pane-0 session (an interactive orchestrator) reaches no kill, only
+  # the parent notice, so the guard does NOT apply there (#1224): suppressing
+  # it just muted the orchestrator's own idle notice. Child reports are never
+  # held either — the inbox drain delivers them and records the delivery in
+  # this ledger.
   #
   # Fails OPEN by design: a missing, corrupt, or past-deadline ledger must not
   # be able to wedge a task alive forever. The watchdog sweeper is the other
   # half — it reaps an orphaned cohort if THIS session dies first, and marks
   # children whose sessions have vanished, so the guard self-clears.
   cohort_file="$HOME/.agentwire/cohorts/${tmux_session}.json"
-  if [[ -n "$tmux_session" && -f "$cohort_file" ]]; then
+  cohort_kills=0
+  [[ "$pane_index" != "0" ]] && cohort_kills=1
+  [[ -f "$HOME/.agentwire/tasks/${tmux_session}.json" ]] && cohort_kills=1
+  if [[ -n "$tmux_session" && "$cohort_kills" == "1" && -f "$cohort_file" ]]; then
     pending=$(jq -r '[.children[]? | select(.state == "pending")] | length' "$cohort_file" 2>/dev/null || echo 0)
     deadline=$(jq -r '.deadline // 0' "$cohort_file" 2>/dev/null || echo 0)
     now=$(date +%s)

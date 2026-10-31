@@ -403,13 +403,9 @@ else. `voice` moves it into the slot. **Owner ruling, 2026-08-10:**
   make every routine spoken message an alarm, which is exactly the "retires the
   tier" failure the fleet-alert ruling below exists to avoid.
 
-One consequence worth stating, because the two halves filter on different
-fields: `inbox._cohort_held` holds by **sender**, while `cohort.REPORT_KINDS`
-harvests by **kind** and deliberately excludes `voice` (the owner is not a child
-reporting on a task). A `voice` message from a session that *is* a pending
-cohort child is therefore held but not harvested — a deferral, not a loss: it
-stays pending and delivers once the cohort resolves, the same shape `ingest`
-already has.
+`voice` is deliberately excluded from `cohort.REPORT_KINDS` (the owner is not a
+child reporting on a task), so `wait --children` never harvests it; the drain
+delivers it like any other message (there is no cohort hold, #1224).
 
 **One derivation, not four literals.** `ESCALATE_KINDS` is read through
 `inbox.load_bearing()`. Before #985, `doctor`'s dead-letter section and both

@@ -1094,6 +1094,7 @@ def _dedup_landed(session: str, messages: list[Message]) -> list[Message]:
             msg.path.unlink(missing_ok=True)
             consumed.append(msg)
     if consumed:
+        _note_delivered(session, consumed)
         _log_event(
             "delivered_dedup", to=session, count=len(consumed),
             kinds=[m.kind for m in consumed],
@@ -1263,26 +1264,18 @@ def _paste_batch(messages: list[Message]) -> list[Message]:
     return batch
 
 
-def _cohort_held(session: str, messages: list[Message]) -> list[Message]:
-    """Messages from *session*'s still-pending fan-out children (#852).
+def _note_delivered(session: str, messages: list[Message]) -> None:
+    """Tell the cohort ledger these messages were pasted to *session* (#1224).
 
-    Their owner is the parent's ``wait --children`` join, not the drain. Keyed
-    on the cohort being ACTIVE (pending children, deadline not passed), so an
-    expired ledger releases its messages immediately instead of waiting for the
-    sweeper to clean it up. Fails open (returns nothing held) on any error, so
-    a broken cohort ledger can never withhold a message.
+    Called at every site that confirms a delivery, so a child's report that the
+    drain (not ``wait``) delivered still resolves that child. Never raises.
     """
     try:
         from . import cohort
 
-        if not cohort.blocking(session):
-            return []
-        pending = set(cohort.pending(session))
+        cohort.record_delivery(session, messages)
     except Exception:
-        return []
-    if not pending:
-        return []
-    return [m for m in messages if m.sender in pending]
+        pass
 
 
 def flush_session(session: str, force: bool = False) -> dict:
@@ -1309,30 +1302,11 @@ def flush_session(session: str, force: bool = False) -> dict:
         if not messages:
             return {"session": session, "delivered": 0, "deferred": False, "reason": "empty"}
 
-        # Cohort hold (#852): a report from a child this session is still
-        # waiting on belongs to `agentwire wait --children`, which reads it
-        # straight off disk and consumes it before tearing the child down.
-        # Pasting it into the parent's box instead would (a) race that
-        # collection, leaving the child unresolved until its deadline, and
-        # (b) push a long report through the one delivery path #851 shows is
-        # fragile. Deferred WITHOUT penalty and bounded by the cohort's own
-        # deadline: once the ledger resolves or the sweeper drops it, these
-        # deliver normally.
-        held = _cohort_held(session, messages)
-        if held:
-            messages = [m for m in messages if m not in held]
-            _log_event("deferred", to=session, count=len(held), reason="cohort_held")
-            if not messages:
-                return {"session": session, "delivered": 0, "deferred": True,
-                        "reason": "cohort_held"}
-
         # Non-tmux delivery (EXPERIMENTAL, voice-layer spike). A recipient that
         # registered a delivery adapter has no pane to paste into, so every gate
         # below it is inapplicable — and the gone gate would actively kill its
         # mail, since tmux is reachable and the recipient legitimately isn't in
-        # the session list. Sits AFTER the cohort hold on purpose: a held report
-        # belongs to `wait --children`, which reads it off disk, and spooling it
-        # here would consume it out from under that collection. Inert for every
+        # the session list. Inert for every
         # session without a `delivery` key in metadata.json — i.e. all of them.
         from .voice_layer import delivery as _delivery
 
@@ -1342,6 +1316,7 @@ def flush_session(session: str, force: bool = False) -> dict:
                 for msg in messages:
                     if msg.path is not None:
                         msg.path.unlink(missing_ok=True)
+                _note_delivered(session, messages)
                 _log_event(
                     "delivered", to=session, count=len(messages),
                     kinds=[m.kind for m in messages], adapter=reason,
@@ -1425,6 +1400,7 @@ def flush_session(session: str, force: bool = False) -> dict:
                         for m in stuck:
                             if m.path is not None:
                                 m.path.unlink(missing_ok=True)
+                        _note_delivered(session, stuck)
                         _log_event(
                             "stuck_submitted", to=session, count=len(stuck),
                             kinds=[m.kind for m in stuck],
@@ -1538,6 +1514,7 @@ def flush_session(session: str, force: bool = False) -> dict:
             for msg in batch:
                 if msg.path is not None:
                     msg.path.unlink(missing_ok=True)
+            _note_delivered(session, batch)
             _log_event(
                 "delivered", to=session, count=len(batch),
                 kinds=[m.kind for m in batch],

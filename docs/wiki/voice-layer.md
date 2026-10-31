@@ -460,12 +460,9 @@ So there is exactly one new branch in the drain, and its **position is
 load-bearing in both directions**:
 
 ```
-lock → list_messages → cohort hold → ⟨ADAPTER⟩ → gone gate → box gates → safe_deliver
+lock → list_messages → ⟨ADAPTER⟩ → gone gate → box gates → safe_deliver
 ```
 
-- **After the cohort hold** — a report from a child the buddy is waiting on
-  belongs to `agentwire wait --children`, which reads it straight off disk.
-  Spooling it first would consume it out from under that collection.
 - **Before the gone gate** — that is the gate that would kill the mail.
 
 Registration is **data, not code**: a session opts in by carrying `delivery` in
@@ -2194,19 +2191,10 @@ one derivation from `inbox.ESCALATE_KINDS`. A test feeds one message of every
 kind through it and demands the survivors are set-equal to `ESCALATE_KINDS`, so a
 future kind cannot escape the consolidation by being forgotten at a call site.
 
-**The cohort interaction, which filters on two different fields.**
-`inbox._cohort_held` holds by **sender**; `cohort._harvest` harvests by **kind**.
-Under Slice 1 the buddy's write was a `request`, which IS in
-`cohort.REPORT_KINDS` — so had the buddy ever been enrolled as a pending cohort
-child of the recipient, `wait --children` would have harvested the buddy's write
-as a child report and consumed it. `voice` is deliberately **not** in
-`REPORT_KINDS` (the owner is not a child reporting on a task), which closes that
-specific hazard and leaves a benign one in its place: a `voice` message from a
-pending child is held by sender but never harvested, so it stays pending and
-delivers once the cohort resolves — a deferral, not a loss, and the same shape
-`ingest` already has. Both halves are pinned, in
-`tests/unit/test_voice_body_delivery.py::TestTheCohortInteraction` and
-`tests/unit/test_voice_kind.py::TestCohortInteraction`.
+**The cohort interaction.** `voice` is deliberately **not** in
+`cohort.REPORT_KINDS` (the owner is not a child reporting on a task), so
+`wait --children` never harvests it. The drain has no cohort hold (#1224), so a
+`voice` message from a pending child is simply delivered.
 
 ## Cold fleet: the buddy never starts an orchestrator
 
@@ -2702,8 +2690,7 @@ undecided. A next session that picks an answer silently is the failure mode.
 - [x] **Slice 1b — the `voice` kind (#985).** `voice` is in `inbox.KINDS` and
       `ESCALATE_KINDS`; attribution moved from the body front to the kind slot.
       The three hand-written `("done", "escalation")` tuples are gone, replaced
-      by the one `inbox.load_bearing()` derivation, and the `_cohort_held`
-      interaction (held by **sender**, harvested by **kind**) is pinned. See
+      by the one `inbox.load_bearing()` derivation, and the `voice` / `REPORT_KINDS` exclusion is pinned. See
       §4a.
       **The ruling this entry called for**, made by the owner on 2026-08-10
       rather than by the implementer, because it changes behaviour for non-voice

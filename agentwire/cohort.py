@@ -95,11 +95,9 @@ WORKTREE = "worktree"
 # buddy, never a child reporting on its task, so harvesting one into a cohort
 # roll-up would attribute the owner's words to a worker. The seam this creates
 # is worth knowing about, because the two halves filter on different fields:
-# `inbox._cohort_held` holds by SENDER, so if the buddy ever were a pending
-# child, its `voice` message IS held here while _harvest below skips it. That is
-# a deferral, not a loss — the message stays pending and delivers once the
-# cohort resolves, the same shape `ingest` already has. Pinned in
-# tests/unit/test_voice_kind.py::TestCohortInteraction.
+# The inbox drain delivers every kind (there is no cohort hold, #1224), so a
+# `voice` message from a pending child is simply pasted; _harvest below skips it.
+# Pinned in tests/unit/test_voice_kind.py::TestCohortInteraction.
 REPORT_KINDS = ("done", "request", "escalation", "note")
 
 # The idle handler's synthetic placeholder kind (#952). Harvested so the child
@@ -315,6 +313,73 @@ def _mark(data: dict, child: str, state: str, report: str | None = None) -> None
                 entry["report"] = report
 
 
+def record_delivery(parent: str, messages: list) -> None:
+    """Account for report messages the inbox drain pasted to *parent* (#1224).
+
+    The inbox drain delivers a child's report like any other message and
+    unlinks it — so ``wait`` finds nothing in the inbox and would leave the
+    child ``pending`` until the deadline, then kill it as a ``timeout``. The
+    drain therefore resolves the child here, in the ledger, carrying the report
+    text. It deliberately does NOT kill: the kill happens in
+    :func:`_finish_delivered` (from ``collect`` / the sweep), after the
+    delivery is already confirmed, which keeps collect → consume → kill.
+
+    A real report outranks the idle placeholder (``IDLE`` upgrades to
+    ``REPORTED``, never the reverse). Never raises.
+    """
+    try:
+        by_child: dict[str, list] = {}
+        for m in messages:
+            if m.kind in REPORT_KINDS or m.kind == IDLE_KIND:
+                by_child.setdefault(m.sender, []).append(m)
+        if not by_child:
+            return
+        with _locked(parent):
+            data = load(parent)
+            if not data:
+                return
+            changed = False
+            for entry in data["children"]:
+                msgs = by_child.get(entry.get("session"))
+                if not msgs or entry.get("state") not in (PENDING, IDLE):
+                    continue
+                real = [m for m in msgs if m.kind in REPORT_KINDS]
+                if real:
+                    entry["state"], entry["report"] = REPORTED, "\n".join(m.text for m in real)
+                elif entry.get("state") == PENDING:
+                    entry["state"] = IDLE
+                    entry["report"] = "\n".join(m.text for m in msgs)
+                else:
+                    continue
+                entry["delivered"] = True
+                changed = True
+                log_event("delivered_by_drain", parent=parent, child=entry["session"],
+                          state=entry["state"])
+            if changed:
+                _save(parent, data)
+    except Exception:
+        pass
+
+
+def _finish_delivered(data: dict) -> bool:
+    """Tear down children the drain resolved but nobody has torn down yet.
+
+    True when the ledger changed. A child is "finished" once it is resolved by
+    delivery and carries no ``torn_down`` verdict; ``_teardown`` stamps one
+    (worktree children get ``False`` and stay alive by design).
+    """
+    changed = False
+    for entry in data["children"]:
+        if (entry.get("delivered") and entry.get("state") in (REPORTED, IDLE)
+                and "torn_down" not in entry):
+            if session_exists(entry["session"]):
+                _teardown(data, entry["session"])
+            else:
+                entry["torn_down"] = True
+            changed = True
+    return changed
+
+
 # =============================================================================
 # Session liveness / teardown
 # =============================================================================
@@ -400,9 +465,12 @@ def collect(parent: str) -> dict | None:
     data = load(parent)
     if not data:
         return None
+    finished = _finish_delivered(data)
     outstanding = [c["session"] for c in data["children"]
                    if c.get("state") == PENDING and c.get("session")]
     if not outstanding:
+        if finished:
+            _save(parent, data)
         return data
 
     expired = _now() >= int(data.get("deadline") or 0)
@@ -561,7 +629,7 @@ def sweep() -> dict:
         expired = _now() >= int(data.get("deadline") or 0) + STALE_GRACE
 
         if parent_live and not expired:
-            changed = False
+            changed = _finish_delivered(data)
             for child in outstanding:
                 if not session_exists(child):
                     _mark(data, child, GONE)
