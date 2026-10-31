@@ -10649,7 +10649,7 @@ def main() -> None:
     permission_mode = input_data.get("permission_mode", "")
     bypass_modes = {"bypassPermissions", "auto"}
 
-    if tool_name != "Bash":
+    if tool_name not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     command = tool_input.get("command", "")
@@ -10662,9 +10662,9 @@ def main() -> None:
 
     if decision == "block":
         try:
-            log_blocked("Bash", command, reason, pattern=result.get("pattern"), rule_id=result.get("id"))
+            log_blocked(tool_name, command, reason, pattern=result.get("pattern"), rule_id=result.get("id"))
         except TypeError:
-            log_blocked("Bash", command, reason)
+            log_blocked(tool_name, command, reason)
         print(f"SECURITY: Blocked: {reason}", file=sys.stderr)
         print(f"Command: {command[:100]}{'...' if len(command) > 100 else ''}", file=sys.stderr)
         sys.exit(2)
@@ -10684,7 +10684,7 @@ def main() -> None:
         # case is caught by its verb's own rule — so the unattended refusal is
         # scoped to `unverifiable`, which no grant and no bypass demotes.
         if rule_id == "core.ambiguous-command" and not result.get("unverifiable"):
-            log_allowed("Bash", command, user_approved=False)
+            log_allowed(tool_name, command, user_approved=False)
             sys.exit(0)
         hook_cwd = input_data.get("cwd") or os.environ.get("PWD") or os.getcwd()
         grants = resolve_unattended_grants(config)
@@ -10692,13 +10692,13 @@ def main() -> None:
             rule_id, command, grants, hook_cwd, pattern=result.get("pattern"),
         )
         if granted:
-            log_allowed("Bash", command, user_approved=False)
+            log_allowed(tool_name, command, user_approved=False)
             sys.exit(0)
         try:
-            log_blocked("Bash", command, f"unattended: {reason} — {why}",
+            log_blocked(tool_name, command, f"unattended: {reason} — {why}",
                         pattern=result.get("pattern"), rule_id=rule_id)
         except TypeError:
-            log_blocked("Bash", command, f"unattended: {reason} — {why}")
+            log_blocked(tool_name, command, f"unattended: {reason} — {why}")
         _notify_unattended_block(command, f"{reason} — {why}", rule_id)
         print(f"SECURITY: Blocked (unattended — no human to confirm): {reason}", file=sys.stderr)
         print(f"Command: {command[:100]}{'...' if len(command) > 100 else ''}", file=sys.stderr)
@@ -10722,9 +10722,9 @@ def main() -> None:
         # The voice assistant (#1198) keeps EVERY ask as a dialog — its spoken
         # confirm — and names the rule for its grant store.
         if is_voice_session():
-            reason = voice_ask_reason(reason, result.get("id"), "Bash",
+            reason = voice_ask_reason(reason, result.get("id"), tool_name,
                                       grantable=not result.get("unverifiable"))
-        log_asked("Bash", command, reason)
+        log_asked(tool_name, command, reason)
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -10735,16 +10735,16 @@ def main() -> None:
         print(json.dumps(output))
         sys.exit(0)
     elif result.get("escape"):
-        log_escape("Bash", command, result.get("escape_reason") or "")
+        log_escape(tool_name, command, result.get("escape_reason") or "")
         sys.exit(0)
     elif result.get("disabled"):
-        log_disabled("Bash", command)
+        log_disabled(tool_name, command)
         sys.exit(0)
     else:
         try:
-            log_allowed("Bash", command, user_approved=False, allowed_by=result.get("allowed_by"))
+            log_allowed(tool_name, command, user_approved=False, allowed_by=result.get("allowed_by"))
         except TypeError:
-            log_allowed("Bash", command, user_approved=False)
+            log_allowed(tool_name, command, user_approved=False)
         sys.exit(0)
 
 

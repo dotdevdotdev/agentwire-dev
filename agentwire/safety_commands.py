@@ -730,6 +730,10 @@ def safety_tooldefs_show_cmd(tool: str) -> int:
 # tools that reach real people irreversibly are gated like the Bash shell-out.
 DAMAGE_CONTROL_MATCHERS = {
     "Bash": "bash-tool-damage-control.py",
+    # The PowerShell tool (CLAUDE_CODE_USE_POWERSHELL_TOOL; the only shell on a
+    # Windows box without Git Bash) is a separate tool name whose
+    # ``tool_input.command`` has Bash's shape: same hook, own entry (#1218).
+    "PowerShell": "bash-tool-damage-control.py",
     "Edit": "edit-tool-damage-control.py",
     "Write": "write-tool-damage-control.py",
     # Content-reading tools: PreToolUse fires (and can block) for these, so a
@@ -798,8 +802,9 @@ def damage_control_selftest() -> List[str]:
     """
     probes = [(hook_file, {"tool_name": "AgentwireSelftest", "tool_input": {}}, 0)
               for hook_file in dict.fromkeys(DAMAGE_CONTROL_MATCHERS.values())]
-    probes.append(("bash-tool-damage-control.py",
-                   {"tool_name": "Bash", "tool_input": {"command": "rm -rf /agentwire-selftest"}}, 2))
+    probes.extend(("bash-tool-damage-control.py",
+                   {"tool_name": tool, "tool_input": {"command": "rm -rf /agentwire-selftest"}}, 2)
+                  for tool in ("Bash", "PowerShell"))
     failures = []
     for hook_file, payload, want in probes:
         path = HOOKS_DIR / hook_file
