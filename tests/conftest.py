@@ -395,3 +395,18 @@ def bash_hook():
 @pytest.fixture(scope="module")
 def mcp_hook():
     return load_damage_control_hook("mcp-tool-damage-control.py")
+
+
+@pytest.fixture(autouse=True)
+def _stub_hook_probes(request, monkeypatch):
+    """Heal runs the hook selftest (6 real hook launches) and `claude --version` (#1219).
+
+    Stubbed for every test so the PR gate stays fast and does not depend on the
+    developer's Claude install; ``@pytest.mark.real_hook_probe`` keeps the real ones.
+    """
+    if request.node.get_closest_marker("real_hook_probe"):
+        return
+    from agentwire import safety_commands
+
+    monkeypatch.setattr(safety_commands, "damage_control_selftest", lambda: [])
+    monkeypatch.setattr(safety_commands, "claude_code_version", lambda: (2, 1, 316))

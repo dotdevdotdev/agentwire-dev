@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -761,13 +762,68 @@ def _owned_hook_entries(pre: Any, matcher: str, command: str) -> List[Dict[str, 
     return owned
 
 
-def register_damage_control_in_settings() -> int:
+# Claude Code fails OPEN on a hook crash, timeout, unparsable output, missing
+# interpreter, or any exit other than 0/2. ``"onFailure": "block"`` (Claude Code
+# >= 2.1.295) turns every one of those into a block (#1219).
+ONFAILURE_MIN_CLAUDE_VERSION = (2, 1, 295)
+
+
+def claude_code_version() -> Optional[tuple]:
+    """The installed Claude Code version as an int tuple, or None when unknown."""
+    try:
+        out = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", out)
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
+def onfailure_supported(version: Optional[tuple]) -> Optional[bool]:
+    """True/False once the version is known; None when it could not be read."""
+    return None if version is None else version >= ONFAILURE_MIN_CLAUDE_VERSION
+
+
+def _version_text(version: Optional[tuple]) -> str:
+    return ".".join(map(str, version)) if version else "unknown"
+
+
+def damage_control_selftest() -> List[str]:
+    """Run each installed damage-control hook the way Claude Code does; return what failed.
+
+    Executes the installed script directly (shebang and all), so a missing
+    interpreter, an unresolvable ``uv`` dependency, a lost exec bit or an
+    unloadable rule set all surface here. Every hook must start and exit 0 on a
+    payload for a tool it does not gate; the Bash hook must also BLOCK (exit 2)
+    a destructive command, which proves the rules actually loaded.
+    """
+    probes = [(hook_file, {"tool_name": "AgentwireSelftest", "tool_input": {}}, 0)
+              for hook_file in dict.fromkeys(DAMAGE_CONTROL_MATCHERS.values())]
+    probes.append(("bash-tool-damage-control.py",
+                   {"tool_name": "Bash", "tool_input": {"command": "rm -rf /agentwire-selftest"}}, 2))
+    failures = []
+    for hook_file, payload, want in probes:
+        path = HOOKS_DIR / hook_file
+        try:
+            got = subprocess.run([str(path)], input=json.dumps(payload), capture_output=True,
+                                 text=True, timeout=HOOK_TIMEOUT_SECONDS).returncode
+        except (OSError, subprocess.SubprocessError) as e:
+            failures.append(f"{hook_file}: {type(e).__name__}: {e}")
+            continue
+        if got != want:
+            failures.append(f"{hook_file}: exit {got}, expected {want}")
+    return failures
+
+
+def register_damage_control_in_settings(fail_closed: bool = True) -> int:
     """Ensure every damage-control PreToolUse matcher is in ``~/.claude/settings.json``.
 
     Idempotent: appends missing matchers/commands and sets the expected
-    ``timeout`` on existing agentwire-owned entries. Returns the number of
-    entries added or updated. Raises ``SettingsError`` (file untouched) when
-    the settings file is unparseable (#1220).
+    ``timeout`` (and, with ``fail_closed``, ``onFailure: block``) on existing
+    agentwire-owned entries. Returns the number of entries added or updated.
+    ``fail_closed=False`` leaves ``onFailure`` alone -- the caller's selftest
+    failed, and blocking on top of a broken install would brick the session.
+    Raises ``SettingsError`` (file untouched) when the settings file is
+    unparseable (#1220).
     """
     added = 0
 
@@ -797,15 +853,18 @@ def register_damage_control_in_settings() -> int:
                     if h.get("timeout") != HOOK_TIMEOUT_SECONDS:
                         h["timeout"] = HOOK_TIMEOUT_SECONDS
                         added += 1
+                    if fail_closed and h.get("onFailure") != "block":
+                        h["onFailure"] = "block"
+                        added += 1
                 continue
-            pre.append({
-                "matcher": matcher,
-                # An explicit timeout: a hook that outlives it is killed and the
-                # tool call RUNS (fail-open), so the scan's own deadline
-                # (SCAN_DEADLINE_SECONDS) must sit well inside this value (#1108).
-                "hooks": [{"type": "command", "command": command,
-                           "timeout": HOOK_TIMEOUT_SECONDS}],
-            })
+            entry_hook = {"type": "command", "command": command,
+                          # An explicit timeout: a hook that outlives it is killed and the
+                          # tool call RUNS (fail-open), so the scan's own deadline
+                          # (SCAN_DEADLINE_SECONDS) must sit well inside this value (#1108).
+                          "timeout": HOOK_TIMEOUT_SECONDS}
+            if fail_closed:
+                entry_hook["onFailure"] = "block"
+            pre.append({"matcher": matcher, "hooks": [entry_hook]})
             added += 1
         return bool(added)
 
@@ -1128,6 +1187,26 @@ def damage_control_timeout_drift() -> List[str]:
     return drifted
 
 
+def damage_control_onfailure_drift() -> List[str]:
+    """Registered damage-control matchers without ``onFailure: block`` (#1219).
+
+    Without it a crash, timeout or missing interpreter lets the tool call run.
+    """
+    try:
+        settings = json.loads((claude_dir() / "settings.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    pre = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+    drifted = []
+    for matcher, hook_file in DAMAGE_CONTROL_MATCHERS.items():
+        command = f"~/.agentwire/hooks/damage-control/{hook_file}"
+        owned = _owned_hook_entries(pre, matcher, command)
+        if any(h.get("onFailure") != "block" for h in owned):
+            drifted.append(matcher)
+    return drifted
+
+
 def _write_installed(src: Path, target: Path, executable: bool = False) -> None:
     """Copy bundled bytes to an installed path with a FRESH mtime.
 
@@ -1280,6 +1359,7 @@ def heal_damage_control(
         "tooldefs_removed": [], "tooldefs_kept_edited": [],
         "packs_migrated": [],
         "matchers_added": 0, "policy_scaffolded": False, "settings_error": None,
+        "selftest_failures": [], "claude_code_version": "",
         "refused": False, "provenance": "",
     }
 
@@ -1364,8 +1444,22 @@ def heal_damage_control(
         for line in unattended_grant_notice():
             log(line)
 
+    # Fail closed only on a hook set that demonstrably works: a block on top of a
+    # broken install turns a quiet gap into a bricked session (#1219).
+    selftest_failures = damage_control_selftest()
+    summary["selftest_failures"] = selftest_failures
+    if selftest_failures:
+        log("⚠️  Damage-control selftest FAILED -- hooks registered WITHOUT onFailure:block:")
+        for line in selftest_failures:
+            log(f"     {line}")
+    version = claude_code_version()
+    summary["claude_code_version"] = _version_text(version)
+    if onfailure_supported(version) is not True:
+        log(f"⚠️  Claude Code {_version_text(version)} predates onFailure support "
+            f"(>= {_version_text(ONFAILURE_MIN_CLAUDE_VERSION)}): the guard FAILS OPEN "
+            "if a hook crashes, times out or cannot start. Upgrade Claude Code.")
     try:
-        added = register_damage_control_in_settings()
+        added = register_damage_control_in_settings(fail_closed=not selftest_failures)
     except SettingsError as e:
         summary["settings_error"] = str(e)
         log(f"⚠️  {e}")
