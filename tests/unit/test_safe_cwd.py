@@ -8,7 +8,6 @@ call. These tests delete a REAL temp directory and exec into it (no mocked
 target, which inherits the dead cwd.
 """
 
-import importlib.util
 import json
 import os
 import subprocess
