@@ -603,6 +603,7 @@ agentwire msg send --to reviewer --kind request --body-file /tmp/findings.md    
 git diff --stat | agentwire msg send --to orch --body-file -                       # '-' reads stdin
 agentwire msg inbox [-s <session>]   # peek pending + passive (does not drain/consume)
 agentwire msg pull  [-s <session>]   # read + REMOVE passive (ingest) messages
+agentwire msg sent  [--limit N] [--to S] [--id ID]  # what became of the messages I SENT (own ledger)
 agentwire msg dead  [-s <session>]   # list dropped (dead-lettered) msgs + why
 agentwire msg dead  --purge [-s <session>] [--older-than 7d]  # clear the graveyard
 agentwire msg flush [-s <session>] [--force]  # attempt a drain now (gated unless --force)
@@ -671,6 +672,8 @@ the single source of truth; the portal and MCP call it.
   (gated unless `force=True`, which requires `session`).
 - `msg_purge(session=None)` — drop a session's pending queue (self-heal a wedged
   inbox); never touches `dead/` or passive `ingest/`.
+- `msg_sent(limit=20, to=None, message_id=None)` — what became of the messages
+  YOU sent (see *Sender-side status*). Read-only, own ledger only.
 - `msg_dead(session=None)` — list dead-lettered messages with their drop reason
   + timestamp. Omitted `session` is GLOBAL (every session that has any) even
   when called from inside a session; pass a name to scope.
@@ -678,6 +681,37 @@ the single source of truth; the portal and MCP call it.
 **Rule of thumb for agents:** use `msg_send` for routine peer updates that
 shouldn't interrupt; use `session_send` only when you need to forcibly drive a
 session right now.
+
+## Sender-side status — `msg sent` (#1231)
+
+The inbox is keyed by *recipient* and the drain unlinks a file on delivery, so
+afterwards "delivered" and "purged" looked identical and a sender could not
+learn what became of a message. `agentwire/sent_ledger.py`
+is the one writer/reader of a per-sender record that outlives the file;
+`agentwire msg sent` and MCP `msg_sent` are thin readers over `list_sent`.
+
+| state | meaning |
+|---|---|
+| `queued` | still in the recipient's inbox; shows the live deferral reason + attempts (`box_not_empty`, `target_busy`, …). A passive `ingest` message stays `queued` ("waits for `msg pull`") |
+| `delivered` | the drain **pasted it into the recipient's input box**. Never "read", never "acted on". `how` = `pasted` (box-cleared confirm) / `scrollback` (echo found) / `healed` (our stuck paste, Enter confirmed) / `late` / `adapter`; `verified` is false only for a non-tmux adapter's say-so |
+| `dead_lettered` | gave up; carries the drop reason + time. Survives `msg dead --purge` |
+| `purged` | removed before delivery by `msg purge` or a sender-exit GC of a non-load-bearing kind |
+| `pulled` | a passive message the recipient pulled |
+| `unknown` | the ledger has no outcome and the message is no longer in the inbox; the row says so |
+
+**Writers** are the enqueue and every terminal transition in `inbox.py`; every
+delivery site already funnels through `_note_delivered` (the #1224 cohort hook),
+which now also writes the ledger, so a new delivery site gets both or neither.
+**Reads reconcile**: a record still `queued` is checked against the live inbox
+(file present → live reason; in `dead/` → healed to `dead_lettered`; absent →
+`unknown`), so a missed write degrades to "unknown", never a confident wrong
+answer. A ledger fault is logged (`sent_ledger_failed`) and never breaks the drain.
+
+**Identity / scope:** the caller is the tmux session (`_current_session` /
+`get_caller_session`); there is no session flag and no way to read another
+session's ledger — bodies are the sender's own text, not fleet-visible. Outside
+tmux the command errors. Senders `unknown` (no tmux, no `--from`) get no ledger;
+`--from` senders (the buddy bridge) have one but, with no tmux identity, no reader.
 
 ## State
 
@@ -688,6 +722,7 @@ session right now.
 | `~/.agentwire/inbox/<session>/dead/` | dead-lettered after the attempt cap |
 | `~/.agentwire/inbox/<session>/.lock/` | mkdir-based per-session drain lock |
 | `~/.agentwire/inbox/.tick.lock` | global flock guarding `tick()` |
+| `~/.agentwire/sent-ledger/<quoted-sender>.json` | per-sender sent ledger (#1231) — outlives the inbox file; ≤500 entries, 7-day TTL |
 | `~/.agentwire/inbox-events.jsonl` | audit log (enqueued/delivered/deferred/dead_letter) |
 | `~/.agentwire/sessions/<session>/metadata.json` → `fleet_alerts` | the subscription lease (see Fleet alerts) |
 | `~/.agentwire/fleet-alerts-events.jsonl` | audit log (subscribed/emitted/emit_failed) |

@@ -108,6 +108,53 @@ def msg_inbox(session: str | None = None) -> str:
 
 
 @mcp.tool()
+def msg_sent(limit: int = 20, to: str | None = None, message_id: str | None = None) -> str:
+    """What became of the messages YOU sent — queued, delivered, or dead-lettered.
+
+    `msg_send` only confirms a message was queued. This is how a sender finds
+    out afterwards: each row shows the recipient, kind, body, send time and
+    current state — `queued` (with the live deferral reason, e.g. box_not_empty),
+    `delivered`, `dead_lettered` (with why), `purged`, `pulled` (passive), or
+    `unknown` (the outcome was not recorded; the row says why). Newest first.
+
+    HONESTY: `delivered` means the text was PASTED into the recipient's input
+    box. It does not mean read, understood or acted on — do not report it as
+    such. Only your own sent messages are visible; there is no way to read
+    another session's ledger.
+
+    Args:
+        limit: Max rows (default 20).
+        to: Only messages sent to this session.
+        message_id: One message — the full id, or the 6-char tail shown in the
+            `⟨#abc123⟩` token on the delivered line.
+
+    Returns:
+        The sent messages with their states, or a note that there are none.
+    """
+    args = ["msg", "sent", "--limit", str(limit)]
+    if to:
+        args += ["--to", to]
+    if message_id:
+        args += ["--id", message_id]
+    data = run_agentwire_cmd(args)
+    if not data.get("success"):
+        return f"Failed to read sent messages: {data.get('error', 'Unknown error')}"
+    rows = data.get("sent") or []
+    if not rows:
+        return "Nothing sent on record."
+    from .sent_ledger import describe
+
+    lines = [f"{len(rows)} of {data.get('total', len(rows))} sent (newest first):"]
+    for v in rows:
+        lines.append(
+            f"  {v['id'].rsplit('-', 1)[-1]} → {v.get('to')} [{v.get('kind')}] "
+            f"{v.get('text')}\n      {describe(v)}"
+        )
+    lines.append("delivered = pasted into the recipient's input box, not read or acted on.")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def msg_pull(session: str | None = None) -> str:
     """Read and REMOVE passive (ingest) awareness messages — the voluntary pull.
 

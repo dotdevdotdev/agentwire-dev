@@ -211,6 +211,7 @@ agentwire msg send --to @all "team update"   # broadcast to live agent sessions 
 agentwire msg send --to name --body-file /tmp/body.md  # code-bearing body, no shell escaping ('-' = stdin)
 agentwire msg inbox -s name                  # peek pending + passive (does not drain/consume)
 agentwire msg pull -s name                   # read + REMOVE passive (ingest) messages — the voluntary pull
+agentwire msg sent [--limit N] [--to S] [--id ID] # what became of the messages I SENT: queued/delivered/dead_lettered/purged/unknown (own ledger; delivered = pasted, not read)
 agentwire msg dead -s name                   # list dropped (dead-lettered) msgs + reason/timestamp
 agentwire msg flush -s name                  # attempt a drain now (still gated on empty box + safe target)
 

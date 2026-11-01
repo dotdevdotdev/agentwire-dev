@@ -19,6 +19,7 @@ description: Reference for the `mcp__agentwire__*` MCP tools — session/pane ma
 | `agentwire msg inbox -s name` | `msg_inbox(session="...")` |
 | `agentwire msg pull -s name` | `msg_pull(session="...")` |
 | `agentwire msg flush -s name` | `msg_flush(session="...")` |
+| `agentwire msg sent --limit N --to S --id ID` | `msg_sent(limit=20, to=None, message_id=None)` — state of messages YOU sent; `delivered` = pasted, not read |
 | `agentwire msg dead -s name` | `msg_dead(session="...")` |
 | `agentwire output -s name` | `session_output(session="...")` |
 | `agentwire info -s name` | `session_info(session="...")` |

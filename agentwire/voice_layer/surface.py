@@ -184,7 +184,7 @@ TIER_READ = frozenset({
     "lock_list", "portal_status", "tts_status", "stt_status",
     "network_status", "tunnels_status",
     "council_status", "council_list",
-    "msg_inbox", "msg_dead", "research_dir",
+    "msg_inbox", "msg_dead", "msg_sent", "research_dir",
     "projects_list", "roles_list", "role_show",
     "wiki_query", "wiki_lint", "wiki_status",
     "safety_packs_list", "safety_groups_list",
