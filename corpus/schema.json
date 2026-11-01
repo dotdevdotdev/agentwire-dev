@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "damage-control-corpus-case",
+  "title": "One operation-level damage-control case",
+  "description": "A case is an (input, context) pair and the verdict it must produce. `class` groups cases into one test per failure class; `source` says where the case came from, so a lost expectation can be traced.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "tool", "input", "context", "expect", "class", "tags", "source"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*-[0-9]{3}$"},
+    "tool": {
+      "enum": ["Bash", "Read", "Edit", "Write"],
+      "description": "Bash -> check_command; Read -> check_read_path; Edit/Write -> check_path (and is_protected_control_plane for `control_plane`)."
+    },
+    "input": {"type": "string", "minLength": 1},
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ruleset": {"enum": ["rules", "full"], "description": "rules = bundled rule YAMLs; full = rules + tooldefs (what a fresh install runs). Default full."},
+        "home": {"type": "string", "pattern": "^/", "description": "$HOME while the case runs. Default /golden/home (deliberately not under /tmp)."},
+        "kill_switch": {"type": "boolean", "description": "Owner kill switch off (safety.enabled false)."},
+        "allow_all_paths": {"type": "boolean", "description": "Host allowedPaths grants `*` allow-all."}
+      }
+    },
+    "expect": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "decision": {"oneOf": [{"$ref": "#/$defs/decision"}, {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/decision"}}], "description": "Bash: decision must be (one of) these."},
+        "decision_not": {"oneOf": [{"$ref": "#/$defs/decision"}, {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/decision"}}], "description": "Bash: decision must not be (any of) these."},
+        "protected": {"type": "boolean", "description": "Bash: result is / is not flagged protected control plane."},
+        "unverifiable": {"type": "boolean", "description": "Bash: result is / is not flagged unverifiable (verb-concealing)."},
+        "blocked": {"type": "boolean", "description": "Read/Edit/Write: the path is / is not blocked."},
+        "reason_contains": {"type": "string", "minLength": 1, "description": "Read/Edit/Write: block reason contains this text."},
+        "control_plane": {"type": "boolean", "description": "Edit/Write: the path is / is not protected control plane."}
+      }
+    },
+    "class": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "description": "Failure class; the runner emits one test per class."},
+    "tags": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "source": {"type": "string", "pattern": "^[A-Za-z0-9_./-]+::[A-Za-z0-9_]+$", "description": "file::symbol the case was converted from."}
+  },
+  "$defs": {"decision": {"enum": ["allow", "ask", "block"]}}
+}

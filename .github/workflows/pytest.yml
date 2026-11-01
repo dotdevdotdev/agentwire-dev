@@ -69,3 +69,30 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           if-no-files-found: ignore
+
+  # The hooks are standalone scripts that run under whatever `python3` the user has, and
+  # the declared floor is 3.9 (#1223: a 3.10-only construct made them crash non-blocking,
+  # i.e. fail OPEN). The main job runs 3.12 and cannot see that. This job installs only
+  # pytest + pyyaml — no agentwire dependencies, which need 3.10 — and runs the stdlib-only
+  # hook subprocess tests plus the engine-standalone and fail-closed pins under 3.9 itself.
+  hooks-py39:
+    name: hook subprocess tests (Python 3.9)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install test dependencies
+        run: python -m pip install pytest pyyaml
+
+      # --noconftest: tests/conftest.py imports agentwire's full dependency set.
+      - name: Run hook tests on the declared floor
+        run: >
+          python -m pytest -q --noconftest -p no:cacheprovider -m "not slow"
+          tests/unit/test_hook_subprocess.py
+          tests/unit/test_hook_python_floor.py
+          tests/unit/test_hook_fail_closed.py
+          tests/unit/test_engine_standalone.py
