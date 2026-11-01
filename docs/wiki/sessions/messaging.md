@@ -319,7 +319,7 @@ lands in a durable inbox and is injected only at a safe boundary.
      could never deliver anyway (see Scope) — now surface as `target_gone`
      within minutes instead of pending silently forever.
    - **Out-of-band escalation.** When a **load-bearing** kind (`done` /
-     `request` / `escalation` / `voice`) does dead-letter, the owner is emailed
+     `request` / `escalation`) does dead-letter, the owner is emailed
      via the shared Resend
      wiring (the same channel usage-limit parking uses) so the loss is surfaced
      even if nobody runs `msg dead`. `note` is fire-and-forget and `ingest` never
@@ -361,7 +361,6 @@ collision detector simple and the no-clobber guarantee absolute.
 | `request` | asking for something |
 | `escalation` | needs attention — **the only kind a consumer may act on out of turn** |
 | `ingest` | **passive** — awareness only; never auto-delivered (see below) |
-| `voice` | the owner speaking through their [voice buddy](../voice-layer.md) — active and escalatable, but not an interrupt (see the ruling below) |
 
 An optional `--ref` carries a machine-readable pointer (e.g. a report path)
 alongside the text, surfaced as a typed field rather than parsed out of prose —
@@ -372,47 +371,13 @@ easy to collapse into one:
 
 - **`PASSIVE_KINDS` = (`ingest`,)** — never auto-delivered, so it cannot drive
   the recipient into a turn. Everything else is *active*.
-- **`ESCALATE_KINDS` = (`done`, `request`, `escalation`, `voice`)** —
+- **`ESCALATE_KINDS` = (`done`, `request`, `escalation`)** —
   load-bearing, so a dead-letter emails the owner, `doctor` reports it, and
   `worktree --list` badges it. `note` is fire-and-forget; `ingest` is pull-only
   by design.
 
 Neither is the **interrupt tier**. `escalation` alone pre-empts, and it is a
 one-member set that no other kind joins.
-
-### Ruling: `voice` is active and escalatable, and is not an interrupt (#985)
-
-Before #985 the buddy marked a message as voice-originated by prefixing the
-message **body** with a `<voice>` tag, riding `--kind request`. Attribution sat
-inside the text while the slot that actually drives behaviour said something
-else. `voice` moves it into the slot. **Owner ruling, 2026-08-10:**
-
-- **ACTIVE.** A `voice` message *is* the owner talking to a session through the
-  buddy, so it should drive that session exactly as typing at it would.
-  Delivered when the input box is empty, like `note`/`request`. Making it
-  passive would have been a behaviour *reduction* versus the body prefix it
-  replaces — this is a consistency/SSOT change and must not quietly remove a
-  capability.
-- **IN `ESCALATE_KINDS`.** The owner spoke it and walked away. Screenless, a
-  silently dead-lettered voice message is unrecoverable: there is no screen on
-  which to notice the graveyard entry.
-- **NOT an interrupt.** `ESCALATE_KINDS` governs *dead-letter escalation*; the
-  interrupt tier is a separate axis. `escalation` remains the only kind that
-  pre-empts — see `inbox._alert_dead_letters`' promotion (keyed on `escalation`
-  alone) and the buddy client's `isUrgent`. Widening either to `voice` would
-  make every routine spoken message an alarm, which is exactly the "retires the
-  tier" failure the fleet-alert ruling below exists to avoid.
-
-`voice` is deliberately excluded from `cohort.REPORT_KINDS` (the owner is not a
-child reporting on a task), so `wait --children` never harvests it; the drain
-delivers it like any other message (there is no cohort hold, #1224).
-
-**One derivation, not four literals.** `ESCALATE_KINDS` is read through
-`inbox.load_bearing()`. Before #985, `doctor`'s dead-letter section and both
-`worktree --list` / `--watch` each hand-wrote `("done", "escalation")` — already
-disagreeing with `ESCALATE_KINDS` about `request`, and one merge away from
-disagreeing about `voice` on the one kind whose sender is screenless. Add a
-consumer by calling `load_bearing()`; never by retyping the tuple.
 
 ## Passive `ingest` — awareness without being driven
 
@@ -430,163 +395,6 @@ pointers and reads the files. The durable content lives in the referenced file,
 not the message — so `pull` (consume-on-read) is the only way these leave the
 inbox; they are never dead-lettered.
 
-## Fleet alerts — detectors as senders (#982)
-
-Until #982 every kind above had exactly one class of sender: an agent typing
-`msg send`. The machine's own detectors — expired login, usage-limit park,
-dead-lettered report-backs, a root session blocked with nowhere to route — could
-only reach the **owner**, by email. `agentwire/fleet_alerts.py` is the other
-half: the same detectors, addressed as typed mail to any session that asks for
-it. Nothing about the email path changed; this rides alongside it.
-
-**Subscription is a lease, not a flag.** A session opts in with
-`fleet_alerts.subscribe(name)`, which records an expiry in that session's
-`metadata.json` (the #871 store — no second registry to drift) and must be
-renewed. That is not ceremony: the drain's liveness gates are about *pasting
-into a pane*, so a recipient that collects its mail some other way never reads
-as "gone" the way a dead tmux session does. A permanent flag would keep
-producing into a queue nobody is draining and then hand over the whole backlog
-at once whenever that recipient came back — every message still carrying the
-priority it was sent with, long after any of it was actionable. An expired lease
-fails **quiet**, the correct direction for a producer whose expensive failure is
-over-production.
-With no subscriber, `emit` walks the store, finds nothing, and returns — every
-detector behaves exactly as it did before.
-
-### The ruling: which detector earns which kind
-
-`escalation` is the only kind a consumer may act on out of turn — every other
-kind waits for the recipient to be free. So the bar is **not** "is this
-event real?" — all five candidates are real when they fire. It is: *can this
-clear without a human, and is something burning while it waits?*
-
-| Detector | Kind | Why, and what bounds it |
-|---|---|---|
-| expired login (`auth_expired`) | `escalation` | Machine-wide; every subsequent turn is refused and only `/login` clears it. Once per `ESCALATE_TTL` (1h) **per outage, per machine** — not per session, not per dispatch — stamped in the outage record next to the email's own stamp. |
-| root session blocked, no parent (`prompt_router`) | `escalation` | By design nothing can route it; the session is stalled until a human answers. Once per hour **per distinct prompt** (keyed on the prompt hash, so a redraw doesn't re-fire). |
-| usage-limit park | `note` | **Demoted on purpose.** Self-healing: reset time parsed, resume nudge armed, the owner's email literally ends "no action needed". Real news, nothing to act on inside thirty seconds. One per park (`is_parked` is the throttle). |
-| dead-lettered load-bearing mail | `request`, promoted to `escalation` iff the lost message *was* an escalation | Someone must go look at `agentwire msg dead`. The floor is `request` because the realistic bad case is one stuck recipient — 147 dead letters in ~2s, observed — and that shape must not buy 147 interrupts. One alert per **batch**, matching the digest email's coalescing. |
-| dangling PR (`worktree --dangling`) | **not wired** | No autonomous trigger (only `doctor` and the explicit flag, both run by a human already reading the output) and no per-finding throttle state to reuse, so a producer would re-announce the same durable, passive condition every invocation. Nothing is burning while a dangling PR waits. |
-
-### Lifecycle joins the same table (#1016)
-
-Detectors report that something is *wrong*. `agentwire/fleet_activity.py` adds
-the other producer — the fleet reporting that something *happened*: a session
-going idle, a scheduled task finishing, a toast, anything spoken through fleet
-TTS. It shares `DETECTOR_KINDS` because the question is identical (what may a
-producer put in front of a listener, and how loudly), and answering it in two
-places is how the two answers drift.
-
-| Event | Kind | Why, and what bounds it |
-|---|---|---|
-| session went idle | `done`, **only if delegated** | The event the owner wanted: work they handed off has finished. Authority is consulted first and can veto — an `orchestrator`/`anchor` role is never delegated whatever its location, because `agentwire orchestrator` is `worktree --kind orchestrator` and an OR over #716's axes let *location* overrule the role, announcing the owner's own durable window every 15 minutes. After that veto, a recorded parent, a worker/reviewer role, or a worktree checkout each suffice. Throttled 15m per session; the event's parent is excluded, since it hears this by paste from `notify-parent`. |
-| scheduled task completed | `done`, `request` if it ended badly | The owner did not watch it start and cannot see it end. The `request` promotion is the dead-letter inherit rule's shape: the fleet already judged it. `usage_limit` / `auth_expired` runs are **not** announced — those conditions have detectors of their own that say it once, machine-wide. Throttled 2m per task. |
-| `notify-user --priority high` | `request` | The one notify surface that declares its own urgency, about a screen the owner may not be looking at. Throttled 5m per **toast content**, not per sender: keyed on the session, a second, different high toast a minute later was silently never spoken. |
-| ordinary toast, portal lifecycle, **anything spoken** | **not wired** | Ledger-only. `spoke` most deliberately: the owner heard it in the room, and a voice channel that reads the audio back is worse than one that stays quiet. |
-
-**Do not `alerts subscribe` a DELEGATED session.** Subscription is for a
-listener, and a subscribed *worker* closes a loop: the alert is pasted into its
-prompt, which starts a turn, which ends in an idle, which is announced — a
-cycle that sustains itself at the 15m cadence with nobody asking for any of it.
-Nothing autonomous does this (the buddy subscribes itself, and it has no pane
-to paste into); it takes a human running `alerts subscribe` on a worker. The
-subscriber you want is the one that *reads* mail rather than acting on it.
-
-**No lifecycle event is ever an `escalation`.** The interrupt tier stays the two
-conditions nothing clears without a human. What everything else gets is the
-**ledger** — `~/.agentwire/fleet-activity.jsonl`, read with `agentwire activity
-list`, never pushed at anyone. That split is the design, and it exists because
-everything in a spool is eventually spoken; see
-[voice-layer.md](../voice-layer.md#fleet-awareness-two-tiers-because-everything-in-the-spool-gets-spoken-1016).
-
-**No alert rides an email-shaped throttle.** Each producer stamps its own state
-on a successful *enqueue* — a local write — rather than reusing the stamp that
-gates its owner email. That distinction is load-bearing rather than fussy:
-`channels/email.py` **raises** `EmailConfigError` when `RESEND_API_KEY` is
-absent, so on a keyless machine (the ordinary state of a fresh install) the
-email-shaped gates never close at all, and anything riding one re-fires on every
-60s watchdog tick. Note what this claim does *not* say: three email callers
-(`auth_expired._escalate`, `prompt_router._escalate_no_parent`,
-`usage_limit._send_notification`) still gate persistent state on a successful
-send. That is untouched and out of scope here — but it is why a future producer
-must not be wired to `notified`, `escalated_at` or their siblings.
-
-A stamp also records that somebody **was told**, never that we tried: when an
-alert reaches no subscriber, no stamp is written. Otherwise an operator who
-subscribes during a live incident would hear nothing until the TTL expired,
-which is the failure that is hardest to notice — it looks exactly like a quiet
-fleet.
-
-Two guards keep the dead-letter mirror from feeding itself: alerts carry a
-distinct sender (`fleet-alerts` — or `fleet-activity` for lifecycle; both live
-in `MACHINE_SENDERS`, and `emit` refuses any other) and are never mirrored, and
-any subscriber named as a *recipient* of the lost batch is excluded. Either alone is
-insufficient — with two subscribers, an alert stranded en route to one would
-otherwise be reported to the other, once per drain, forever.
-
-### What an escalation does NOT buy: speed
-
-`escalation` is a **priority** statement, not a latency one, and the difference
-is worth stating because the word invites the other reading. An alert is
-ordinary inbox mail: it is written to the recipient's inbox immediately and then
-waits for the drain, which rides the watchdog at `TICK_INTERVAL = 60`s. So
-**up to ~60s passes before a subscriber sees an escalation at all**, before that
-consumer applies whatever gating of its own it has. What the kind buys is what
-happens *after* it arrives — a consumer may act on an escalation out of turn,
-where it would make anything else wait for a gap.
-
-The practical bar for the table above is therefore: *would this still be worth
-someone's interruption a minute or two after it fired?* An event that is only
-urgent in its first few seconds is not served by this channel at all, and an
-event that will still matter in an hour belongs in `note`.
-
-Rulings live as data in `fleet_alerts.DETECTOR_KINDS` and are pinned by
-`tests/unit/test_fleet_alerts.py`, so changing what may interrupt is a
-deliberate edit to a test that says why.
-
-### CLI
-
-```bash
-agentwire alerts subscribe <session>     # lease alerts for a session
-agentwire alerts unsubscribe <session>
-agentwire alerts list [--json]           # live leases, with their expiry
-agentwire alerts reindex [--json]        # rebuild the candidate index
-
-agentwire activity list [--limit N] [--hours N] [--event E] [-s SESSION] [--json]
-```
-
-`activity list` reads the ledger — the awareness tier, which nothing pushes.
-Entries marked `*` were *also* queued to subscribers; showing that flag is the
-point, since "recorded" and "said out loud" are different facts and an operator
-debugging a chatty or a silent buddy needs to tell them apart. There is
-deliberately **no verb that writes an entry**: producers record from inside the
-surfaces that generate the events, so nothing an agent can be talked into
-calling can forge fleet history.
-
-`list` reports the **expiry**, not a boolean, because a lease that stopped being
-renewed stops delivering silently — that is the designed failure direction, and
-it is one an operator has to be able to see.
-
-`reindex` exists because the emit path deliberately never walks the session
-record store: that walk measured ~326ms against 1155 records, and one caller
-sits on the synchronous permission-hook path. The index names *candidates* and
-each candidate's own record decides, so a stale entry is verified away and a
-lost index costs alerts (never spurious ones) until this rebuilds it.
-
-**The residual, stated because it is the one silent stop left:** a lost index
-zeroes alerts quietly, and `list` reads that same index — so the surface meant
-to reveal the stop would otherwise agree with it. `list` therefore reports
-`index_present` and refuses to render a missing index as a confident zero. It
-cannot do better than that: a machine where nobody ever subscribed also has no
-index, and from the outside those two states are identical. `reindex` settles
-it, cheaply, in both directions.
-
-`subscribe` requires the session to already have a record. It used to create one
-— a `{}` entry in the store that is the SSOT for conversation identity (#871),
-counted by `core.recorded_sessions()` and indistinguishable from a real session.
-A subscription is a property *of* a session, so one it can invent is not a
-subscription.
-
 ## Broadcast
 
 `--to @all` fans out to every **live agent session except the sender** — useful
@@ -596,7 +404,7 @@ skipped automatically because their pane 0 doesn't run an agent.
 ## CLI
 
 ```bash
-agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice|idle] [--ref <path>] <text | --body-file PATH>
+agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|idle] [--ref <path>] <text | --body-file PATH>
 agentwire msg send --to agentwire-dev-fix-nav --kind done "PR #312 drafted"
 agentwire msg send --to anchor --kind ingest --ref /path/report.md "auth findings"  # passive
 agentwire msg send --to reviewer --kind request --body-file /tmp/findings.md       # code-bearing body, no escaping
@@ -711,7 +519,7 @@ answer. A ledger fault is logged (`sent_ledger_failed`) and never breaks the dra
 `get_caller_session`); there is no session flag and no way to read another
 session's ledger — bodies are the sender's own text, not fleet-visible. Outside
 tmux the command errors. Senders `unknown` (no tmux, no `--from`) get no ledger;
-`--from` senders (the buddy bridge) have one but, with no tmux identity, no reader.
+`--from` senders have one but, with no tmux identity, no reader.
 
 ## State
 
@@ -724,8 +532,6 @@ tmux the command errors. Senders `unknown` (no tmux, no `--from`) get no ledger;
 | `~/.agentwire/inbox/.tick.lock` | global flock guarding `tick()` |
 | `~/.agentwire/sent-ledger/<quoted-sender>.json` | per-sender sent ledger (#1231) — outlives the inbox file; ≤500 entries, 7-day TTL |
 | `~/.agentwire/inbox-events.jsonl` | audit log (enqueued/delivered/deferred/dead_letter) |
-| `~/.agentwire/sessions/<session>/metadata.json` → `fleet_alerts` | the subscription lease (see Fleet alerts) |
-| `~/.agentwire/fleet-alerts-events.jsonl` | audit log (subscribed/emitted/emit_failed) |
 
 ## Scope (v1)
 

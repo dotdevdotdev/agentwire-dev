@@ -139,18 +139,14 @@ constants. A number quoted without its pane geometry is misleading.
 
 ## Method — and why a live probe rather than a fixture
 
-The numbers come from `tools/voice_heal_probe.py`, which creates its own
+The numbers come from a one-off probe (since deleted), which created its own
 throwaway **80x24** tmux session running Claude Code, pastes real rendered
 messages into it, leaves the Enter unsent, captures what the input box actually
 holds, and then runs the actual heal against it. **A number without the method
 is a number the next person will distrust and re-derive**, so the method is
 recorded here alongside the results.
 
-The probe itself is **not on `main`**, and not merely because of where it was
-written. It imports `agentwire.voice_layer` to render its message bodies and
-pins the spike worktree by absolute path in its PEP-723 header, so it does not
-*run* on `main` at all. Porting it means rewriting it sender-agnostic — that is
-#930 work, not a copy.
+The probe is **gone**: it imported the removed voice layer to render its message bodies, so it can't run. Rebuilding it sender-agnostic is #930 work, not a restore.
 
 That is not the contradiction it looks like against this page's own "a number
 without the method gets re-derived". The method above is specified in enough

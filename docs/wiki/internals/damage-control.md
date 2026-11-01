@@ -1123,52 +1123,6 @@ already on `DEFAULT_UNATTENDED_ALLOW`.
 
 ---
 
-## Voice-assistant marker: asks stay dialogs (#1198)
-
-The portal voice assistant (`agentwire-voice`) runs bypass, and bypass demotes every
-ask-tier rule (push, merge, worktree removal, session kill, …) to a silent allow. For
-that one session, "destructive actions get a spoken confirm" would rest on a role prompt
-alone. `AGENTWIRE_VOICE=1`, carried in the `voice-assistant` role's
-`claude --settings` env so it reaches the hooks of that one process and survives
-`agentwire restart`, changes three things in the Bash and MCP hooks
-(`safety._core.is_voice_session`):
-
-- **An ask stays an ask.** The bypass demotion is skipped, so the confirm is a real
-  dialog, which the voice layer reads out as "<intent>. Yes or no?". It **only
-  tightens**: a block still blocks, an allow still allows, and an ask is never turned
-  into an allow.
-- **The dialog names its rule.** The reason ends with `[rule: <id>]`, or
-  `[rule: <id>; never grantable]` for an unverifiable ask or a scan-budget overrun.
-  Under the marker only; every other session's reason text is unchanged.
-- **The ask is recorded** in `~/.agentwire/voice-approvals/pending-ask.json` (rule id,
-  tool, grantable, time). The voice grant store keys on this record, never on pane text:
-  the dialog also shows the command, and a command can contain any text, including a
-  fake `[rule: …]`.
-
-A session without the marker is unchanged: same demotion, same reason text, no record.
-`tests/unit/test_voice_grants.py` pins this, and each "marker leaks to other sessions"
-mutation turns it red.
-
-**Standing approvals** (`agentwire/voice_grants.py`, `agentwire voice grants`): the
-owner's spoken "yes, for today / for the next hour / for this session" records a grant
-for the pending ask's rule id, scoped to agentwire-voice, always expiring (an hour, end
-of day, or the session's next launch), and logged (`grants-log.jsonl`). A later dialog
-for the same rule is answered by the voice layer pressing the plain one-time **Yes**
-("Approved, standing OK."). Never-grantable asks are approved once at most. Only the
-owner's channels can answer or grant: `voice ask` refuses both inside a Claude Code
-session (`CLAUDECODE=1`). Precedent: `unattended_allow` (rule-id grants).
-
-**The store is control plane.** Writing `grants.json` or `pending-ask.json` *is*
-approving a dialog by hand, so `~/.agentwire/voice-approvals` is in
-`PROTECTED_CONTROL_PLANE_PATHS`. It is a prefix entry, so it covers the directory itself,
-which stops "move the real store away, move a fake one in". The directory name prefixes
-nothing else, so `~/.agentwire/voices/` (TTS samples) and `~/.agentwire/voice/` (speech-hook
-state) stay agent-writable. Only the hook process and the `agentwire voice` CLI write it,
-and neither is a tool call. The CLI resolves the store from the account's real home
-(`pwd`), never `$HOME` / `$AGENTWIRE_DIR`: an agent can run the CLI, and an
-env-redirected store would let `HOME=/tmp/x agentwire voice approval` press Yes on a
-real dialog with a fake grant.
-
 ## Outbound MCP tool gating (#457)
 
 Agents inside agentwire sessions reach external comms through **MCP tools**, not
