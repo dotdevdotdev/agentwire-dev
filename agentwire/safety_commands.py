@@ -127,11 +127,12 @@ DAMAGE_CONTROL_FILES = [
 
 
 def get_damage_control_source() -> Path:
-    """Get path to the bundled rules directory."""
+    """Get the bundled rules as ONE flat directory (generic + AgentWire layer, #1209 M2)."""
     package_dir = Path(__file__).parent
-    source_dir = package_dir / "hooks" / "damage-control" / "rules"
-    if source_dir.exists():
-        return source_dir
+    from agentwire.safety.groups import merged_rules_dir, rule_source_dirs
+
+    if all(d.exists() for d in rule_source_dirs(package_dir)):
+        return merged_rules_dir(package_dir)
     raise FileNotFoundError("Could not find damage-control rules in package")
 
 
@@ -146,9 +147,10 @@ def get_tooldefs_source() -> Path:
 
 def _bundled_rules_dir() -> Optional[Path]:
     """Return the bundled rules dir if no user override exists."""
-    package_dir = Path(__file__).parent
-    bundled = package_dir / "hooks" / "damage-control" / "rules"
-    return bundled if bundled.exists() else None
+    try:
+        return get_damage_control_source()
+    except FileNotFoundError:
+        return None
 
 
 def _resolve_rules_dir() -> Path:
@@ -1299,6 +1301,34 @@ def _sync_yaml_dir(
     return result
 
 
+def _carry_forward_carved_packs(state: Dict[str, Any]) -> List[str]:
+    """Enable ``tmux`` on a machine whose installed ``agentwire.yaml`` still carries it (#1209 M2).
+
+    ``kill-server`` / ``kill-session -a`` used to ship inside ``agentwire.yaml``
+    (always on). They now live in the opt-in ``tmux`` pack, so a machine whose
+    ``packs:`` list was already decided would silently lose both on the next heal.
+    The marker is the INSTALLED ``agentwire.yaml`` being a pristine older release:
+    that file held the rules, so the decision was "on". It is one-shot — once heal
+    brings the file forward the marker is gone, and a later ``packs disable tmux``
+    sticks. An edited file matches no shipped hash and is left to the human.
+    """
+    from agentwire.safety import packs
+    from agentwire.safety.groups import AGENTWIRE_DEFAULT_PACKS
+
+    wanted = [p for p in AGENTWIRE_DEFAULT_PACKS if p not in (state[packs.PACKS_KEY] or [])]
+    installed = RULES_DIR / "agentwire.yaml"
+    if not wanted or not installed.exists():
+        return []
+    digest = _sha256(installed)
+    current = _sha256(get_damage_control_source() / "agentwire.yaml")
+    shipped = load_rule_baselines().get("rules", {}).get("agentwire.yaml", [])
+    if digest is None or digest == current or digest not in shipped:
+        return []
+    state[packs.PACKS_KEY] = sorted([*(state[packs.PACKS_KEY] or []), *wanted])
+    packs.write_state(DAMAGECONTROL_FILE, packs=state[packs.PACKS_KEY])
+    return wanted
+
+
 def migrate_pack_state() -> Dict[str, Any]:
     """Load pack/group state, first recording a pre-packs install's packs (#1141).
 
@@ -1320,6 +1350,8 @@ def migrate_pack_state() -> Dict[str, Any]:
         migrated = packs.migrate_packs(state, installed)
         packs.write_state(DAMAGECONTROL_FILE, packs=migrated)
         state[packs.PACKS_KEY] = migrated
+    else:
+        migrated = _carry_forward_carved_packs(state)
     state["migrated"] = migrated
     return state
 

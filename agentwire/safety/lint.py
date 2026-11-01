@@ -286,9 +286,9 @@ def load_effective_config(
     `~/.agentwire/tooldefs/` win over the bundled copies and never self-heal, so
     a lint result is only meaningful alongside which set produced it (#916).
     """
-    from ..safety_commands import RULES_DIR, TOOLDEFS_DIR
+    from ..safety_commands import RULES_DIR, TOOLDEFS_DIR, get_damage_control_source
 
-    bundled_rules = Path(__file__).parent.parent / "hooks" / "damage-control" / "rules"
+    bundled_rules = get_damage_control_source()
     bundled_tooldefs = Path(__file__).parent.parent / "tooldefs"
 
     if rules_dir is None:

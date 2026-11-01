@@ -1,0 +1,43 @@
+# AgentWire's own MCP tool policies (#923) — AgentWire-owned.
+#
+# Must sort BEFORE the generic mcp-tools.yaml in the merged rule set: first match
+# wins, and the generic file ends in the write-shaped-name fallback that would
+# otherwise classify these tools first. The installed file name orders them.
+
+mcpToolPolicies:
+  # --- teardown / kill class -------------------------------------------------
+  - tool: mcp__agentwire__worktree_remove
+    id: mcp.agentwire.worktree-remove
+    tier: ask
+    mutates: true
+    reason: worktree_remove tears down a session's worktree and can delete its branch
+
+  - tool: mcp__agentwire__worktree_prune
+    id: mcp.agentwire.worktree-prune
+    tier: ask
+    mutates: true
+    reason: worktree_prune bulk-removes worktrees and can delete merged branches
+
+  - tool: mcp__agentwire__session_kill
+    id: mcp.agentwire.session-kill
+    tier: ask
+    mutates: true
+    reason: session_kill terminates another agent session
+
+  - tool: mcp__agentwire__pane_kill
+    id: mcp.agentwire.pane-kill
+    tier: ask
+    mutates: true
+    reason: pane_kill terminates a worker pane
+
+  - tool: mcp__agentwire__session_recreate
+    id: mcp.agentwire.session-recreate
+    tier: ask
+    mutates: true
+    reason: session_recreate force-removes the session's worktree and recursively deletes its directory
+
+  - tool: mcp__agentwire__machine_remove
+    id: mcp.agentwire.machine-remove
+    tier: ask
+    mutates: true
+    reason: machine_remove deregisters a remote machine from the fleet

@@ -20,7 +20,7 @@ from agentwire.safety._core import (
 )
 
 ROOT = Path(safety_commands.__file__).parent
-RULES = ROOT / "hooks" / "damage-control" / "rules"
+RULES = safety_commands.get_damage_control_source()
 TOOLDEFS = ROOT / "tooldefs"
 
 

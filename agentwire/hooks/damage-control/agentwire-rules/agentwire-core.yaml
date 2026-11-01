@@ -1,0 +1,31 @@
+# AgentWire state, secrets and owner env allows — AgentWire-owned.
+
+zeroAccessPaths:
+  # ---------------------------------------------------------------------------
+  # AGENTWIRE CREDENTIALS & SECRETS
+  # ---------------------------------------------------------------------------
+  - "~/.agentwire/credentials/"
+  - "~/.agentwire/api-keys/"
+  - "~/.agentwire/secrets/"
+  - "~/.agentwire/tokens/"
+  - "~/.agentwire/.env"
+  - "~/.agentwire/*.key"
+  - "~/.agentwire/*.pem"
+
+noDeletePaths:
+  # ---------------------------------------------------------------------------
+  # AGENTWIRE CONFIGURATION & STATE
+  # ---------------------------------------------------------------------------
+  - ~/.agentwire/
+  - ~/.agentwire/sessions/
+  - ~/.agentwire/hooks/
+  - ~/.agentwire/settings.json
+  - .agentwire/
+  - .agentwire/session.json
+
+allowedPaths:
+  # Project-specific env files the owner needs for tokens/config (read/write/edit only).
+  - path: "~/.agentwire/.env"
+    allow: [read, write, edit]
+  - path: "~/projects/agentwire-dev/.env"
+    allow: [read, write, edit]

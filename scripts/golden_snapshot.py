@@ -50,7 +50,7 @@ GOLDEN_DIR = CORPUS_DIR / "golden"
 SNAPSHOT = GOLDEN_DIR / "snapshot.json"
 HARVESTED = GOLDEN_DIR / "harvested.json"
 HOOKS_DIR = REPO / "agentwire" / "hooks" / "damage-control"
-RULES_DIR = HOOKS_DIR / "rules"
+RULES_DIR = [HOOKS_DIR / "rules", HOOKS_DIR / "agentwire-rules"]
 TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
 
 # Fixed environment. FAKE_HOME is deliberately NOT under /tmp: core.yaml allowlists

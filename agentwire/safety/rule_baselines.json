@@ -1,9 +1,22 @@
 {
   "_comment": "sha256 of every version of each bundled rule/tooldef file that has ever shipped on the main line. Used by heal_damage_control to tell a pristine older release (safe to update) from a hand-customized file (never touched). Regenerate with scripts/gen_rule_baselines.py (#916).",
   "rules": {
+    "agentwire-control-plane.yaml": [
+      "f6c7d559058cfe8a18e682efcab9941df5070cb85577dd9b6865580b70c00160"
+    ],
+    "agentwire-core.yaml": [
+      "794b8cb41038fb789e2d36c37265d4e4e10dd69f5a8517e5d39ca4f545222c34"
+    ],
+    "agentwire-mcp-tools.yaml": [
+      "64febf2693ad72e687141dac3134bd8fb89e28bb0c5b4570708557a8684345ea"
+    ],
+    "agentwire-outbound.yaml": [
+      "918168ca5cc92eb03f33dbffcb254f69b765b5fec3e3548260f0d8aba723ad63"
+    ],
     "agentwire.yaml": [
       "2c49ab654ff58675a3917d852093bc5f5ecc7d16cab10cd5046d11e8cede9621",
       "3cf2127d5f470f1fc9b24c3507c091b999110ed2fbb300f19765ac905d457e16",
+      "5ba2be093a035021f04be9f3adcc8a234cf8f04dd63955f8693d72472d7c3a21",
       "a30f698ca4156bc9a0715c5df4583c41d026a566d0bd8d534d263bec8b951e74",
       "a977b051e9ff66490816bbbd562e9106015c4e0950b547422f92debfd7d361f6",
       "c471a54cf5045348dc1df644852dc5933aa8bfd0e1aee0cddc1a20862128adde"
@@ -29,6 +42,7 @@
       "f24455216e8d4495fe1f34dab391f54b6137fafd5ae92c6350c083074abc1404"
     ],
     "control-plane.yaml": [
+      "61520caa4f7dae6cafec08a8f5c2af758f1111286f7aeac87a0c784374ae2b22",
       "7a55ddc53de37560525aea4c70e9546ca4ef50069b59d7d33d267a228a626ab3"
     ],
     "core.yaml": [
@@ -38,6 +52,7 @@
       "aac460ba170ab84b4cbeb4b7e8f55a0b94690bd0d260f26d358799afba1b79cf",
       "c0ded80e7d544f10c9db2b831d10fd0469057d08b1737eaf3b7ce7485ba0ad17",
       "c10d81a50fe5bf2b4d83a37bc9e58f22d2a8ea5265cd0757d6bceb38702481dd",
+      "d49e33dfeb72a8257e1853bdb4e11719610b41fb739979f439c4e08b53648705",
       "d7323ac7f5a4f23d1b6a7455c8666a26abca2cfe248e0b9161f93346abdce82a"
     ],
     "databases.yaml": [
@@ -78,11 +93,13 @@
       "d1a98c51bd97bb4afa4993d7dcc8de365f70530ea63e929fa91df05a19fc16eb"
     ],
     "mcp-tools.yaml": [
+      "4476df649910a91650c04d4fcaa3b3de11361cb699d2d165c95edc01facaa690",
       "d4b990f9a14bbe96212b616fb9774d6ca1afb0459a5d89072ce0ee8c97dc0eba"
     ],
     "outbound.yaml": [
       "3061c0cce6e6b09f744a70b5db9b172575b9316906442611ebfb810e0d308568",
       "33da113abeab721d9552773e95076b79833affa268318cc04ba4339407340d5b",
+      "43a80aa401cfad9838c29c1c992af6d864a77be93b85a1cd82e608b56a12f884",
       "99be82ddaa2a41ab71a65a2aa3e72f886fcf1f1bc7bd4b9dbbc5fa596bd1ca67",
       "ffbc4f3d175d33ecd488f55db92a140663b253f1e437872ff99db3bf0636d1d6"
     ],
@@ -104,6 +121,9 @@
       "cb16dbba11c759950bfaf2dd3c39c8d74cd8d54787f5f28f10ab78f5be3dba96",
       "dea06e851e9ddd0b90ba9b084476dbd927961d4f8a897579f1975110dd737fd4",
       "e30138c612f679b24330e4eac0388b7775299f2bcb25e104d03e02b7fe20f5af"
+    ],
+    "tmux.yaml": [
+      "cafcfb04275972ebeb1ecd06a1c7f9d12337bf154a7e4ce85cd69cc694f07dba"
     ]
   },
   "tooldefs": {

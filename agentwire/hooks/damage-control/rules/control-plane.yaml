@@ -16,9 +16,6 @@
 # protection absolute.
 
 readOnlyPaths:
-  - "~/.agentwire/damagecontrol.yml"
   - "*.damagecontrol.yml"
   - "~/.claude/settings.json"
-  - "~/.agentwire/hooks/damage-control/*.py"
   - "~/.claude/hooks/*"
-  - "~/.agentwire/damage-control/*.yaml"
