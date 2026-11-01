@@ -15,9 +15,10 @@ from pathlib import Path
 import pytest
 
 from agentwire.safety import _core as C  # noqa: N812
+from agentwire.safety.groups import bundled_rule_dirs
 
 REPO = Path(__file__).resolve().parent.parent.parent
-BUNDLED_RULES = REPO / "agentwire" / "hooks" / "damage-control" / "rules"
+BUNDLED_RULES = bundled_rule_dirs()
 BUNDLED_TOOLDEFS = REPO / "agentwire" / "tooldefs"
 
 UV_IDS = {

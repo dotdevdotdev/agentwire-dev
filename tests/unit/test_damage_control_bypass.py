@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from agentwire.safety._core import check_command, load_config
+from agentwire.safety.groups import bundled_rule_dirs
 
 # This corpus asserts on ``~``-form secret paths (``cat ~/.ssh/id_rsa``), so it
 # needs ``$HOME`` to look like a real home. The #893 redirect points HOME at a
@@ -35,7 +36,7 @@ from agentwire.safety._core import check_command, load_config
 pytestmark = pytest.mark.real_agentwire_home
 
 REPO = Path(__file__).resolve().parent.parent.parent
-RULES_DIR = REPO / "agentwire" / "hooks" / "damage-control" / "rules"
+RULES_DIR = bundled_rule_dirs()
 TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
 
 # Built without literal "rm -<flags>" substrings where convenient so the live

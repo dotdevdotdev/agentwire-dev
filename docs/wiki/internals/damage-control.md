@@ -536,7 +536,7 @@ defense-in-depth on top of the split, not implemented here.
 
 ## Security Patterns
 
-Patterns live in **categorized YAML files** under `agentwire/hooks/damage-control/rules/` (15 files, one per topic). To override or extend, drop YAML files into `~/.agentwire/damage-control/` — when that directory exists with `*.yaml` files, hooks load from there instead of the bundled rules.
+Patterns live in **categorized YAML files** under `agentwire/hooks/damage-control/rules/` (generic, one per topic) and `agentwire/hooks/damage-control/agentwire-rules/` (the AgentWire/owner layer, #1209 M2: `~/.agentwire` paths, `mcp__agentwire__*` policies, `agentwire email|quo`, the owner `.env` allow). Both install **flat** into `~/.agentwire/damage-control/` and merge in file-name order, so `agentwire-mcp-tools.yaml` sorts ahead of the generic `mcp-tools.yaml` write-shaped fallback; file names must be unique across the two dirs. `tmux.yaml` is the opt-in generic `tmux` pack (AgentWire enables it by default; heal carries it forward on a machine whose installed `agentwire.yaml` still held the tmux rules). `scripts/effective_rules.py --check` diffs the merged rule set against `corpus/golden/effective_rules.json`. To override or extend, drop YAML files into `~/.agentwire/damage-control/` — when that directory exists with `*.yaml` files, hooks load from there instead of the bundled rules.
 
 ### Flag position: `{ARGS}` (#1125)
 

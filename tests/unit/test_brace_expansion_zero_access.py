@@ -6,21 +6,15 @@ expanded spelling must block, and braces that are NOT expansions (``${var}``,
 a group holding whitespace, a group with no comma) must not start blocking.
 """
 
-from pathlib import Path
 
 import pytest
 
 from agentwire.safety._core import brace_variants, check_command, load_config
+from agentwire.safety.groups import bundled_rule_dirs
 
 pytestmark = pytest.mark.real_agentwire_home
 
-RULES_DIR = (
-    Path(__file__).resolve().parent.parent.parent
-    / "agentwire"
-    / "hooks"
-    / "damage-control"
-    / "rules"
-)
+RULES_DIR = bundled_rule_dirs()
 
 
 @pytest.fixture(scope="module")

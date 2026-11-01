@@ -1,0 +1,22 @@
+# AgentWire outbound channels (email via Resend, SMS via Quo) — AgentWire-owned.
+#
+# Gates the Bash shell-out (`agentwire email` / `agentwire quo`); the MCP tools
+# `email_send` / `quo_send` reuse these ids verbatim (#457). Same `ask` semantics
+# as the generic outbound rules: confirm interactively, fail closed unattended
+# unless the id is on `unattended_allow`.
+
+bashToolPatterns:
+  # ---------------------------------------------------------------------------
+  # AGENTWIRE OUTBOUND CHANNELS (external — email via Resend, SMS via Quo)
+  # ---------------------------------------------------------------------------
+  - pattern: '\bagentwire\s+email\b'
+    reason: agentwire email (sends an external email via Resend)
+    ask: true
+    id: outbound.agentwire-email
+    anchored: true
+
+  - pattern: '\bagentwire\s+quo\b'
+    reason: agentwire quo (sends an external SMS via Quo/OpenPhone)
+    ask: true
+    id: outbound.agentwire-quo
+    anchored: true

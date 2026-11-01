@@ -23,8 +23,9 @@ from agentwire.safety._core import (
     resolve_unattended_grants,
     unattended_grant_allows,
 )
+from agentwire.safety.groups import bundled_rule_dirs
 
-BUNDLED_RULES = Path(_core.__file__).parent.parent / "hooks" / "damage-control" / "rules"
+BUNDLED_RULES = bundled_rule_dirs()
 BUNDLED_TOOLDEFS = Path(_core.__file__).parent.parent / "tooldefs"
 
 

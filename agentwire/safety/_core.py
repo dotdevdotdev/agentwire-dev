@@ -1520,10 +1520,14 @@ def _assign_rule_id(
 
 
 def load_config(
-    rules_dir: Path,
+    rules_dir: Any,
     tooldefs_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Load and merge all rule YAMLs in ``rules_dir`` plus tooldef ask-patterns.
+
+    ``rules_dir`` is one directory or a list of them (the bundled generic rules and
+    the AgentWire layer). Files merge in sorted FILE-NAME order across all of them,
+    exactly as if they sat in one flat directory.
 
     Bash patterns get a stable ``id`` field (``"<file>.<slug-of-reason>"``) so
     they can be referenced by the ``safety.disabled_rules`` config.
@@ -1542,12 +1546,13 @@ def load_config(
         # the decision ladder fails CLOSED instead.
         merged["_parser_unavailable"] = "pyyaml unavailable — cannot load rules"
         return merged
-    if not rules_dir.exists():
+    rules_dirs = [rules_dir] if isinstance(rules_dir, Path) else list(rules_dir)
+    if not any(d.exists() for d in rules_dirs):
         return merged
     taken_ids: set = set()
     duplicate_ids: set = set()
     parse_failures: List[Dict[str, Any]] = []
-    yaml_files = sorted(rules_dir.glob("*.yaml"))
+    yaml_files = sorted((f for d in rules_dirs for f in d.glob("*.yaml")), key=lambda f: f.name)
     for rules_file in yaml_files:
         try:
             with open(rules_file, "r") as f:

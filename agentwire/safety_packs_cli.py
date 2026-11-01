@@ -36,7 +36,7 @@ def overview() -> List[Dict[str, Any]]:
     for e in REGISTRY.values():
         files = [
             {"section": section, "file": f, "installed": _file_status(section, f)}
-            for section in ("rules", "tooldefs") for f in getattr(e, section)
+            for section in ("rules", "tooldefs") for f in e.files(section)
         ]
         present = [b for b in e.binaries if shutil.which(b)]
         enabled = pack_state.entry_active(e, state)

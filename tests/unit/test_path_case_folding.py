@@ -7,16 +7,16 @@ exact-case. A symlink into a guarded dir is judged by where it lands.
 
 import os
 import sys
-from pathlib import Path
 
 import pytest
 
 from agentwire.safety import _core
 from agentwire.safety._core import check_path, check_read_path, load_config, match_path
+from agentwire.safety.groups import bundled_rule_dirs
 
 pytestmark = pytest.mark.real_agentwire_home
 
-RULES_DIR = Path(__file__).resolve().parent.parent.parent / "agentwire" / "hooks" / "damage-control" / "rules"
+RULES_DIR = bundled_rule_dirs()
 HOME = os.path.expanduser("~")
 VARIANTS = (
     ".SSH/ID_RSA",

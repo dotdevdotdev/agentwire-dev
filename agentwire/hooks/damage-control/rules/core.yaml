@@ -263,16 +263,6 @@ zeroAccessPaths:
   - "backup.sql"
   - "*.dump"
 
-  # ---------------------------------------------------------------------------
-  # AGENTWIRE CREDENTIALS & SECRETS
-  # ---------------------------------------------------------------------------
-  - "~/.agentwire/credentials/"
-  - "~/.agentwire/api-keys/"
-  - "~/.agentwire/secrets/"
-  - "~/.agentwire/tokens/"
-  - "~/.agentwire/.env"
-  - "~/.agentwire/*.key"
-  - "~/.agentwire/*.pem"
 
 # ---------------------------------------------------------------------------
 # READ-ONLY PATHS - Can read, but not write/edit/delete
@@ -354,16 +344,6 @@ noDeletePaths:
   # ---------------------------------------------------------------------------
   - ~/.claude/
   - CLAUDE.md
-
-  # ---------------------------------------------------------------------------
-  # AGENTWIRE CONFIGURATION & STATE
-  # ---------------------------------------------------------------------------
-  - ~/.agentwire/
-  - ~/.agentwire/sessions/
-  - ~/.agentwire/hooks/
-  - ~/.agentwire/settings.json
-  - .agentwire/
-  - .agentwire/session.json
 
   # ---------------------------------------------------------------------------
   # LICENSE AND LEGAL FILES
@@ -459,7 +439,3 @@ allowedPaths:
   # ---------------------------------------------------------------------------
   # PROJECT-SPECIFIC ENV FILES - Needed for tokens/config (read/write/edit only)
   # ---------------------------------------------------------------------------
-  - path: "~/.agentwire/.env"
-    allow: [read, write, edit]
-  - path: "~/projects/agentwire-dev/.env"
-    allow: [read, write, edit]

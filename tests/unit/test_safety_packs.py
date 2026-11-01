@@ -9,7 +9,7 @@ import pytest
 from agentwire import safety_commands, safety_packs_cli
 from agentwire.safety import packs
 from agentwire.safety._core import check_protected_bash_command
-from agentwire.safety.groups import REGISTRY, bundled_files
+from agentwire.safety.groups import AGENTWIRE_DEFAULT_PACKS, REGISTRY, bundled_files
 
 PKG = Path(safety_commands.__file__).parent
 
@@ -58,14 +58,14 @@ def decisions():
 
 def pack_files(name):
     e = REGISTRY[name]
-    return set(e.rules), set(e.tooldefs)
+    return set(e.files("rules")), set(e.files("tooldefs"))
 
 
 def install_old_layout():
     """What every pre-packs machine looks like: ALL bundled files, no `packs:` key."""
     src = bundled_files(PKG)
     for section, d, sdir in (
-        ("rules", safety_commands.RULES_DIR, PKG / "hooks" / "damage-control" / "rules"),
+        ("rules", safety_commands.RULES_DIR, safety_commands.get_damage_control_source()),
         ("tooldefs", safety_commands.TOOLDEFS_DIR, PKG / "tooldefs"),
     ):
         d.mkdir(parents=True, exist_ok=True)
@@ -79,13 +79,13 @@ def test_fresh_install_has_groups_not_packs(home):
     wrong = []
     for section in ("rules", "tooldefs"):
         for e in REGISTRY.values():
-            have = set(getattr(e, section)) & installed(section)
-            if e.kind == "pack" and have:
+            have = set(e.files(section)) & installed(section)
+            if e.kind == "pack" and e.name not in AGENTWIRE_DEFAULT_PACKS and have:
                 wrong.append(f"pack {e.name} installed {sorted(have)}")
-            if e.kind == "group" and set(getattr(e, section)) - installed(section):
+            if e.kind == "group" and set(e.files(section)) - installed(section):
                 wrong.append(f"group {e.name} missing files")
     assert not wrong, wrong
-    assert packs.read_state(safety_commands.DAMAGECONTROL_FILE)["packs"] == []
+    assert packs.read_state(safety_commands.DAMAGECONTROL_FILE)["packs"] == sorted(AGENTWIRE_DEFAULT_PACKS)
     assert set(decisions().values()) == {"allow"}
     weak = [c for c in DEFAULT_PROTECTED
             if safety_commands.check_command_safety(c)["decision"] != "block"]

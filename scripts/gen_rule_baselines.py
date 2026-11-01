@@ -44,8 +44,17 @@ MANIFEST_PATH = REPO_ROOT / "agentwire" / "safety" / "rule_baselines.json"
 
 # (manifest section, repo-relative dir)
 SECTIONS = {
-    "rules": Path("agentwire/hooks/damage-control/rules"),
-    "tooldefs": Path("agentwire/tooldefs"),
+    "rules": [
+        Path("agentwire/hooks/damage-control/rules"),
+        Path("agentwire/hooks/damage-control/agentwire-rules"),
+    ],
+    "tooldefs": [Path("agentwire/tooldefs")],
+}
+
+# A file that moved between dirs keeps its pre-move history reachable by name, so a
+# pristine older install of it still reads as "outdated", not "unknown" (#1209 M2).
+MOVED_FROM = {
+    "rules": {"agentwire.yaml": ["agentwire/hooks/damage-control/rules/agentwire.yaml"]},
 }
 
 # Files removed from the bundle. Their history stays in the manifest so doctor can
@@ -98,19 +107,23 @@ def _historical_hashes(relpath: str) -> List[str]:
 
 def build_manifest() -> Dict[str, object]:
     manifest: Dict[str, object] = {"_comment": HEADER}
-    for section, reldir in SECTIONS.items():
+    for section, reldirs in SECTIONS.items():
         entries: Dict[str, List[str]] = {}
-        for src in sorted((REPO_ROOT / reldir).glob("*.yaml")):
-            rel = str(reldir / src.name)
-            hashes = set(_historical_hashes(rel))
-            # The working-tree content always counts as shipped: this script is
-            # run in the same commit that changes a rule, before that content
-            # exists in history.
-            hashes.add(hashlib.sha256(src.read_bytes()).hexdigest())
-            entries[src.name] = sorted(hashes)
+        for reldir in reldirs:
+            for src in sorted((REPO_ROOT / reldir).glob("*.yaml")):
+                if src.name in entries:
+                    raise SystemExit(f"{section}/{src.name} exists in two source dirs (installed flat)")
+                hashes = set(_historical_hashes(str(reldir / src.name)))
+                for old in MOVED_FROM.get(section, {}).get(src.name, []):
+                    hashes.update(_historical_hashes(old))
+                # The working-tree content always counts as shipped: this script is
+                # run in the same commit that changes a rule, before that content
+                # exists in history.
+                hashes.add(hashlib.sha256(src.read_bytes()).hexdigest())
+                entries[src.name] = sorted(hashes)
         for name in RETIRED.get(section, []):
             if name not in entries:
-                entries[name] = _historical_hashes(str(reldir / name))
+                entries[name] = _historical_hashes(str(reldirs[0] / name))
         manifest[section] = dict(sorted(entries.items()))
     return manifest
 

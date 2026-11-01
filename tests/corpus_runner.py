@@ -18,11 +18,13 @@ from typing import Any, Dict, Iterator, List, Tuple
 import jsonschema
 import yaml
 
+from agentwire.safety.groups import bundled_rule_dirs
+
 REPO = Path(__file__).resolve().parent.parent
 CORPUS_DIR = REPO / "corpus"
 CASES_DIR = CORPUS_DIR / "cases"
 SCHEMA_PATH = CORPUS_DIR / "schema.json"
-RULES_DIR = REPO / "agentwire" / "hooks" / "damage-control" / "rules"
+RULES_DIR = bundled_rule_dirs()
 TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
 
 # Deliberately not under /tmp: core.yaml allowlists /tmp, which outranks zeroAccessPaths.

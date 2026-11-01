@@ -1,0 +1,8 @@
+# AgentWire's control-plane paths — AgentWire-owned. The generic control-plane.yaml
+# keeps the harness-level paths; the code-level protection (_core.py) is what makes
+# these absolute, this list is defense-in-depth and visibility.
+
+readOnlyPaths:
+  - "~/.agentwire/damagecontrol.yml"
+  - "~/.agentwire/hooks/damage-control/*.py"
+  - "~/.agentwire/damage-control/*.yaml"

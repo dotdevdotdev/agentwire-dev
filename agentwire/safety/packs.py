@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from agentwire.safety.groups import REGISTRY, Entry
+from agentwire.safety.groups import AGENTWIRE_DEFAULT_PACKS, REGISTRY, Entry
 
 try:
     import yaml
@@ -111,22 +111,23 @@ def wanted_files(section: str, state: Dict[str, Any]) -> Set[str]:
     """File names of ``section`` ("rules"/"tooldefs") that should be installed."""
     return {
         f for e in REGISTRY.values() if entry_active(e, state)
-        for f in getattr(e, section)
+        for f in e.files(section)
     }
 
 
 def unwanted_files(section: str, state: Dict[str, Any]) -> Set[str]:
     return {
         f for e in REGISTRY.values() if not entry_active(e, state)
-        for f in getattr(e, section)
+        for f in e.files(section)
     }
 
 
 def migrate_packs(state: Dict[str, Any], installed: Dict[str, Set[str]]) -> List[str]:
     """Packs to record as enabled for a pre-packs install, or ``[]``.
 
-    Only while ``state["packs"]`` is None and something is already installed
-    (an existing machine; a fresh one starts with every pack off). On such a
+    Only while ``state["packs"]`` is None. A fresh machine starts with every pack
+    off except AgentWire's own defaults (``AGENTWIRE_DEFAULT_PACKS``). On an
+    existing machine (something is already installed)
     machine EVERY pack is enabled, not just those with files present: before
     packs, heal reinstalled any missing bundled file, so a partial install
     (a deleted rules file, a pack with no tooldef) must come out of an upgrade
@@ -135,7 +136,7 @@ def migrate_packs(state: Dict[str, Any], installed: Dict[str, Set[str]]) -> List
     if state[PACKS_KEY] is not None or state.get("broken"):
         return []
     if not any(installed.get(section) for section in ("rules", "tooldefs")):
-        return []
+        return sorted(AGENTWIRE_DEFAULT_PACKS)
     return sorted(e.name for e in REGISTRY.values() if e.kind == "pack")
 
 

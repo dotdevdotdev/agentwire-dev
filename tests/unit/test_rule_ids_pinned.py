@@ -13,9 +13,10 @@ from pathlib import Path
 
 from agentwire.safety._core import DEFAULT_UNATTENDED_ALLOW, load_config, parse_unattended_allow
 from agentwire.safety.lint import unpinned_rules
+from agentwire.safety_commands import get_damage_control_source
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-RULES = ROOT / "agentwire" / "hooks" / "damage-control" / "rules"
+RULES = get_damage_control_source()
 TOOLDEFS = ROOT / "agentwire" / "tooldefs"
 GOLDEN = ROOT / "corpus" / "golden" / "rule_ids.json"
 
