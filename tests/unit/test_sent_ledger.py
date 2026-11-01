@@ -56,7 +56,7 @@ class TestLifecycle:
         assert not m.path.exists()  # the drain unlinked it ...
         row = _only()
         assert row["state"] == "delivered"  # ... and the sender can still tell
-        assert row["how"] == "pasted" and row["verified"] is True
+        assert row["how"] == "pasted"
 
     def test_queued_carries_the_live_deferral_reason_and_attempts(self, isolate, monkeypatch):
         _send()
@@ -76,13 +76,13 @@ class TestLifecycle:
         row = _only()
         assert row["state"] == "delivered" and row["how"] == "scrollback"
 
-    def test_unverified_delivery_is_not_claimed_verified(self, isolate):
+    def test_late_delivery_names_its_evidence(self, isolate):
         m = _send()
         m.path.unlink()
-        inbox._note_delivered("recv", [m], how="late", verified=False)
+        inbox._note_delivered("recv", [m], how="late")
         row = _only()
-        assert row["state"] == "delivered" and row["verified"] is False
-        assert "NOT independently confirmed" in sent_ledger.describe(row)
+        assert row["state"] == "delivered" and row["how"] == "late" and "verified" not in row
+        assert "late" in sent_ledger.describe(row)
 
     def test_dead_letter_records_reason_and_time(self, isolate, monkeypatch):
         _send()

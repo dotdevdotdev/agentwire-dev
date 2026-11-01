@@ -15,8 +15,8 @@ writer and the ONE reader of a per-sender record that outlives the file:
   :func:`list_sent`. Neither re-derives state.
 
 **What "delivered" means:** the text was pasted into the recipient's input
-box. Never "read", never "acted on". ``verified`` says how strong the evidence
-of the paste is (see :func:`record_delivered`); the output must not imply more.
+box. Never "read", never "acted on". ``how`` names the evidence of the paste
+(see :func:`record_delivered`); the output must not imply more.
 
 **Reconciliation, not trust.** The ledger can miss a transition (a crash
 between unlink and write, a delivery site added later without a hook). A
@@ -56,10 +56,8 @@ _TERMINAL = frozenset({"delivered", "dead_lettered", "purged", "pulled"})
 # Senders that are not a session: no ledger (nobody could ever read it).
 _NO_LEDGER = frozenset({"", "unknown"})
 
-# The paste-evidence tiers a delivery can carry. ``verified`` is True when the
-# drain POSITIVELY observed the text (box-cleared confirm, scrollback echo, a
-# confirmed Enter-only heal). False means the drain consumed the message on
-# weaker grounds.
+# The paste-evidence tiers a delivery can carry: how the drain came to know the
+# text landed.
 HOW_PASTED = "pasted"  # safe_deliver confirmed the box cleared
 HOW_DEDUP = "scrollback"  # the render was found on the recipient's scrollback
 HOW_HEALED = "healed"  # our paste sat in the box; Enter-only heal confirmed
@@ -162,12 +160,9 @@ def _transition(messages: "list[inbox.Message]", state: str, **fields) -> None:
                 rec.update(state=state, state_ts=now, **fields)
 
 
-def record_delivered(
-    messages: "list[inbox.Message]", how: str = HOW_PASTED, verified: bool = True
-) -> None:
-    """The drain confirmed the paste. *how* names the evidence; *verified* is
-    whether the drain positively observed the text (see the ``HOW_*`` tiers)."""
-    _transition(messages, "delivered", how=how, verified=verified)
+def record_delivered(messages: "list[inbox.Message]", how: str = HOW_PASTED) -> None:
+    """The drain confirmed the paste. *how* names the evidence (the ``HOW_*`` tiers)."""
+    _transition(messages, "delivered", how=how)
 
 
 def record_dead(messages: "list[inbox.Message]") -> None:
@@ -234,7 +229,7 @@ def _view(rec: dict) -> dict:
                        "missed the transition)",
             )
         return out
-    for key in ("reason", "how", "verified"):
+    for key in ("reason", "how"):
         if key in rec:
             out[key] = rec[key]
     return out
@@ -269,10 +264,8 @@ def describe(view: dict) -> str:
     parts = [state]
     if view.get("reason"):
         parts.append(view["reason"])
-    if state == "delivered":
-        parts.append(
-            "paste confirmed" if view.get("verified") else "paste NOT independently confirmed"
-        )
+    if state == "delivered" and view.get("how"):
+        parts.append(f"paste confirmed ({view['how']})")
     if state == "queued" and view.get("attempts"):
         parts.append(f"{view['attempts']} attempts")
     return " · ".join(parts)

@@ -501,7 +501,7 @@ is the one writer/reader of a per-sender record that outlives the file;
 | state | meaning |
 |---|---|
 | `queued` | still in the recipient's inbox; shows the live deferral reason + attempts (`box_not_empty`, `target_busy`, …). A passive `ingest` message stays `queued` ("waits for `msg pull`") |
-| `delivered` | the drain **pasted it into the recipient's input box**. Never "read", never "acted on". `how` = `pasted` (box-cleared confirm) / `scrollback` (echo found) / `healed` (our stuck paste, Enter confirmed) / `late`; `verified` says whether the drain positively observed the text |
+| `delivered` | the drain **pasted it into the recipient's input box**. Never "read", never "acted on". `how` = `pasted` (box-cleared confirm) / `scrollback` (echo found) / `healed` (our stuck paste, Enter confirmed) / `late`; |
 | `dead_lettered` | gave up; carries the drop reason + time. Survives `msg dead --purge` |
 | `purged` | removed before delivery by `msg purge` or a sender-exit GC of a non-load-bearing kind |
 | `pulled` | a passive message the recipient pulled |
