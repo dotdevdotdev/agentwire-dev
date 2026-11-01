@@ -7,7 +7,7 @@ result formatters that every ``mcp_*`` domain module imports. Mirrors
 **Importing this module builds an MCP server.** Only ``mcp_*`` modules and the
 ``mcp_server`` entrypoint may import it — the CLI-runner helper that used to
 live here now sits in :mod:`agentwire.core`, because a non-MCP consumer of it
-(``buddy_cli``, which ``build_parser()`` imports on EVERY invocation) dragged
+(a CLI module ``build_parser()`` imports on EVERY invocation) dragged
 the whole FastMCP construction into ordinary CLI startup (#1018).
 """
 

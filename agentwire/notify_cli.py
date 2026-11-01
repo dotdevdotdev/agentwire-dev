@@ -95,8 +95,7 @@ def cmd_notify_parent(args) -> int:
 
     # Fleet awareness (#1016). An idle is the fleet's own "I finished" signal,
     # and until now the ONLY thing it reached was a parent — so a listener with
-    # no parent link (the voice buddy) could not know a delegated job had
-    # landed. Recorded here, ABOVE the no-target return, because a root session
+    # no parent link could not know a delegated job had landed. Recorded here, ABOVE the no-target return, because a root session
     # going idle is exactly the case that returned early and told nobody.
     #
     # `exclude=target_session`: the parent hears this by paste in the lines

@@ -474,16 +474,14 @@ class BetaConfig:
     their sessions pay for.
     """
 
-    #: The realtime voice buddy (``agentwire buddy``, docs/wiki/voice-layer.md).
-    #: Off: the buddy CLI refuses, and the voice-buddy etiquette is stripped
-    #: from every shipped role prompt and from the ``msg_send`` MCP tool
-    #: description — see :mod:`agentwire.beta`.
-    voice_layer: bool = False
+    #: One ``name: bool = False`` field per flag, each also listed in
+    #: :data:`BETA_FLAG_NAMES`. No beta feature is in flight right now, so
+    #: there are none; see :mod:`agentwire.beta` for what a flag gates.
 
 
 #: Flag names ``BetaConfig`` knows about. The SSOT for what a ``<!-- beta:x -->``
 #: marker in a role file may name; anything else fails closed (block removed).
-BETA_FLAG_NAMES: frozenset[str] = frozenset({"voice_layer"})
+BETA_FLAG_NAMES: frozenset[str] = frozenset()
 
 
 def default_config_path() -> Path:
@@ -500,16 +498,14 @@ def _beta_from_data(data: dict) -> BetaConfig:
 
     ``is True``, not ``bool()``: a gate whose failure direction is ON is the
     wrong shape however unlikely the input. ``bool("false")`` is True, so a
-    user who wrote ``voice_layer: "false"`` — quoting the value they meant to
+    user who wrote ``some_flag: "false"`` — quoting the value they meant to
     DISABLE — would have enabled the feature. Only a real YAML boolean opens a
     gate, so there is exactly one spelling to reason about.
     """
     beta_data = data.get("beta", {}) or {}
     if not isinstance(beta_data, dict):
         beta_data = {}
-    return BetaConfig(
-        voice_layer=beta_data.get("voice_layer", False) is True,
-    )
+    return BetaConfig(**{name: beta_data.get(name, False) is True for name in BETA_FLAG_NAMES})
 
 
 @dataclass
@@ -1112,7 +1108,7 @@ def enabled_beta_flags() -> set[str]:
 
     It is not a second source of truth: the parse is the same function
     ``_dict_to_config`` calls, and env overrides run through the same
-    ``_apply_env_overrides``, so ``AGENTWIRE_BETA__VOICE_LAYER=true`` behaves
+    ``_apply_env_overrides``, so ``AGENTWIRE_BETA__<FLAG>=true`` behaves
     identically on both paths.
 
     Any failure — unreadable file, malformed YAML — returns the empty set. A

@@ -1643,8 +1643,8 @@ def _render_custom_services_section() -> int:
     """Doctor section: every registry service, agent and process alike (#983).
 
     Registry-driven, so a new ``services.custom`` entry is reported here the
-    moment it is registered — including a ``command`` service such as the voice
-    buddy's bridge, whose state was previously visible nowhere because it was
+    moment it is registered — including a ``command`` service (a plain long-running
+    process), whose state would otherwise be visible nowhere because it was
     hand-launched and therefore in no registry at all.
 
     Two things are reported that a bare healthcheck does not carry:
@@ -1701,42 +1701,23 @@ def _render_beta_section() -> int:
     """Doctor section: which beta features this install opted into.
 
     Reported even when everything is off, because "off" is the state a user
-    checks doctor to confirm — a section that prints nothing until you enable
-    something cannot answer "is the voice layer costing me anything?".
-
-    An enabled feature is then checked for the prerequisite it cannot supply
-    itself. **The key's PRESENCE only** — never the value, never a prefix: a
-    doctor run is the output people paste into an issue.
+    checks doctor to confirm. State only, never a secret value: a doctor run
+    is the output people paste into an issue. A flag with a prerequisite adds
+    its own check here, keyed on the flag name.
     """
-    import os
+    from .config import BETA_FLAG_NAMES, enabled_beta_flags
 
-    from .buddy_cli import buddy_service_configured
-    from .config import BETA_FLAG_NAMES, enabled_beta_flags, load_config
-    from .env_loader import missing_env_message
-    from .voice_layer.realtime import API_KEY_ENV
-
-    issues = 0
+    if not BETA_FLAG_NAMES:
+        print("  [..] no beta features in this build")
+        return 0
     enabled = enabled_beta_flags()
     for name in sorted(BETA_FLAG_NAMES):
-        if name not in enabled:
+        if name in enabled:
+            print(f"  [ok] beta.{name}: on")
+        else:
             print(f"  [..] beta.{name}: off — set 'beta.{name}: true' in "
                   "~/.agentwire/config.yaml to enable")
-            continue
-        if name == "voice_layer":
-            if os.environ.get(API_KEY_ENV, "").strip():
-                print(f"  [ok] beta.{name}: on — {API_KEY_ENV} is present")
-            else:
-                print(f"  [!!] beta.{name}: on but the voice buddy cannot mint a session")
-                print(f"     {missing_env_message(API_KEY_ENV)}")
-                issues += 1
-            if not buddy_service_configured(load_config().services.custom):
-                # Not an issue — running it supervised is the owner's call —
-                # but the one command that does it should be findable here.
-                print("  [..] voice buddy: no supervised service — run "
-                      "`agentwire buddy service install` from your own terminal")
-        else:
-            print(f"  [ok] beta.{name}: on")
-    return issues
+    return 0
 
 
 def cmd_doctor(args) -> int:

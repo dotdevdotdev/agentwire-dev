@@ -59,12 +59,11 @@ _NO_LEDGER = frozenset({"", "unknown"})
 # The paste-evidence tiers a delivery can carry. ``verified`` is True when the
 # drain POSITIVELY observed the text (box-cleared confirm, scrollback echo, a
 # confirmed Enter-only heal). False means the drain consumed the message on
-# weaker grounds — a non-tmux adapter's say-so.
+# weaker grounds.
 HOW_PASTED = "pasted"  # safe_deliver confirmed the box cleared
 HOW_DEDUP = "scrollback"  # the render was found on the recipient's scrollback
 HOW_HEALED = "healed"  # our paste sat in the box; Enter-only heal confirmed
 HOW_LATE = "late"  # exhaustion verdict found delivery evidence
-HOW_ADAPTER = "adapter"  # non-tmux delivery adapter
 
 
 def ledger_dir() -> Path:

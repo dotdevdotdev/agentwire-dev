@@ -50,23 +50,6 @@ EVENTS_FILE = Path.home() / ".agentwire" / "inbox-events.jsonl"
 # (``msg pull``). This is the "awareness without being driven" primitive —
 # correspondents drop a passive pointer; the anchor pulls on the human's cue.
 #
-# ``voice`` is the owner speaking to a session through their voice buddy (#985).
-# It replaced a ``<voice>`` marker the buddy used to prepend to the message
-# BODY: attribution rode inside the text while the slot that actually drives
-# behaviour said ``request``. Owner ruling, 2026-08-10:
-#
-#   * **ACTIVE, not passive.** A voice message is the owner talking; it should
-#     drive the session exactly as typing at it would. Making it passive would
-#     be a behaviour *reduction* versus the body prefix it replaces, and this
-#     slice is a consistency/SSOT change, not a capability cut.
-#   * **In ESCALATE_KINDS.** The owner spoke it and walked away. Screenless, a
-#     silently dead-lettered voice message is unrecoverable — there is no
-#     screen on which to notice the graveyard entry.
-#   * **NOT an interrupt.** ``ESCALATE_KINDS`` governs dead-letter escalation,
-#     which is a different axis from the interrupt tier. ``escalation`` remains
-#     the only kind that pre-empts (see ``_alert_dead_letters``'s promotion and
-#     the buddy client's ``isUrgent``).
-#
 # ``idle`` is the idle handler SPEAKING FOR a child that went quiet without
 # reporting (#952). It used to travel as ``done`` with the sentinel text
 # "is idle and done working", which made a placeholder and a genuine report
@@ -74,7 +57,7 @@ EVENTS_FILE = Path.home() / ".agentwire" / "inbox-events.jsonl"
 # unreviewed PR as reviewed. The kind is the discriminator, never the text:
 # a child that legitimately sends those words as its own report stays `done`.
 # Synthetic, so NOT load-bearing (a dead-lettered placeholder is no loss).
-KINDS = ("note", "done", "request", "escalation", "ingest", "voice", "idle")
+KINDS = ("note", "done", "request", "escalation", "ingest", "idle")
 
 # Kinds the drain never touches — they route to a subdir and are pull-only.
 PASSIVE_KINDS = ("ingest",)
@@ -191,7 +174,7 @@ _BOX_STATIC_THRESHOLD = 3
 #
 # This tuple is the SSOT and every consumer derives from it via load_bearing()
 # — see that function for the three hand-written copies #985 deleted.
-ESCALATE_KINDS = ("done", "request", "escalation", "voice")
+ESCALATE_KINDS = ("done", "request", "escalation")
 
 # How long a load-bearing message may sit pending before `doctor` reports it
 # (#879). Comfortably longer than any box-state defer — those clear in minutes —
@@ -219,10 +202,8 @@ def load_bearing(messages: "list[Message]") -> "list[Message]":
 
     It exists because the last three each carried their own hand-written
     ``("done", "escalation")`` literal, which already disagreed with
-    ``ESCALATE_KINDS`` about ``request`` and would have disagreed again about
-    ``voice`` (#985) — a dead-lettered voice message emailing the owner on one
-    path and vanishing on another. Adding a fifth copy is the failure this
-    function exists to prevent; call it instead.
+    ``ESCALATE_KINDS`` about ``request``. Adding a fifth copy is the failure
+    this function exists to prevent; call it instead.
     """
     return [m for m in messages if m.kind in ESCALATE_KINDS]
 
@@ -603,8 +584,7 @@ def gc_sender(sender: str) -> dict:
     Messages live keyed by *recipient*, so when a worktree/session exits nothing
     reaps the report-backs it left undelivered across every inbox — they
     accumulate. This scans all pending queues for that sender and clears them:
-    load-bearing kinds (:data:`ESCALATE_KINDS`, which since #985 includes
-    ``voice``) are dead-lettered
+    load-bearing kinds (:data:`ESCALATE_KINDS`) are dead-lettered
     (which escalates via the owner-email path so the loss is never silent); the
     rest are dropped. Passive (``ingest``) messages are never auto-delivered, so
     they're left for the recipient to pull. Returns ``{dead, dropped}`` counts.
@@ -852,11 +832,10 @@ def _alert_dead_letters(batch: list[Message], reason: str) -> None:
     the tier exists for.
 
     **Escalatable is not the interrupt tier**, and this is where the two axes
-    are easiest to conflate. ``voice`` joined ``ESCALATE_KINDS`` in #985, so a
-    lost voice message reaches the owner by email — but the promotion below
-    stays keyed on ``escalation`` alone. Widening it to ``voice`` would make
-    every routine spoken message an alarm, which is the "retires the tier"
-    failure ``fleet_alerts`` exists to avoid.
+    are easiest to conflate. A lost ``done`` / ``request`` reaches the owner by
+    email, but the promotion below stays keyed on ``escalation`` alone.
+    Widening it would make every routine report an alarm, which is the
+    "retires the tier" failure ``fleet_alerts`` exists to avoid.
 
     Two recursion guards, because an alert is ordinary mail and can dead-letter
     like any other. The recipient guard alone is not enough once more than one
@@ -907,7 +886,7 @@ def _undelivered_phrase(reason: str, plural: bool) -> str:
 def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
     """Email the owner once per batch when load-bearing report-backs dead-letter.
 
-    ``done`` / ``request`` / ``escalation`` / ``voice`` are load-bearing — a
+    ``done`` / ``request`` / ``escalation`` are load-bearing — a
     silently-dropped one is a real loss, so we surface it out-of-band via the
     shared Resend wiring
     (the same owner-escalation channel usage-limit parking uses). ``note`` and
@@ -1132,8 +1111,8 @@ def _dedup_landed(session: str, messages: list[Message]) -> list[Message]:
 #   scoped to the line-count cliff leaves this regime open.
 #
 # Both bounds therefore apply to the coalesced paste; neither substitutes
-# for the other. The char bound sits under the voice layer's measured
-# worst-case-clear (~385 against the 520 boundary) because a shorter pane
+# for the other. The char bound sits under the measured worst-case-clear
+# (~385 against the 520 boundary) because a shorter pane
 # windows sooner and this fleet runs 64-column panes. A single message
 # whose own render exceeds the char bound is pasted alone — the drain
 # cannot split one message; bounding bodies at enqueue is a separate
@@ -1330,36 +1309,6 @@ def flush_session(session: str, force: bool = False) -> dict:
         messages = list_messages(session)
         if not messages:
             return {"session": session, "delivered": 0, "deferred": False, "reason": "empty"}
-
-        # Non-tmux delivery (EXPERIMENTAL, voice-layer spike). A recipient that
-        # registered a delivery adapter has no pane to paste into, so every gate
-        # below it is inapplicable — and the gone gate would actively kill its
-        # mail, since tmux is reachable and the recipient legitimately isn't in
-        # the session list. Inert for every
-        # session without a `delivery` key in metadata.json — i.e. all of them.
-        from .voice_layer import delivery as _delivery
-
-        if _delivery.adapter_for(session) is not None:
-            ok, reason = _delivery.deliver(session, messages)
-            if ok:
-                for msg in messages:
-                    if msg.path is not None:
-                        msg.path.unlink(missing_ok=True)
-                _note_delivered(session, messages, how="adapter", verified=False)
-                _log_event(
-                    "delivered", to=session, count=len(messages),
-                    kinds=[m.kind for m in messages], adapter=reason,
-                )
-                return {
-                    "session": session, "delivered": len(messages),
-                    "deferred": False, "reason": "delivered",
-                }
-            dead = _bump_attempts(messages, reason)
-            _log_event("deferred", to=session, count=len(messages), reason=reason)
-            return {
-                "session": session, "delivered": 0, "deferred": True,
-                "reason": reason, "dead": dead,
-            }
 
         # Gone gate FIRST (#694): a recipient that positively doesn't exist can
         # never clear a box, and the ordinary gates misread it — capturing a

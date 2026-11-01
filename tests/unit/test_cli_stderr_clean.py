@@ -1,8 +1,7 @@
 """Ordinary CLI commands must write NOTHING to stderr (#1018).
 
 Two symptoms, one root cause. ``build_parser()`` imports every ``*_cli``
-module, and ``buddy_cli`` reached ``voice_layer.tools`` → ``mcp_core`` for one
-subprocess helper. Importing ``mcp_core`` does two things no CLI invocation
+module, and one of them reached ``mcp_core`` for a subprocess helper. Importing ``mcp_core`` does two things no CLI invocation
 asked for:
 
 1. constructs the FastMCP singleton, whose settings model carries an

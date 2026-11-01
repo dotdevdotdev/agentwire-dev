@@ -76,10 +76,10 @@ class TestLifecycle:
         row = _only()
         assert row["state"] == "delivered" and row["how"] == "scrollback"
 
-    def test_adapter_delivery_is_not_claimed_verified(self, isolate):
+    def test_unverified_delivery_is_not_claimed_verified(self, isolate):
         m = _send()
         m.path.unlink()
-        inbox._note_delivered("recv", [m], how="adapter", verified=False)
+        inbox._note_delivered("recv", [m], how="late", verified=False)
         row = _only()
         assert row["state"] == "delivered" and row["verified"] is False
         assert "NOT independently confirmed" in sent_ledger.describe(row)

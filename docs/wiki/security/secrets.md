@@ -58,7 +58,6 @@ Two consequences:
 | Email channel (Resend) | `RESEND_API_KEY` | [Channels](../communication/channels.md) |
 | Quo / OpenPhone SMS channel | `QUO_API_KEY` (or legacy `OPENPHONE_API_KEY`) | [Channels](../communication/channels.md) |
 | Cloud STT | var **named by** `stt.cloud.api_key_env` — `OPENAI_API_KEY` by default; `GROQ_API_KEY`, `MISTRAL_API_KEY`, … per provider | [Cloud STT](../voice/stt-cloud.md) |
-| Voice buddy spend lookup (`fleet_openai_usage`) | `OPENAI_ADMIN_KEY` — an OpenAI **org Admin** key, separate from `OPENAI_API_KEY`; optional | [Voice layer](../voice-layer.md) |
 | PyPI publish (maintainers) | `PYPI_TOKEN` | release workflow only |
 
 `agentwire doctor` reports, for each configured feature, whether its

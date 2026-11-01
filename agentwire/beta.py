@@ -10,7 +10,7 @@ model-facing surfaces and a third would otherwise grow its own copy:
 
 Both are text a model reads and a user pays tokens for, which is the property
 that decides what belongs behind a gate. The MCP schema was missed on the first
-pass: ``msg_send``'s description grew ~316 characters of voice-buddy prose that
+pass: a tool description grew ~316 characters of beta-feature prose that
 loaded into every agent session in every install, ungated, while the commit
 message asserted the role prompts were the only such surface. The lesson is in
 this module's existence — one gate, one place, and a byte-identity proof per
@@ -23,9 +23,9 @@ import re
 
 #: A gated region:
 #:
-#:     <!-- beta:voice_layer -->
-#:     ...text that only ships when beta.voice_layer is on...
-#:     <!-- /beta:voice_layer -->
+#:     <!-- beta:some_flag -->
+#:     ...text that only ships when beta.some_flag is on...
+#:     <!-- /beta:some_flag -->
 #:
 #: Leading whitespace is allowed on both markers (a docstring cannot put them in
 #: column 0) and the close tag may end the string with no trailing newline. Both
@@ -79,7 +79,7 @@ def enabled_flags() -> set[str]:
     anyway. :func:`reset_cache` exists for tests.
 
     **The precondition that makes the ON direction safe, written down because
-    it is not visible from here.** A cached ``{"voice_layer"}`` outlives a
+    it is not visible from here.** A cached ``{"some_flag"}`` outlives a
     config that has since said off — verified: gated prose keeps rendering
     until :func:`reset_cache`. That is unreachable today only because every
     in-process caller of ``load_roles``/``parse_role_file`` is a short-lived

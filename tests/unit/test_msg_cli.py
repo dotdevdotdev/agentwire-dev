@@ -133,7 +133,7 @@ class TestSendBodyFile:
 class TestSenderCannotBeForged:
     """A session inside tmux speaks as itself: `--from` naming another session
     is refused, so a reply can't land in the wrong inbox. Callers outside tmux
-    (the buddy bridge, scripts) keep `--from`."""
+    (bridges, scripts) keep `--from`."""
 
     def test_in_tmux_a_different_from_is_refused_and_queues_nothing(self, isolate, monkeypatch, capsys):
         monkeypatch.setattr(msg_cli, "_current_session", lambda: "agentwire-voice")
@@ -146,4 +146,4 @@ class TestSenderCannotBeForged:
         assert msg_cli.cmd_msg_send(_ns(to="agentwire", text=["hi"], from_session="agentwire-voice")) == 0
 
     def test_outside_tmux_from_is_honored(self, isolate):
-        assert msg_cli.cmd_msg_send(_ns(to="agentwire", text=["hi"], from_session="buddy")) == 0
+        assert msg_cli.cmd_msg_send(_ns(to="agentwire", text=["hi"], from_session="bridge")) == 0

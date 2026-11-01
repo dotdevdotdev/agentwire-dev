@@ -110,9 +110,9 @@ def run_agentwire_cmd(
 
     Lives here rather than in ``mcp_core`` (#1018): it is a plain subprocess
     wrapper with no MCP in it, and importing it from ``mcp_core`` meant every
-    consumer — including ``buddy_cli``, which ``build_parser()`` imports on
-    EVERY CLI invocation — constructed the FastMCP singleton and reconfigured
-    the root logger as an import side effect.
+    consumer — any CLI module ``build_parser()`` imports on EVERY CLI
+    invocation — constructed the FastMCP singleton and reconfigured the root
+    logger as an import side effect.
 
     Args:
         args: Command arguments (e.g., ["list", "--sessions"])
@@ -1932,12 +1932,11 @@ def post_desktop_notification(text: str, session: str | None = None,
     ``mcp_desktop._announce_artifact`` posts a bodiless click-to-open artifact
     notice (#817) and deliberately stays where it is: it has no ``text``, so
     routing it here would write ledger entries reading "toast from : " — an
-    entry with nothing in it is worse than no entry, since the buddy would
+    entry with nothing in it is worse than no entry, since a reader would
     offer it as something that happened.
 
     **Recorded whether or not the portal took it.** A toast the portal refused
-    is the case where the buddy knowing about it matters MOST: nothing reached
-    the screen, and the voice channel is what is left.
+    is the case where the record matters MOST: nothing reached the screen.
     """
     body: dict = {"text": text, "priority": priority}
     if session:
