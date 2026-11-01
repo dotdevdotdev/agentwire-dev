@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate damage-control hook scripts by inlining ``agentwire/safety/_core.py``.
+"""Regenerate damage-control hook scripts by inlining the ``agentwire/safety/`` engine modules.
 
 The Claude Code hooks (bash/edit/write) must run as PEP 723 standalone scripts
 — they can't ``from agentwire.safety._core import ...`` because uv runs them
@@ -50,7 +50,12 @@ from pathlib import Path
 from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CORE_PATH = REPO_ROOT / "agentwire" / "safety" / "_core.py"
+SAFETY_DIR = REPO_ROOT / "agentwire" / "safety"
+# The engine, in the order a hook needs it defined: the data classes, the host's profile
+# builder (which ``_core`` finds in its own globals), then the engine itself. Each file is
+# standalone-safe — stdlib + yaml, no imports from this package — so concatenation IS
+# the module.
+ENGINE_SOURCES = ["profile.py", "host_profile.py", "_core.py"]
 HOOKS_DIR = REPO_ROOT / "agentwire" / "hooks" / "damage-control"
 
 HOOK_FILES = [
@@ -67,6 +72,17 @@ END_MARKER = "# === END GENERATED ==="
 STAMP_BEGIN = "# === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ==="
 STAMP_END = "# === END AGENTWIRE HOOK STAMP ==="
 STAMP_VAR = "AGENTWIRE_HOOK_STAMP"
+
+
+def engine_text() -> str:
+    """The text inlined into every hook: the engine modules, concatenated in order."""
+    parts = []
+    for name in ENGINE_SOURCES:
+        path = SAFETY_DIR / name
+        if not path.exists():
+            raise SystemExit(f"error: {path} not found")
+        parts.append(f"# --- inlined from agentwire/safety/{name} ---\n{path.read_text().strip()}")
+    return "\n\n\n".join(parts) + "\n"
 
 
 def core_sha256(core_text: str) -> str:
@@ -136,11 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not CORE_PATH.exists():
-        print(f"error: {CORE_PATH} not found", file=sys.stderr)
-        return 1
-
-    core_text = CORE_PATH.read_text()
+    core_text = engine_text()
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     drift_found = False
     wrote_any = False
