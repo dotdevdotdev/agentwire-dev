@@ -1836,6 +1836,19 @@ ls -la                     # Should be allowed
 agentwire safety logs --session test-session
 ```
 
+### Corpus and golden snapshot (#1209 M0)
+
+- **Corpus as data** — `corpus/cases/*.yaml`, one case per `(tool, input, context) -> expect`, validated by `corpus/schema.json`; every case carries a `class` and a `source` (lint rejects a case without them). `tests/corpus_runner.py` runs it; `tests/unit/test_corpus.py` has **one test per class**, plus must-fail controls (a contradicted expectation must fail, the lint must reject a bad case).
+- **Golden snapshot** — `corpus/golden/snapshot.json` is `(input, context) -> decision, rule_id` for every corpus case plus every engine input harvested from the safety tests (`harvested.json`), through the in-process engine, the five real hook entrypoints (subprocess; interactive/bypass/unattended postures) and representative audit rows. A later change must reproduce it byte-identically; a deliberate behaviour change lands as an explicit snapshot diff in its own PR.
+
+```bash
+scripts/golden_snapshot.py check     # re-record and diff against the committed snapshot
+scripts/golden_snapshot.py record    # re-record (only for a deliberate behaviour change)
+scripts/golden_snapshot.py harvest   # refresh harvested.json from the safety tests
+```
+
+The recorder pins `HOME`/`PWD`/`AGENTWIRE_DIR` and the session identity. The fake `HOME` is `/golden/home`: not under `/tmp` (core.yaml allowlists `/tmp`, which outranks `zeroAccessPaths`) and not `/home/...` (macOS autofs makes every stat of a nonexistent `/home/x` ~60 ms, a 25x slowdown).
+
 ---
 
 ## Performance

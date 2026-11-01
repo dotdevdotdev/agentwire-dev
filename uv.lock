@@ -37,6 +37,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "jsonschema" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -74,6 +75,7 @@ requires-dist = [
     { name = "faster-whisper", marker = "extra == 'stt'", specifier = ">=1.0.0" },
     { name = "faster-whisper", marker = "extra == 'tts'", specifier = ">=1.0.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
+    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "kokoro-onnx", marker = "python_full_version < '3.14'", specifier = ">=0.4.9" },
     { name = "markdown", specifier = ">=3.5" },
     { name = "mcp", specifier = ">=1.2.0,<2" },

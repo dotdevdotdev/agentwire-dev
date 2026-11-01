@@ -80,6 +80,7 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
+    "jsonschema>=4.0",
 ]
 # STT shim server dependencies. Moonshine (the default engine) ships in the
 # base install — see dependencies[] above — so the standalone `agentwire stt
