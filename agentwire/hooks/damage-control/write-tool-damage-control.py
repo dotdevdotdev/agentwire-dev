@@ -50,7 +50,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "ed2ab8aa22eb0d5adafcfe2de8bd4d48eb21b76958460e587f6309facf8a4b7c", "generated_at": "2026-11-01T23:21:36Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "e7310b2c0bcae6cd799b8c6bfff046016c656d69086fc8cb856ef325a7863a27", "generated_at": "2026-11-01T23:32:06Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 # --- inlined from agentwire/safety/profile.py ---
@@ -190,8 +190,8 @@ text can be inlined into the standalone hook scripts, where no package is import
 """
 
 
-def build_profile(Profile, GroupSpec, McpCommandTemplate):
-    return Profile(
+def build_profile(profile_cls, group_cls, template_cls):
+    return profile_cls(
         name="agentwire",
         config_dir="~/.agentwire",
         config_dir_env="AGENTWIRE_DIR",
@@ -290,12 +290,12 @@ def build_profile(Profile, GroupSpec, McpCommandTemplate):
         # lockstep with ``email_send`` / ``quo_send`` in ``agentwire/mcp_server.py`` and
         # the ``outbound.agentwire-*`` rules.
         mcp_command_templates=(
-            McpCommandTemplate("email_send", ("agentwire", "email"),
+            template_cls("email_send", ("agentwire", "email"),
                                (("to", "--to", True), ("subject", "--subject", False))),
-            McpCommandTemplate("quo_send", ("agentwire", "quo"), (("to", "--to", False),)),
+            template_cls("quo_send", ("agentwire", "quo"), (("to", "--to", False),)),
         ),
         groups=(
-            GroupSpec("agentwire", "group", "AgentWire state and session destruction",
+            group_cls("agentwire", "group", "AgentWire state and session destruction",
                       layer_rules=("agentwire.yaml",)),
         ),
         group_layer_rules=(
@@ -443,13 +443,13 @@ def install_profile(profile: Any) -> None:
 
 def _default_profile() -> Any:
     """The host's profile: ``build_profile`` inlined above us, else the sibling ``host_profile`` module, else generic."""
-    Profile_, GroupSpec_, Template_ = _data_classes()
+    profile_cls, group_cls, template_cls = _data_classes()
     build = globals().get("build_profile")
     if build is None and __package__:
         if importlib.util.find_spec(f"{__package__}.host_profile") is not None:
             # Found ⇒ import it for real: a broken host profile must raise, never fall back to generic.
             build = importlib.import_module(f"{__package__}.host_profile").build_profile
-    return build(Profile_, GroupSpec_, Template_) if build else Profile_()
+    return build(profile_cls, group_cls, template_cls) if build else profile_cls()
 
 
 # ============================================================================
@@ -11263,7 +11263,7 @@ def parse_payload(payload: Dict[str, Any], tools: Optional[Dict[str, Tuple[str, 
     command, for read/write/edit the target path (the first non-empty field wins). ``None``
     means every tool is an ``mcp`` call.
     """
-    ToolCall, Context, BYPASS = _policy()
+    tool_call, context, bypass = _policy()
     # Session attribution for audit rows (#940): hand the parsed payload to audit_logger
     # so every log_* call carries the conversation id. Fail-open.
     audit_logger = sys.modules.get("audit_logger")  # the hook imported it (or the import failed)
@@ -11272,12 +11272,12 @@ def parse_payload(payload: Dict[str, Any], tools: Optional[Dict[str, Tuple[str, 
 
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})
-    ctx = Context(
-        mode=BYPASS if payload.get("permission_mode", "") in BYPASS_PERMISSION_MODES else "default",
+    ctx = context(
+        mode=bypass if payload.get("permission_mode", "") in BYPASS_PERMISSION_MODES else "default",
         unattended=engine.is_unattended(),
     )
     if tools is None:
-        return ToolCall("mcp", tool_name, tool_input=tool_input or {}), ctx
+        return tool_call("mcp", tool_name, tool_input=tool_input or {}), ctx
     if tool_name not in tools:
         return None, ctx
     kind, fields = tools[tool_name]
@@ -11285,8 +11285,8 @@ def parse_payload(payload: Dict[str, Any], tools: Optional[Dict[str, Tuple[str, 
     if not value:
         return None, ctx
     if kind == "shell":
-        return ToolCall(kind, tool_name, command=value, cwd=payload.get("cwd")), ctx
-    return ToolCall(kind, tool_name, paths=(value,)), ctx
+        return tool_call(kind, tool_name, command=value, cwd=payload.get("cwd")), ctx
+    return tool_call(kind, tool_name, paths=(value,)), ctx
 
 
 def notify_unattended_block(engine: Any, subject: str, reason: str, rule_id: Optional[str]) -> None:

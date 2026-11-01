@@ -129,13 +129,13 @@ def install_profile(profile: Any) -> None:
 
 def _default_profile() -> Any:
     """The host's profile: ``build_profile`` inlined above us, else the sibling ``host_profile`` module, else generic."""
-    Profile_, GroupSpec_, Template_ = _data_classes()
+    profile_cls, group_cls, template_cls = _data_classes()
     build = globals().get("build_profile")
     if build is None and __package__:
         if importlib.util.find_spec(f"{__package__}.host_profile") is not None:
             # Found ⇒ import it for real: a broken host profile must raise, never fall back to generic.
             build = importlib.import_module(f"{__package__}.host_profile").build_profile
-    return build(Profile_, GroupSpec_, Template_) if build else Profile_()
+    return build(profile_cls, group_cls, template_cls) if build else profile_cls()
 
 
 # ============================================================================

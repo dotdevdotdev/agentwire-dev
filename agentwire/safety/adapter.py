@@ -60,7 +60,7 @@ def parse_payload(payload: Dict[str, Any], tools: Optional[Dict[str, Tuple[str, 
     command, for read/write/edit the target path (the first non-empty field wins). ``None``
     means every tool is an ``mcp`` call.
     """
-    ToolCall, Context, BYPASS = _policy()
+    tool_call, context, bypass = _policy()
     # Session attribution for audit rows (#940): hand the parsed payload to audit_logger
     # so every log_* call carries the conversation id. Fail-open.
     audit_logger = sys.modules.get("audit_logger")  # the hook imported it (or the import failed)
@@ -69,12 +69,12 @@ def parse_payload(payload: Dict[str, Any], tools: Optional[Dict[str, Tuple[str, 
 
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})
-    ctx = Context(
-        mode=BYPASS if payload.get("permission_mode", "") in BYPASS_PERMISSION_MODES else "default",
+    ctx = context(
+        mode=bypass if payload.get("permission_mode", "") in BYPASS_PERMISSION_MODES else "default",
         unattended=engine.is_unattended(),
     )
     if tools is None:
-        return ToolCall("mcp", tool_name, tool_input=tool_input or {}), ctx
+        return tool_call("mcp", tool_name, tool_input=tool_input or {}), ctx
     if tool_name not in tools:
         return None, ctx
     kind, fields = tools[tool_name]
@@ -82,8 +82,8 @@ def parse_payload(payload: Dict[str, Any], tools: Optional[Dict[str, Tuple[str, 
     if not value:
         return None, ctx
     if kind == "shell":
-        return ToolCall(kind, tool_name, command=value, cwd=payload.get("cwd")), ctx
-    return ToolCall(kind, tool_name, paths=(value,)), ctx
+        return tool_call(kind, tool_name, command=value, cwd=payload.get("cwd")), ctx
+    return tool_call(kind, tool_name, paths=(value,)), ctx
 
 
 def notify_unattended_block(engine: Any, subject: str, reason: str, rule_id: Optional[str]) -> None:

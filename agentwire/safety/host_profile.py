@@ -9,8 +9,8 @@ text can be inlined into the standalone hook scripts, where no package is import
 """
 
 
-def build_profile(Profile, GroupSpec, McpCommandTemplate):
-    return Profile(
+def build_profile(profile_cls, group_cls, template_cls):
+    return profile_cls(
         name="agentwire",
         config_dir="~/.agentwire",
         config_dir_env="AGENTWIRE_DIR",
@@ -109,12 +109,12 @@ def build_profile(Profile, GroupSpec, McpCommandTemplate):
         # lockstep with ``email_send`` / ``quo_send`` in ``agentwire/mcp_server.py`` and
         # the ``outbound.agentwire-*`` rules.
         mcp_command_templates=(
-            McpCommandTemplate("email_send", ("agentwire", "email"),
+            template_cls("email_send", ("agentwire", "email"),
                                (("to", "--to", True), ("subject", "--subject", False))),
-            McpCommandTemplate("quo_send", ("agentwire", "quo"), (("to", "--to", False),)),
+            template_cls("quo_send", ("agentwire", "quo"), (("to", "--to", False),)),
         ),
         groups=(
-            GroupSpec("agentwire", "group", "AgentWire state and session destruction",
+            group_cls("agentwire", "group", "AgentWire state and session destruction",
                       layer_rules=("agentwire.yaml",)),
         ),
         group_layer_rules=(
