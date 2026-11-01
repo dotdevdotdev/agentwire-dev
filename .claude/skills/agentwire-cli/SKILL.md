@@ -163,20 +163,7 @@ agentwire services status name  # one service
 agentwire services up <name>    # start (also clears 'down' state)
 agentwire services up --all     # start all autostart services (skips downed)
 agentwire services down <name>  # stop AND keep stopped (watchdog won't respawn)
-agentwire buddy service install [--autostart]  # HUMAN-ONLY: supervise the voice buddy
-                                # as service agentwire-buddy (beta.voice_layer)
-agentwire buddy service uninstall              # HUMAN-ONLY: stop + remove the entry
-
-# Portal voice assistant — service agentwire-voice (Haiku 5.5, medium effort; #1198)
-agentwire voice ask "<text>"    # deliver a request (starts it if needed); answer is spoken.
-                                # While an approval dialog is up, "yes"/"no" answers it
-agentwire voice state working|done|failed|approval   # portal status chip (used by its hooks)
-agentwire voice digest          # sessions (busy/idle/blocked), projects, scheduler, config
-agentwire voice grants [--clear [--rule <id>]]   # standing approvals ("yes, for today"): list / revoke
 agentwire list --state          # live busy / idle / blocked / unknown per local session
-agentwire voice status|start|stop|restart   # restart = same conversation
-agentwire voice install [--effort low] [--autostart]   # HUMAN-ONLY: write the service entry
-agentwire voice uninstall       # HUMAN-ONLY: stop + remove the entry
 agentwire new -s <name> --effort low|medium|high|xhigh|max   # per-session effort, survives restart
 
 # TTS/STT servers
@@ -205,7 +192,7 @@ agentwire prompts clear -s name --pane 1  # drop a marker
 
 # Polite messaging (non-interrupting agent-to-agent inbox; see wiki sessions/messaging.md)
 agentwire msg send --to name "text"          # queue a message (delivers when their box is clear)
-agentwire msg send --to name --kind done "PR #312 drafted"  # kinds: note|done|request|escalation|ingest|voice|idle (idle = the idle hook's synthetic placeholder, #952)
+agentwire msg send --to name --kind done "PR #312 drafted"  # kinds: note|done|request|escalation|ingest|idle (idle = the idle hook's synthetic placeholder, #952)
 agentwire msg send --to name --kind ingest --ref "/path/report.md" "topic"  # PASSIVE: never auto-delivered, pull-only
 agentwire msg send --to @all "team update"   # broadcast to live agent sessions except sender
 agentwire msg send --to name --body-file /tmp/body.md  # code-bearing body, no shell escaping ('-' = stdin)

@@ -14,7 +14,7 @@ The portal uses a left sidebar with a floating tab handle instead of hover hotzo
 - **Header**: connection status dot, session count, clock, pin toggle
 - **Open Windows section**: lists currently-open windows (drag to reorder, click to focus, × to close). Persisted in `localStorage['taskbar-state']` — restores on refresh.
 - **Accordion sections**: Sessions, Services, Machines, Projects, Artifacts, Scheduler, Safety, Config. Click header to expand/collapse. Data fetched on first expand.
-- **Footer**: global PTT button, voice indicator
+- **Footer**: voice indicator (TTS generating/playing)
 
 **Session grouping:** Sessions are split into two accordion sections based on the name:
 - **Services**: infrastructure sessions. The built-in allowlist in `service-classification.js` (`agentwire-portal`, `agentwire-tts`, `agentwire-stt`, `agentwire-scheduler`, `agentwire-notifications`) is merged at load time with config-defined custom services fetched from `/api/services/custom` (driven by `services.custom` in `config.yaml`). When the fetch resolves, `notifyListeners()` re-renders so flagged sessions hop into this column.
