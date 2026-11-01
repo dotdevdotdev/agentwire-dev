@@ -55,7 +55,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "7e139b5f299dcb28c741cea74552785badcb04ecbf3e5166fb030e727e96a232", "generated_at": "2026-11-01T23:10:05Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "ed2ab8aa22eb0d5adafcfe2de8bd4d48eb21b76958460e587f6309facf8a4b7c", "generated_at": "2026-11-01T23:21:36Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 # --- inlined from agentwire/safety/profile.py ---
@@ -97,19 +97,24 @@ class GroupSpec(NamedTuple):
     # still covers every entry that group covered before the split.
     layer_rules: Tuple[str, ...] = ()
 
+    def files(self, section: str) -> Tuple[str, ...]:
+        """Every bundled file this entry owns in ``section`` ("rules" | "tooldefs")."""
+        return self.rules + self.layer_rules if section == "rules" else self.tooldefs
+
 
 class McpCommandTemplate(NamedTuple):
     """How an outbound MCP tool maps onto the shell command it runs under the hood.
 
     The synthesized command must match the same rule the Bash shell-out matches. The
     body is omitted on purpose (privacy, audit clarity): rules key on the verb.
-    ``argv`` is the fixed prefix; each ``flags`` entry is ``(tool_input key, flag)`` —
-    a list value repeats the flag, an empty value omits it.
+    ``argv`` is the fixed prefix; each ``flags`` entry is ``(tool_input key, flag, repeat)``:
+    an empty value omits the flag; ``repeat`` lets a list value emit the flag once per item,
+    otherwise the value is rendered as one ``str()``.
     """
 
     tool: str  # short tool name, e.g. "email_send" (the part after the last "__")
     argv: Tuple[str, ...]
-    flags: Tuple[Tuple[str, str], ...] = ()
+    flags: Tuple[Tuple[str, str, bool], ...] = ()
 
 
 class Profile(NamedTuple):
@@ -291,8 +296,8 @@ def build_profile(Profile, GroupSpec, McpCommandTemplate):
         # the ``outbound.agentwire-*`` rules.
         mcp_command_templates=(
             McpCommandTemplate("email_send", ("agentwire", "email"),
-                               (("to", "--to"), ("subject", "--subject"))),
-            McpCommandTemplate("quo_send", ("agentwire", "quo"), (("to", "--to"),)),
+                               (("to", "--to", True), ("subject", "--subject", False))),
+            McpCommandTemplate("quo_send", ("agentwire", "quo"), (("to", "--to", False),)),
         ),
         groups=(
             GroupSpec("agentwire", "group", "AgentWire state and session destruction",
@@ -1925,15 +1930,94 @@ def _assign_rule_id(
     return candidate
 
 
+def resolve_rule_sources(bundle_dir: Path) -> List[Path]:
+    """The rules directories to load, in precedence order.
+
+    A directory of the host's own rule overrides (``<config dir>/damage-control``) that
+    holds any rule file replaces the bundle wholesale; otherwise the bundled generic
+    rules come first and the profile's extra dirs (``Profile.extra_rules_dirs``, relative
+    to ``bundle_dir``) after them. See :func:`load_config` for how sources merge.
+    """
+    override = config_override_dir() / "damage-control"
+    if override.exists() and any(override.glob("*.yaml")):
+        return [override]
+    return bundled_rule_sources(bundle_dir)
+
+
+def bundled_rule_sources(bundle_dir: Path) -> List[Path]:
+    """The shipped rules dirs under ``bundle_dir``: generic first, then the profile's layers."""
+    return [bundle_dir / "rules"] + [bundle_dir / d for d in PROFILE.extra_rules_dirs]
+
+
+def resolve_tooldef_sources(bundled: Path) -> List[Path]:
+    """The tooldef directories to load: the host's overrides win over ``bundled``; none if absent."""
+    override = config_override_dir() / "tooldefs"
+    if override.exists() and any(override.glob("*.yaml")):
+        return [override]
+    return [bundled] if bundled.exists() else []
+
+
+def synthesize_mcp_command(tool_name: str, tool_input: Dict[str, Any]) -> Optional[str]:
+    """The shell command an outbound MCP tool runs under the hood, or None for any other tool.
+
+    Declarative: the profile's ``mcp_command_templates`` name the tool and the argv it maps
+    to, so the SAME rule the Bash shell-out matches fires for the tool call. The body is
+    omitted on purpose (privacy, audit clarity) — rules key on the verb, not the payload.
+    """
+    template = PROFILE.template_for(tool_name)
+    if template is None:
+        return None
+    parts = list(template.argv)
+    for key, flag, repeat in template.flags:
+        value = tool_input.get(key)
+        items = value if repeat and isinstance(value, list) else ([value] if value else [])
+        for item in items:
+            parts += [flag, str(item)]
+    return " ".join(parts)
+
+
+def _without_control_plane_loosening(
+    items: List[Any], source: Path, failures: List[Dict[str, Any]]
+) -> List[Any]:
+    """``items`` minus any ``allowedPaths`` entry that would re-permit the protected control plane.
+
+    The allowlist is the one human, host-side override of the control plane, so a rules
+    file an EXTENSION ships (a profile layer, an overlay) must not carry one: that would let
+    the thing being extended be loosened by the extension. Dropped loudly, never silently.
+    """
+    kept = []
+    for item in items:
+        if isinstance(item, dict) and isinstance(item.get("path"), str) and control_plane_allowlist([item]):
+            _record_load_failure(
+                source,
+                ValueError(
+                    f"allowedPaths entry {item['path']!r} would re-permit the protected control plane; "
+                    "an extension rules source cannot loosen it — entry ignored"
+                ),
+                failures,
+            )
+            continue
+        kept.append(item)
+    return kept
+
+
 def load_config(
     rules_dir: Any,
-    tooldefs_dir: Optional[Path] = None,
+    tooldefs_dir: Any = None,
 ) -> Dict[str, Any]:
-    """Load and merge all rule YAMLs in ``rules_dir`` plus tooldef ask-patterns.
+    """Load and merge the rule YAMLs of every source in ``rules_dir`` plus tooldef ask-patterns.
 
-    ``rules_dir`` is one directory or a list of them (the bundled generic rules and
-    the AgentWire layer). Files merge in sorted FILE-NAME order across all of them,
-    exactly as if they sat in one flat directory.
+    Sources, in precedence order (:func:`resolve_rule_sources`): the bundled generic rules,
+    then profile-supplied dirs, then the host's overrides. ``rules_dir`` is one directory or
+    a list of them; ``tooldefs_dir`` is None, one directory, or a list. Files merge in sorted
+    FILE-NAME order across all of them, exactly as if they sat in one flat directory.
+
+    Merging is additive: a source can add rules but never remove or reorder another's, and
+    an extension's ``allowedPaths`` cannot re-permit the protected control plane
+    (``guarded_allowlist``). A rule id appearing twice across ANY sources is a load error —
+    both rules stay live, the id is recorded under ``_duplicate_rule_ids``, and doctor / lint
+    surface it — because ``disabled_rules`` and ``unattended_allow`` name rules by id and an
+    ambiguous id makes a relaxation ambiguous.
 
     Bash patterns get a stable ``id`` field (``"<file>.<slug-of-reason>"``) so
     they can be referenced by the ``safety.disabled_rules`` config.
@@ -1959,12 +2043,16 @@ def load_config(
     duplicate_ids: set = set()
     parse_failures: List[Dict[str, Any]] = []
     yaml_files = sorted((f for d in rules_dirs for f in d.glob("*.yaml")), key=lambda f: f.name)
+    # Every source after the first is an extension (a profile layer, an overlay).
+    extension_files = {f for d in rules_dirs[1:] for f in d.glob("*.yaml")}
     for rules_file in yaml_files:
         try:
             with open(rules_file, "r") as f:
                 data = yaml.safe_load(f) or {}
             for key in merged:
                 items = data.get(key, []) or []
+                if key == "allowedPaths" and rules_file in extension_files:
+                    items = _without_control_plane_loosening(items, rules_file, parse_failures)
                 if key in ("bashToolPatterns", "mcpToolPolicies"):
                     for it in items:
                         if isinstance(it, dict):
@@ -1973,8 +2061,9 @@ def load_config(
                 merged[key].extend(items)
         except Exception as exc:
             _record_load_failure(rules_file, exc, parse_failures)
-    if tooldefs_dir is not None:
-        tooldef_patterns = load_write_patterns_from_tooldefs(tooldefs_dir, parse_failures)
+    tooldef_dirs = [] if tooldefs_dir is None else ([tooldefs_dir] if isinstance(tooldefs_dir, Path) else list(tooldefs_dir))
+    for tooldef_source in tooldef_dirs:
+        tooldef_patterns = load_write_patterns_from_tooldefs(tooldef_source, parse_failures)
         for it in tooldef_patterns:
             _assign_rule_id(it, "tooldef", taken_ids, duplicate_ids)
             it.setdefault("source", "tooldef")
@@ -10788,181 +10877,482 @@ def check_mcp_tool(tool_name: str, config: Dict[str, Any]) -> Dict[str, Any]:
 
 # Last: judge by the host's profile from the first call on (see HOST PROFILE above).
 install_profile(_default_profile())
-# === END GENERATED ===
 
-# An audit-log failure never changes the decision (#1108).
-log_allowed, log_asked, log_blocked, log_disabled, log_escape = (
-    audit_best_effort(f) for f in (log_allowed, log_asked, log_blocked, log_disabled, log_escape)
+
+# --- inlined from agentwire/safety/policy.py ---
+"""The policy ladder, lifted out of the five hook ``main()``s (#1209 M3, section 4.1).
+
+``Guard.decide(ToolCall, Context) -> Verdict`` is the one place that turns an engine
+finding into allow / ask / block: bypass demotion, the unverifiable carve-out, the
+unattended fail-closed path with its grants, the kill switch, and the MCP screening.
+It is pure — it does no I/O and never exits. The caller supplies facts (``ToolCall``,
+``Context``) and renders the ``Verdict`` (``adapter.py``).
+
+The engine functions the ladder needs are reached through ``engine``, an object that
+exposes them as attributes (the ``_core`` module in-process, the hook's own namespace
+when inlined). Taking it as an argument keeps this file free of imports from the
+package, so it concatenates into a standalone hook, and lets the ladder be tested
+against a stub engine — the bypass x unverifiable x unattended x grant matrix needs no
+rule files and no subprocess.
+
+Control-plane and protected-path checks run BEFORE the kill switch; nothing the
+profile or the context supplies can loosen them.
+"""
+
+import re
+from typing import Any, Dict, NamedTuple, Optional, Tuple
+
+BYPASS = "bypass"
+DEFAULT = "default"
+
+ALLOW = "allow"
+ASK = "ask"
+BLOCK = "block"
+
+# Rule id of the ambiguous-command fallback; an operand-position substitution is
+# allowed unattended, a verb-concealing one (``unverifiable``) never is (#934/#925).
+AMBIGUOUS_COMMAND_RULE = "core.ambiguous-command"
+
+# Bridge for installs whose rules dir predates ``mcp-tools.yaml`` (#923): a stale user
+# rules dir wins over the bundled copy and carries no ``mcpToolPolicies``, so per-tool
+# classification loads empty. Until the heal installs the missing file, control-plane
+# screening must not degrade below the #1036 posture — consulted ONLY when zero policies
+# loaded. With policies present, the same shape lives as DATA (the ``mcp.writeish-name``
+# entry in mcp-tools.yaml) and this constant is inert.
+_WRITEISH_BRIDGE_RE = re.compile(
+    r"(write|edit|delete|remove|move|rename|create|append|patch|mkdir|"
+    r"rmdir|copy|upload|chmod|prune|kill|purge)",
+    re.IGNORECASE,
 )
 
-
-# ============================================================================
-# HOOK ENTRY POINT
-# ============================================================================
+# Per path-kind: the phrase in the block message.
+_PATH_VERB = {"read": "read of", "write": "write to", "edit": "edit to"}
 
 
-def _resolve_rules_dir():
-    """User override (~/.agentwire/damage-control/) wins; else the bundled rules
-    (generic + the AgentWire layer)."""
-    user_dir = Path(os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire")))
-    user_rules = user_dir / "damage-control"
-    if user_rules.exists() and any(user_rules.glob("*.yaml")):
-        return user_rules
-    return [Path(__file__).parent / "rules", Path(__file__).parent / "agentwire-rules"]
+class ToolCall(NamedTuple):
+    kind: str  # shell | read | write | edit | mcp
+    tool_name: str
+    command: str = ""  # shell: the command line
+    paths: Tuple[str, ...] = ()  # read / write / edit: the target path
+    tool_input: Optional[Dict[str, Any]] = None  # mcp: the call's arguments
+    cwd: Optional[str] = None  # shell: the directory the harness reports
 
 
-def _resolve_tooldefs_dir():
-    """User tooldefs (~/.agentwire/tooldefs/) win; else bundled."""
-    user_dir = Path(os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire")))
-    user_tooldefs = user_dir / "tooldefs"
-    if user_tooldefs.exists() and any(user_tooldefs.glob("*.yaml")):
-        return user_tooldefs
-    bundled = Path(__file__).parent.parent.parent / "tooldefs"
-    return bundled if bundled.exists() else None
+class Context(NamedTuple):
+    mode: str = DEFAULT  # "bypass" = the human opted out of ask-escalation friction
+    unattended: bool = False  # no human present (scheduler dispatch)
 
 
-def _notify_unattended_block(command: str, reason: str, rule_id: str | None) -> None:
-    """Fire-and-forget: email the owner that an unattended action was blocked.
+class Verdict(NamedTuple):
+    decision: str  # allow | ask | block
+    reason: str = ""
+    rule_id: Optional[str] = None
+    unverifiable: bool = False
+    disabled: bool = False
+    escape: bool = False
+    allowed_by: Optional[str] = None
+    # What the caller must do beyond the decision itself. All data: the ladder stays pure.
+    audit: Optional[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = None  # (event, args, kwargs)
+    stderr: Tuple[str, ...] = ()
+    notify: Optional[Tuple[str, str, Optional[str]]] = None  # (subject, reason, rule_id)
 
-    The hook is a PEP 723 script (pyyaml-only) and can't import the agentwire
-    package, so it shells out to the installed CLI, which emails via the same
-    Resend wiring usage-limit recovery uses. Detached + non-blocking so SMTP
-    never sits on the hook's hot path; failures are swallowed (the block has
-    already fired and is audit-logged regardless).
+
+def _audit(event: str, *args: Any, **kwargs: Any) -> Tuple[str, Tuple[Any, ...], Dict[str, Any]]:
+    return (event, args, kwargs)
+
+
+def _allowed(tool: str, subject: str, **kwargs: Any) -> Verdict:
+    return Verdict(ALLOW, audit=_audit("allowed", tool, subject, user_approved=False, **kwargs))
+
+
+def _iter_string_values(obj: Any):
+    """Every string in ``obj``, iteratively (no recursion limit to crash on)."""
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, str):
+            yield cur
+        elif isinstance(cur, dict):
+            stack.extend(cur.values())
+        elif isinstance(cur, (list, tuple)):
+            stack.extend(cur)
+
+
+def _pathlike_args(tool_input: Dict[str, Any]):
+    """String argument values that plausibly name a filesystem path.
+
+    Whitespace-bearing strings are prose, ``://`` marks a URL; what remains is
+    screened. A missed candidate degrades to today's behaviour (unscreened),
+    never to a false block.
     """
-    import subprocess
+    seen = set()
+    for s in _iter_string_values(tool_input):
+        if s in seen:
+            continue
+        seen.add(s)
+        if not s or " " in s or "\t" in s or "\n" in s or "://" in s:
+            continue
+        if "/" in s or s.startswith("~"):
+            yield s
+
+
+class Guard:
+    """Decides tool calls against a loaded ``config`` using ``engine``'s checks."""
+
+    def __init__(self, config: Dict[str, Any], engine: Any) -> None:
+        self.config = config
+        self.e = engine
+
+    def decide(self, call: ToolCall, ctx: Context) -> Verdict:
+        if call.kind in _PATH_VERB:
+            return self._decide_path(call)
+        if call.kind == "shell":
+            return self._decide_command(call, ctx, call.command, synthesized=False)
+        if call.kind == "mcp":
+            return self._decide_mcp(call, ctx)
+        raise ValueError(f"unknown tool-call kind: {call.kind!r}")
+
+    # -- Read / Write / Edit ---------------------------------------------
+
+    def _decide_path(self, call: ToolCall) -> Verdict:
+        e, path = self.e, call.paths[0]
+        check = e.check_read_path if call.kind == "read" else e.check_path
+        # The protected control plane is enforced even when safety is disabled, so
+        # it must run BEFORE the kill-switch short-circuit (#466).
+        blocked, reason = check(path, self.config)
+        if blocked:
+            return Verdict(
+                BLOCK, reason,
+                audit=_audit("blocked", call.tool_name, path, reason),
+                stderr=(f"SECURITY: Blocked {_PATH_VERB[call.kind]} {reason}: {path}",),
+            )
+        if self.config["safety"].get("enabled", True) is False:
+            return Verdict(ALLOW, disabled=True, audit=_audit("disabled", call.tool_name, path))
+        return _allowed(call.tool_name, path)
+
+    # -- Shell commands, and the shell command an outbound MCP tool runs --------
+
+    def _decide_command(self, call: ToolCall, ctx: Context, command: str, synthesized: bool) -> Verdict:
+        """``synthesized``: ``command`` stands in for an MCP tool call — it names no directory."""
+        e, tool = self.e, call.tool_name
+        if synthesized:
+            result = e.check_command(command, self.config)
+        else:
+            result = e.check_command(command, self.config, cwd=call.cwd)
+        decision, reason = result["decision"], result["reason"]
+        rule_id, pattern = result.get("id"), result.get("pattern")
+        shown = f"Command: {command[:100]}{'...' if len(command) > 100 else ''}"
+
+        if decision == BLOCK:
+            return Verdict(
+                BLOCK, reason, rule_id,
+                audit=_audit("blocked", tool, command, reason, pattern=pattern, rule_id=rule_id),
+                stderr=(f"SECURITY: Blocked: {reason}", shown),
+            )
+        if decision == ASK and ctx.unattended:
+            return self._unattended_ask(call, command, result, shown, synthesized)
+        if decision == ASK and (ctx.mode != BYPASS or result.get("unverifiable")):
+            # ``unverifiable`` (#934): a verb-concealing shape — eval, base64-pipe, a
+            # substitution deciding what runs or feeding a wrapper's payload — keeps its
+            # ask even under bypass. Bypass means "don't stop me for things you
+            # recognize"; it never meant "don't stop me for things you can't see".
+            return Verdict(ASK, reason, rule_id, unverifiable=bool(result.get("unverifiable")),
+                           audit=_audit("asked", tool, command, reason))
+        if result.get("escape"):
+            return Verdict(ALLOW, escape=True,
+                           audit=_audit("escape", tool, command, result.get("escape_reason") or ""))
+        if result.get("disabled"):
+            return Verdict(ALLOW, disabled=True, audit=_audit("disabled", tool, command))
+        if synthesized:
+            return _allowed(tool, command)
+        return _allowed(tool, command, allowed_by=result.get("allowed_by"))
+
+    def _unattended_ask(self, call: ToolCall, command: str, result: Dict[str, Any],
+                        shown: str, synthesized: bool) -> Verdict:
+        """No human present, so the interactive confirm is meaningless: fail closed.
+
+        BLOCK + notify the owner, unless the matched rule carries an unattended grant —
+        and, when that grant is path-scoped (#914), unless this command's target
+        directory is inside it.
+        """
+        e, tool = self.e, call.tool_name
+        reason, rule_id, pattern = result["reason"], result.get("id"), result.get("pattern")
+        if not synthesized and rule_id == AMBIGUOUS_COMMAND_RULE and not result.get("unverifiable"):
+            # #925 Part 3, against the #934 classifier: an operand-position substitution
+            # is the most common phrasing in shell and every rule has already scanned its
+            # masked form. Only VERB CONCEALMENT is non-redundant coverage, so the
+            # unattended refusal is scoped to ``unverifiable``.
+            return _allowed(tool, command)
+        grants = e.resolve_unattended_grants(self.config)
+        if synthesized:
+            # A synthesized command names no directory, so a path-scoped grant cannot be
+            # evaluated and must refuse (#914). Unscoped grants are unaffected.
+            granted, why = e.unattended_grant_allows(
+                rule_id, command, grants, e.safe_cwd(), pattern=pattern, scopeable=False,
+            )
+        else:
+            granted, why = e.unattended_grant_allows(
+                rule_id, command, grants, call.cwd or e.safe_cwd(), pattern=pattern,
+            )
+        if granted:
+            return _allowed(tool, command)
+        text = f"{reason} — {why}"
+        return Verdict(
+            BLOCK, reason, rule_id,
+            audit=_audit("blocked", tool, command, f"unattended: {text}", pattern=pattern, rule_id=rule_id),
+            stderr=(f"SECURITY: Blocked (unattended — no human to confirm): {reason}", shown,
+                    f"Why: {why}") + self._grant_hint(rule_id, grants, scoped_form=not synthesized),
+            notify=(command, text, rule_id),
+        )
+
+    def _grant_hint(self, rule_id: Optional[str], grants: Dict[str, Any], scoped_form: bool) -> Tuple[str, ...]:
+        hint = self.e.PROFILE.unattended_grant_hint
+        if not (hint and rule_id and rule_id not in grants):
+            return ()
+        text = hint.format(rule_id=rule_id)
+        if scoped_form:
+            text += f" (optionally scoped: `- {{id: {rule_id}, paths: [<dir>/]}}`)"
+        return (text + ".",)
+
+    # -- MCP tools ----------------------------------------------------------
+
+    def _decide_mcp(self, call: ToolCall, ctx: Context) -> Verdict:
+        e, tool_input = self.e, call.tool_input or {}
+        command = e.synthesize_mcp_command(call.tool_name, tool_input)
+        if command:
+            return self._decide_command(call, ctx, command, synthesized=True)
+        # Not a gated outbound tool: run the per-tool policy ladder (#923) and screen
+        # path-valued arguments — an operation refused via Bash must not be permitted
+        # via a tool.
+        tool, config = call.tool_name, self.config
+        policy = e.check_mcp_tool(tool, config)
+        decision, reason, rule_id = policy["decision"], policy["reason"], policy.get("id")
+        if decision == BLOCK:
+            return Verdict(BLOCK, reason, rule_id, audit=_audit("blocked", tool, tool, reason),
+                           stderr=(f"SECURITY: Blocked MCP tool: {reason}",))
+
+        # Path screening runs before any allow/ask verdict: a protected path argument
+        # blocks regardless of the tool's tier.
+        mutates = policy.get("mutates")
+        if mutates is None and not config.get("mcpToolPolicies"):
+            mutates = bool(_WRITEISH_BRIDGE_RE.search(tool.split("__")[-1]))
+        budget_exceeded = False
+        try:
+            with e.scan_deadline(e.SCAN_DEADLINE_SECONDS):
+                screened = self._screen_tool_paths(tool, tool_input, bool(mutates))
+            if screened is not None:
+                return screened
+        except e.ScanBudgetExceeded:
+            # Arguments too large to screen in time: fail closed (#1108) — an unverifiable
+            # ask, so bypass cannot demote it and unattended blocks. The kill switch turns
+            # the budget off with everything else; a protected control-plane path anywhere
+            # in the arguments is never exempted by the switch.
+            if not e.kill_switch_off(config) or any(
+                e.mentions_control_plane(s) for s in _iter_string_values(tool_input)
+            ):
+                budget_exceeded = True
+                decision, rule_id = ASK, "core.scan-budget"
+                reason = (
+                    f"MCP tool arguments exceeded the {e.SCAN_DEADLINE_SECONDS:g}s screening "
+                    "budget — too large to analyze safely; a human must confirm "
+                    "(not demoted by bypass)"
+                )
+
+        if decision == ASK and ctx.unattended:
+            return self._unattended_mcp_ask(tool, reason, rule_id)
+        if decision == ASK and (ctx.mode != BYPASS or budget_exceeded):
+            return Verdict(ASK, reason, rule_id, unverifiable=budget_exceeded,
+                           audit=_audit("asked", tool, tool, reason))
+        return Verdict(ALLOW)
+
+    def _unattended_mcp_ask(self, tool: str, reason: str, rule_id: Optional[str]) -> Verdict:
+        e = self.e
+        # A tool call names no directory, so scopeable=False — a path-scoped grant
+        # refuses rather than guessing (#914).
+        grants = e.resolve_unattended_grants(self.config)
+        granted, why = e.unattended_grant_allows(rule_id, tool, grants, e.safe_cwd(), scopeable=False)
+        if granted:
+            return _allowed(tool, tool)
+        text = f"{reason} — {why}"
+        return Verdict(
+            BLOCK, reason, rule_id,
+            audit=_audit("blocked", tool, tool, f"unattended: {text}", rule_id=rule_id),
+            stderr=(f"SECURITY: Blocked (unattended — no human to confirm): {reason}",
+                    f"Tool: {tool}", f"Why: {why}")
+            + self._grant_hint(rule_id, grants, scoped_form=False),
+            notify=(tool, text, rule_id),
+        )
+
+    def _screen_tool_paths(self, tool: str, tool_input: Dict[str, Any], writeish: bool) -> Optional[Verdict]:
+        """A block Verdict when a path-valued argument violates the path ladders (#923).
+
+        Zero-access secrets block on MENTION for every tool (same semantics as
+        ``check_read_path`` — the path's mere presence in a call is the leak); the
+        protected control plane is readable by design, so it is only enforced when the
+        tool's POLICY says it mutates (``writeish``).
+        """
+        e = self.e
+        allowed = e.load_allowed_paths(self.config)
+        for p in _pathlike_args(tool_input):
+            blocked, reason = e.check_read_path(p, self.config)
+            if not blocked and writeish:
+                blocked, reason = e.check_protected_path(p, allowed)
+            if blocked:
+                return Verdict(
+                    BLOCK, reason, audit=_audit("blocked", tool, p, reason),
+                    stderr=(f"SECURITY: Blocked MCP tool argument: {reason}: {p}",),
+                )
+        return None
+
+
+# --- inlined from agentwire/safety/adapter.py ---
+"""Claude Code adapter (#1209 M3): hook payload -> ``ToolCall``/``Context``, ``Verdict`` -> exit code.
+
+The five PreToolUse hooks differ only in WHICH tools they handle and how their
+rule sources load; every one is ``parse -> decide -> render``, and this file holds the
+parse and render halves (``policy.Guard`` is the decide half). A hook declares a tool
+table ``{tool_name: (kind, (payload fields...))}`` and calls these in order.
+
+``render`` is the only place a decision becomes an exit code, a stderr line, an audit row
+and a notification, so a verdict that reaches it can only be rendered one way.
+
+Standard library only; inlined into the hooks after ``policy.py`` (see ``policy.py`` for
+why the engine arrives as an argument).
+"""
+
+import importlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+# ``permission_mode`` values that mean the human opted out of ask-escalation friction:
+#   - "bypassPermissions" -> --dangerously-skip-permissions
+#   - "auto"              -> autonomous /loop or similar auto mode
+# Hard blocks still fire either way; an ``ask`` becomes an allow — EXCEPT an unverifiable one.
+BYPASS_PERMISSION_MODES = frozenset({"bypassPermissions", "auto"})
+
+# stdout of an ask: Claude Code's PreToolUse permission-decision envelope.
+_HOOK_EVENT = "PreToolUse"
+
+
+def _policy() -> Tuple[Any, Any, str]:
+    """``(ToolCall, Context, BYPASS)``: inlined above this file in a hook, else ``policy.py``."""
+    g = globals()
+    if "ToolCall" in g:
+        return g["ToolCall"], g["Context"], g["BYPASS"]
+    mod = importlib.import_module(f"{__package__}.policy")
+    return mod.ToolCall, mod.Context, mod.BYPASS
+
+
+def load_hook_config(engine: Any, hook_file: str, tooldefs: bool) -> Dict[str, Any]:
+    """The merged rule set for the hook at ``hook_file``, plus the effective safety knobs.
+
+    Rules load from the sources ``engine.resolve_rule_sources`` names, relative to the
+    directory the hook sits in. ``tooldefs`` is True for the hooks that judge shell commands.
+    """
+    bundle = Path(hook_file).parent
+    sources = engine.resolve_rule_sources(bundle)
+    tooldef_sources = engine.resolve_tooldef_sources(bundle.parent.parent / "tooldefs") if tooldefs else None
+    config = engine.load_config(sources, tooldef_sources)
+    config["safety"] = engine.load_safety_config()
+    return config
+
+
+def parse_payload(payload: Dict[str, Any], tools: Optional[Dict[str, Tuple[str, Tuple[str, ...]]]],
+                  engine: Any) -> Tuple[Any, Any]:
+    """``(ToolCall | None, Context)``; no call means this hook has nothing to judge.
+
+    ``tools`` maps a tool name to ``(kind, fields)``: for ``shell`` the field names the
+    command, for read/write/edit the target path (the first non-empty field wins). ``None``
+    means every tool is an ``mcp`` call.
+    """
+    ToolCall, Context, BYPASS = _policy()
+    # Session attribution for audit rows (#940): hand the parsed payload to audit_logger
+    # so every log_* call carries the conversation id. Fail-open.
+    audit_logger = sys.modules.get("audit_logger")  # the hook imported it (or the import failed)
+    if audit_logger is not None:
+        audit_logger.HOOK_INPUT = payload
+
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {})
+    ctx = Context(
+        mode=BYPASS if payload.get("permission_mode", "") in BYPASS_PERMISSION_MODES else "default",
+        unattended=engine.is_unattended(),
+    )
+    if tools is None:
+        return ToolCall("mcp", tool_name, tool_input=tool_input or {}), ctx
+    if tool_name not in tools:
+        return None, ctx
+    kind, fields = tools[tool_name]
+    value = next((tool_input.get(f, "") for f in fields if tool_input.get(f, "")), "")
+    if not value:
+        return None, ctx
+    if kind == "shell":
+        return ToolCall(kind, tool_name, command=value, cwd=payload.get("cwd")), ctx
+    return ToolCall(kind, tool_name, paths=(value,)), ctx
+
+
+def notify_unattended_block(engine: Any, subject: str, reason: str, rule_id: Optional[str]) -> None:
+    """Fire-and-forget: tell the owner an unattended action was blocked.
+
+    Runs the profile's notifier argv, detached and non-blocking so it never sits on the
+    hook's hot path; failures are swallowed (the block has already fired and is
+    audit-logged regardless). A hook is stdlib-only and cannot import the host, hence the
+    subprocess.
+    """
+    argv = engine.PROFILE.unattended_block_notifier
+    if not argv:
+        return
     try:
         subprocess.Popen(
-            ["agentwire", "safety", "notify-unattended-block",
-             "--reason", reason or "",
-             "--rule-id", rule_id or "",
-             "--command", command[:500]],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
+            [*argv, "--reason", reason or "", "--rule-id", rule_id or "", "--command", subject[:500]],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
     except Exception:
         pass
 
 
+def render(verdict: Any, engine: Any) -> None:
+    """Carry out ``verdict`` and exit: audit row, notification, stderr, then the exit code / ask envelope."""
+    if verdict.audit:
+        event, args, kwargs = verdict.audit
+        # An audit-log failure never changes the decision (#1108).
+        engine.audit_best_effort(getattr(engine, f"log_{event}"))(*args, **kwargs)
+    if verdict.notify:
+        notify_unattended_block(engine, *verdict.notify)
+    for line in verdict.stderr:
+        print(line, file=sys.stderr)
+    if verdict.decision == "block":
+        sys.exit(2)
+    if verdict.decision == "ask":
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": _HOOK_EVENT,
+            "permissionDecision": "ask",
+            "permissionDecisionReason": verdict.reason,
+        }}))
+    sys.exit(0)
+# === END GENERATED ===
+
+import types
+
+# Bash and PowerShell calls: judge the command line.
+# tool name -> (kind, payload fields); the decision itself lives in policy.Guard.
+TOOLS = {
+    "Bash": ("shell", ("command",)),
+    "PowerShell": ("shell", ("command",)),
+}
+
+
 def main() -> None:
-    config = load_config(_resolve_rules_dir(), _resolve_tooldefs_dir())
-    config["safety"] = load_safety_config()
-
-    input_data = read_hook_input()
-
-    # Session attribution for audit rows (#940): hand the parsed payload to
-    # audit_logger so every log_* call carries the conversation id. Fail-open.
-    try:
-        import audit_logger as _audit_logger
-        _audit_logger.HOOK_INPUT = input_data
-    except Exception:
-        pass
-
-    tool_name = input_data.get("tool_name", "")
-    tool_input = input_data.get("tool_input", {})
-    # Claude Code passes ``permission_mode`` in the hook input. Two modes
-    # indicate the user has explicitly opted out of ask-escalation friction:
-    #   - "bypassPermissions" → --dangerously-skip-permissions
-    #   - "auto"              → autonomous /loop or similar auto mode
-    # Hard blocks still fire either way; ``ask:true`` patterns become allow —
-    # EXCEPT an unverifiable (verb-concealing) ask, which stays an ask (#934).
-    permission_mode = input_data.get("permission_mode", "")
-    bypass_modes = {"bypassPermissions", "auto"}
-
-    if tool_name not in ("Bash", "PowerShell"):
+    engine = types.SimpleNamespace(**globals())
+    guard = Guard(load_hook_config(engine, __file__, tooldefs=True), engine)
+    call, ctx = parse_payload(read_hook_input(), TOOLS, engine)
+    if call is None:
         sys.exit(0)
-
-    command = tool_input.get("command", "")
-    if not command:
-        sys.exit(0)
-
-    result = check_command(command, config, cwd=input_data.get("cwd"))
-    decision = result["decision"]
-    reason = result["reason"]
-
-    if decision == "block":
-        try:
-            log_blocked(tool_name, command, reason, pattern=result.get("pattern"), rule_id=result.get("id"))
-        except TypeError:
-            log_blocked(tool_name, command, reason)
-        print(f"SECURITY: Blocked: {reason}", file=sys.stderr)
-        print(f"Command: {command[:100]}{'...' if len(command) > 100 else ''}", file=sys.stderr)
-        sys.exit(2)
-    elif decision == "ask" and is_unattended():
-        # No human present (scheduler dispatch). The interactive confirm is
-        # meaningless, so fail closed: BLOCK + notify the owner, unless the
-        # matched rule carries an unattended grant — and, when that grant is
-        # path-scoped (#914), unless this command's target directory is inside
-        # it. `hook_cwd` is the directory scope is measured from; see
-        # `command_scope_dirs`.
-        rule_id = result.get("id")
-        # #925 Part 3, against the #934 classifier: an operand-position
-        # substitution (`for p in a b; do echo "$(basename $p)"; done`) is the
-        # most common phrasing in shell, every rule has already scanned its
-        # masked form, and 54% of all unattended blocks were this shape. Only
-        # VERB CONCEALMENT is non-redundant coverage — a dangerous operand
-        # case is caught by its verb's own rule — so the unattended refusal is
-        # scoped to `unverifiable`, which no grant and no bypass demotes.
-        if rule_id == "core.ambiguous-command" and not result.get("unverifiable"):
-            log_allowed(tool_name, command, user_approved=False)
-            sys.exit(0)
-        hook_cwd = input_data.get("cwd") or safe_cwd()
-        grants = resolve_unattended_grants(config)
-        granted, why = unattended_grant_allows(
-            rule_id, command, grants, hook_cwd, pattern=result.get("pattern"),
-        )
-        if granted:
-            log_allowed(tool_name, command, user_approved=False)
-            sys.exit(0)
-        try:
-            log_blocked(tool_name, command, f"unattended: {reason} — {why}",
-                        pattern=result.get("pattern"), rule_id=rule_id)
-        except TypeError:
-            log_blocked(tool_name, command, f"unattended: {reason} — {why}")
-        _notify_unattended_block(command, f"{reason} — {why}", rule_id)
-        print(f"SECURITY: Blocked (unattended — no human to confirm): {reason}", file=sys.stderr)
-        print(f"Command: {command[:100]}{'...' if len(command) > 100 else ''}", file=sys.stderr)
-        print(f"Why: {why}", file=sys.stderr)
-        if rule_id and rule_id not in grants:
-            print(f"To permit this for an unattended task, add rule id "
-                  f"'{rule_id}' to its .agentwire.tasks.yml task `unattended_allow` "
-                  f"(optionally scoped: `- {{id: {rule_id}, paths: [<dir>/]}}`).",
-                  file=sys.stderr)
-        sys.exit(2)
-    elif decision == "ask" and (
-        permission_mode not in bypass_modes or result.get("unverifiable")
-    ):
-        # `unverifiable` (#934): a verb-concealing shape — eval, base64-pipe,
-        # a substitution deciding what runs or feeding a wrapper's payload —
-        # keeps its ask even under bypassPermissions/auto. Bypass means "don't
-        # stop me for things you recognize"; it never meant "don't stop me for
-        # things you can't see", and demoting these made obscuring a payload
-        # the permissive path (`psql -c "$(cat drop.sql)"` ran with no gate
-        # while the literal statement blocked).
-        log_asked(tool_name, command, reason)
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "ask",
-                "permissionDecisionReason": reason,
-            }
-        }
-        print(json.dumps(output))
-        sys.exit(0)
-    elif result.get("escape"):
-        log_escape(tool_name, command, result.get("escape_reason") or "")
-        sys.exit(0)
-    elif result.get("disabled"):
-        log_disabled(tool_name, command)
-        sys.exit(0)
-    else:
-        try:
-            log_allowed(tool_name, command, user_approved=False, allowed_by=result.get("allowed_by"))
-        except TypeError:
-            log_allowed(tool_name, command, user_approved=False)
-        sys.exit(0)
+    render(guard.decide(call, ctx), engine)
 
 
 if __name__ == "__main__":

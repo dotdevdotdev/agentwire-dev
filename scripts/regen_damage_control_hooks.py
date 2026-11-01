@@ -55,7 +55,7 @@ SAFETY_DIR = REPO_ROOT / "agentwire" / "safety"
 # builder (which ``_core`` finds in its own globals), then the engine itself. Each file is
 # standalone-safe — stdlib + yaml, no imports from this package — so concatenation IS
 # the module.
-ENGINE_SOURCES = ["profile.py", "host_profile.py", "_core.py"]
+ENGINE_SOURCES = ["profile.py", "host_profile.py", "_core.py", "policy.py", "adapter.py"]
 HOOKS_DIR = REPO_ROOT / "agentwire" / "hooks" / "damage-control"
 
 HOOK_FILES = [

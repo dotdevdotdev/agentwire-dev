@@ -36,19 +36,24 @@ class GroupSpec(NamedTuple):
     # still covers every entry that group covered before the split.
     layer_rules: Tuple[str, ...] = ()
 
+    def files(self, section: str) -> Tuple[str, ...]:
+        """Every bundled file this entry owns in ``section`` ("rules" | "tooldefs")."""
+        return self.rules + self.layer_rules if section == "rules" else self.tooldefs
+
 
 class McpCommandTemplate(NamedTuple):
     """How an outbound MCP tool maps onto the shell command it runs under the hood.
 
     The synthesized command must match the same rule the Bash shell-out matches. The
     body is omitted on purpose (privacy, audit clarity): rules key on the verb.
-    ``argv`` is the fixed prefix; each ``flags`` entry is ``(tool_input key, flag)`` —
-    a list value repeats the flag, an empty value omits it.
+    ``argv`` is the fixed prefix; each ``flags`` entry is ``(tool_input key, flag, repeat)``:
+    an empty value omits the flag; ``repeat`` lets a list value emit the flag once per item,
+    otherwise the value is rendered as one ``str()``.
     """
 
     tool: str  # short tool name, e.g. "email_send" (the part after the last "__")
     argv: Tuple[str, ...]
-    flags: Tuple[Tuple[str, str], ...] = ()
+    flags: Tuple[Tuple[str, str, bool], ...] = ()
 
 
 class Profile(NamedTuple):

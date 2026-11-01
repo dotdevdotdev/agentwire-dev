@@ -1611,15 +1611,94 @@ def _assign_rule_id(
     return candidate
 
 
+def resolve_rule_sources(bundle_dir: Path) -> List[Path]:
+    """The rules directories to load, in precedence order.
+
+    A directory of the host's own rule overrides (``<config dir>/damage-control``) that
+    holds any rule file replaces the bundle wholesale; otherwise the bundled generic
+    rules come first and the profile's extra dirs (``Profile.extra_rules_dirs``, relative
+    to ``bundle_dir``) after them. See :func:`load_config` for how sources merge.
+    """
+    override = config_override_dir() / "damage-control"
+    if override.exists() and any(override.glob("*.yaml")):
+        return [override]
+    return bundled_rule_sources(bundle_dir)
+
+
+def bundled_rule_sources(bundle_dir: Path) -> List[Path]:
+    """The shipped rules dirs under ``bundle_dir``: generic first, then the profile's layers."""
+    return [bundle_dir / "rules"] + [bundle_dir / d for d in PROFILE.extra_rules_dirs]
+
+
+def resolve_tooldef_sources(bundled: Path) -> List[Path]:
+    """The tooldef directories to load: the host's overrides win over ``bundled``; none if absent."""
+    override = config_override_dir() / "tooldefs"
+    if override.exists() and any(override.glob("*.yaml")):
+        return [override]
+    return [bundled] if bundled.exists() else []
+
+
+def synthesize_mcp_command(tool_name: str, tool_input: Dict[str, Any]) -> Optional[str]:
+    """The shell command an outbound MCP tool runs under the hood, or None for any other tool.
+
+    Declarative: the profile's ``mcp_command_templates`` name the tool and the argv it maps
+    to, so the SAME rule the Bash shell-out matches fires for the tool call. The body is
+    omitted on purpose (privacy, audit clarity) — rules key on the verb, not the payload.
+    """
+    template = PROFILE.template_for(tool_name)
+    if template is None:
+        return None
+    parts = list(template.argv)
+    for key, flag, repeat in template.flags:
+        value = tool_input.get(key)
+        items = value if repeat and isinstance(value, list) else ([value] if value else [])
+        for item in items:
+            parts += [flag, str(item)]
+    return " ".join(parts)
+
+
+def _without_control_plane_loosening(
+    items: List[Any], source: Path, failures: List[Dict[str, Any]]
+) -> List[Any]:
+    """``items`` minus any ``allowedPaths`` entry that would re-permit the protected control plane.
+
+    The allowlist is the one human, host-side override of the control plane, so a rules
+    file an EXTENSION ships (a profile layer, an overlay) must not carry one: that would let
+    the thing being extended be loosened by the extension. Dropped loudly, never silently.
+    """
+    kept = []
+    for item in items:
+        if isinstance(item, dict) and isinstance(item.get("path"), str) and control_plane_allowlist([item]):
+            _record_load_failure(
+                source,
+                ValueError(
+                    f"allowedPaths entry {item['path']!r} would re-permit the protected control plane; "
+                    "an extension rules source cannot loosen it — entry ignored"
+                ),
+                failures,
+            )
+            continue
+        kept.append(item)
+    return kept
+
+
 def load_config(
     rules_dir: Any,
-    tooldefs_dir: Optional[Path] = None,
+    tooldefs_dir: Any = None,
 ) -> Dict[str, Any]:
-    """Load and merge all rule YAMLs in ``rules_dir`` plus tooldef ask-patterns.
+    """Load and merge the rule YAMLs of every source in ``rules_dir`` plus tooldef ask-patterns.
 
-    ``rules_dir`` is one directory or a list of them (the bundled generic rules and
-    the AgentWire layer). Files merge in sorted FILE-NAME order across all of them,
-    exactly as if they sat in one flat directory.
+    Sources, in precedence order (:func:`resolve_rule_sources`): the bundled generic rules,
+    then profile-supplied dirs, then the host's overrides. ``rules_dir`` is one directory or
+    a list of them; ``tooldefs_dir`` is None, one directory, or a list. Files merge in sorted
+    FILE-NAME order across all of them, exactly as if they sat in one flat directory.
+
+    Merging is additive: a source can add rules but never remove or reorder another's, and
+    an extension's ``allowedPaths`` cannot re-permit the protected control plane
+    (``guarded_allowlist``). A rule id appearing twice across ANY sources is a load error —
+    both rules stay live, the id is recorded under ``_duplicate_rule_ids``, and doctor / lint
+    surface it — because ``disabled_rules`` and ``unattended_allow`` name rules by id and an
+    ambiguous id makes a relaxation ambiguous.
 
     Bash patterns get a stable ``id`` field (``"<file>.<slug-of-reason>"``) so
     they can be referenced by the ``safety.disabled_rules`` config.
@@ -1645,12 +1724,16 @@ def load_config(
     duplicate_ids: set = set()
     parse_failures: List[Dict[str, Any]] = []
     yaml_files = sorted((f for d in rules_dirs for f in d.glob("*.yaml")), key=lambda f: f.name)
+    # Every source after the first is an extension (a profile layer, an overlay).
+    extension_files = {f for d in rules_dirs[1:] for f in d.glob("*.yaml")}
     for rules_file in yaml_files:
         try:
             with open(rules_file, "r") as f:
                 data = yaml.safe_load(f) or {}
             for key in merged:
                 items = data.get(key, []) or []
+                if key == "allowedPaths" and rules_file in extension_files:
+                    items = _without_control_plane_loosening(items, rules_file, parse_failures)
                 if key in ("bashToolPatterns", "mcpToolPolicies"):
                     for it in items:
                         if isinstance(it, dict):
@@ -1659,8 +1742,9 @@ def load_config(
                 merged[key].extend(items)
         except Exception as exc:
             _record_load_failure(rules_file, exc, parse_failures)
-    if tooldefs_dir is not None:
-        tooldef_patterns = load_write_patterns_from_tooldefs(tooldefs_dir, parse_failures)
+    tooldef_dirs = [] if tooldefs_dir is None else ([tooldefs_dir] if isinstance(tooldefs_dir, Path) else list(tooldefs_dir))
+    for tooldef_source in tooldef_dirs:
+        tooldef_patterns = load_write_patterns_from_tooldefs(tooldef_source, parse_failures)
         for it in tooldef_patterns:
             _assign_rule_id(it, "tooldef", taken_ids, duplicate_ids)
             it.setdefault("source", "tooldef")

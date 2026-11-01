@@ -110,8 +110,8 @@ def build_profile(Profile, GroupSpec, McpCommandTemplate):
         # the ``outbound.agentwire-*`` rules.
         mcp_command_templates=(
             McpCommandTemplate("email_send", ("agentwire", "email"),
-                               (("to", "--to"), ("subject", "--subject"))),
-            McpCommandTemplate("quo_send", ("agentwire", "quo"), (("to", "--to"),)),
+                               (("to", "--to", True), ("subject", "--subject", False))),
+            McpCommandTemplate("quo_send", ("agentwire", "quo"), (("to", "--to", False),)),
         ),
         groups=(
             GroupSpec("agentwire", "group", "AgentWire state and session destruction",
