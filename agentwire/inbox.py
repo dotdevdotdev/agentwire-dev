@@ -457,6 +457,7 @@ def pull_ingest(session: str) -> list[Message]:
         if m.path is not None:
             m.path.unlink(missing_ok=True)
     if msgs:
+        _ledger("record_pulled", msgs)
         _log_event("pulled", to=session, count=len(msgs))
     return msgs
 
@@ -578,12 +579,17 @@ def purge_pending(session: str) -> int:
     try:
         paths = pending_files(session)
         removed = 0
+        purged: list[Message] = []
         for path in paths:
+            msg = _read_message(path)
             try:
                 path.unlink()
                 removed += 1
+                if msg is not None:
+                    purged.append(msg)
             except OSError:
                 pass
+        _ledger("record_purged", purged, "msg purge")
         if removed:
             _log_event("purged_pending", session=session, count=removed)
         return removed
@@ -657,8 +663,10 @@ def gc_sender(sender: str) -> dict:
                     try:
                         path.unlink()
                         dropped += 1
+                        _ledger("record_purged", [msg], "sender_exited")
                     except OSError:
                         pass
+            _ledger("record_dead", newly_dead)
             # One digest per recipient, not one email per message (#836).
             _escalate_dead_letters(newly_dead, "sender_exited")
         finally:
@@ -759,6 +767,7 @@ def enqueue(
             passive=is_passive(kind), broadcast=(to == BROADCAST_TOKEN),
         )
         written.append(msg)
+    _ledger("record_sent", written)
     if written and kind == "done":
         _note_report(sender, text, [m.to for m in written])
     return written
@@ -996,6 +1005,7 @@ def _bump_attempts(messages: list[Message], reason: str = "", detail: str = "") 
                 verdict = _exhaustion_verdict(msg)
                 if verdict == "delivered":
                     msg.path.unlink(missing_ok=True)
+                    _ledger("record_delivered", [msg], "late")
                     _log_event(
                         "delivered_late", id=msg.id, to=msg.to, kind=msg.kind,
                         heals=msg.heals,
@@ -1010,6 +1020,7 @@ def _bump_attempts(messages: list[Message], reason: str = "", detail: str = "") 
         if eff in _AGE_BOUNDED_REASONS and _wait_expired(msg):
             if _exhaustion_verdict(msg) == "delivered":
                 msg.path.unlink(missing_ok=True)
+                _ledger("record_delivered", [msg], "late")
                 _log_event(
                     "delivered_late", id=msg.id, to=msg.to, kind=msg.kind,
                     heals=msg.heals,
@@ -1062,6 +1073,7 @@ def _bump_attempts(messages: list[Message], reason: str = "", detail: str = "") 
                 pass
     # One digest email for the whole batch (all share the same recipient —
     # `messages` is always one session's inbox), not one per message (#836).
+    _ledger("record_dead", newly_dead)
     _escalate_dead_letters(newly_dead, _UNCONFIRMED_REASON if unconfirmed else reason)
     return dead
 
@@ -1094,7 +1106,7 @@ def _dedup_landed(session: str, messages: list[Message]) -> list[Message]:
             msg.path.unlink(missing_ok=True)
             consumed.append(msg)
     if consumed:
-        _note_delivered(session, consumed)
+        _note_delivered(session, consumed, how="scrollback")
         _log_event(
             "delivered_dedup", to=session, count=len(consumed),
             kinds=[m.kind for m in consumed],
@@ -1264,12 +1276,29 @@ def _paste_batch(messages: list[Message]) -> list[Message]:
     return batch
 
 
-def _note_delivered(session: str, messages: list[Message]) -> None:
-    """Tell the cohort ledger these messages were pasted to *session* (#1224).
+def _ledger(fn: str, *args) -> None:
+    """Call ``sent_ledger.<fn>`` — the sender-side record (#1231). Best-effort:
+    the inbox file is the source of truth for delivery, and the reader
+    reconciles a missed write to ``unknown``, so a ledger fault must never
+    break the drain (or a send)."""
+    try:
+        from . import sent_ledger
 
-    Called at every site that confirms a delivery, so a child's report that the
-    drain (not ``wait``) delivered still resolves that child. Never raises.
+        getattr(sent_ledger, fn)(*args)
+    except Exception as exc:  # noqa: BLE001
+        _log_event("sent_ledger_failed", fn=fn, error=str(exc))
+
+
+def _note_delivered(
+    session: str, messages: list[Message], how: str = "pasted", verified: bool = True
+) -> None:
+    """Record that these messages were pasted to *session*, at every site that
+    confirms a delivery: the cohort ledger (#1224, so a child's report the
+    drain — not ``wait`` — delivered still resolves that child) and the
+    sender's sent ledger (#1231). *how*/*verified* grade the evidence; see
+    ``sent_ledger.HOW_*``. Never raises.
     """
+    _ledger("record_delivered", messages, how, verified)
     try:
         from . import cohort
 
@@ -1316,7 +1345,7 @@ def flush_session(session: str, force: bool = False) -> dict:
                 for msg in messages:
                     if msg.path is not None:
                         msg.path.unlink(missing_ok=True)
-                _note_delivered(session, messages)
+                _note_delivered(session, messages, how="adapter", verified=False)
                 _log_event(
                     "delivered", to=session, count=len(messages),
                     kinds=[m.kind for m in messages], adapter=reason,
@@ -1400,7 +1429,7 @@ def flush_session(session: str, force: bool = False) -> dict:
                         for m in stuck:
                             if m.path is not None:
                                 m.path.unlink(missing_ok=True)
-                        _note_delivered(session, stuck)
+                        _note_delivered(session, stuck, how="healed")
                         _log_event(
                             "stuck_submitted", to=session, count=len(stuck),
                             kinds=[m.kind for m in stuck],

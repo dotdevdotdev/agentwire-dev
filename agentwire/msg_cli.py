@@ -9,6 +9,7 @@ clobbers a half-typed human draft.
     agentwire msg send --to <session|@all> [--kind note|done|request|escalation|ingest|voice] <text | --body-file PATH>
     agentwire msg inbox [-s <session>]      # peek pending + passive (does not drain/consume)
     agentwire msg pull  [-s <session>]      # read + REMOVE passive (ingest) messages
+    agentwire msg sent  [--limit N] [--to S] [--id ID]  # what became of MY sent messages
     agentwire msg dead  [-s <session>]      # list dropped (dead-lettered) msgs
     agentwire msg dead  --purge [-s <session>] [--older-than 7d]  # clear the graveyard
     agentwire msg flush [-s <session>]      # attempt a drain now (still gated)
@@ -25,7 +26,7 @@ from __future__ import annotations
 
 import json
 
-from . import core, inbox, pane_manager
+from . import core, inbox, pane_manager, sent_ledger
 
 
 def _current_session() -> "str | None":
@@ -179,6 +180,43 @@ def cmd_msg_inbox(args) -> int:
             print(f"  [{m.kind}] from {m.sender}: {m.text}")
             if m.ref:
                 print(f"      ref: {m.ref}")
+    return 0
+
+
+_SENT_BODY_WIDTH = 60
+
+
+def cmd_msg_sent(args) -> int:
+    """What became of the messages THIS session sent (#1231).
+
+    The caller is the tmux session, never a flag: a ledger is its owner's.
+    ``delivered`` means pasted into the recipient's input box — not read.
+    """
+    as_json = getattr(args, "json", False)
+    sender = _current_session()
+    if not sender:
+        msg = "msg sent reads the calling session's ledger; run it inside a tmux session"
+        print(json.dumps({"success": False, "error": msg}) if as_json else f"Error: {msg}")
+        return 1
+    result = sent_ledger.list_sent(
+        sender, limit=args.limit, to=getattr(args, "to", None),
+        message_id=getattr(args, "message_id", None),
+    )
+    if as_json:
+        print(json.dumps({"success": True, **result}))
+        return 0
+    if not result["sent"]:
+        print(f"Nothing sent by {sender} on record.")
+        return 0
+    print(f"{len(result['sent'])} of {result['total']} sent by {sender} (newest first):")
+    for v in result["sent"]:
+        body = " ".join(v["text"].split())
+        if len(body) > _SENT_BODY_WIDTH:
+            body = body[: _SENT_BODY_WIDTH - 1] + "…"
+        print(f"  {v['id'].rsplit('-', 1)[-1]}  {inbox._fmt_ts(v['sent_ts'])}  "
+              f"→ {v['to']} [{v['kind']}] {body}")
+        print(f"      {sent_ledger.describe(v)}")
+    print("delivered = pasted into the recipient's input box, not read or acted on.")
     return 0
 
 
@@ -441,6 +479,19 @@ def register_msg_parser(subparsers) -> None:
     inbox_parser.add_argument("-s", "--session", default=None, help="Session (default: current)")
     inbox_parser.add_argument("--json", action="store_true", help="Output JSON")
     inbox_parser.set_defaults(func=cmd_msg_inbox)
+
+    sent_parser = msg_sub.add_parser(
+        "sent",
+        help="What became of the messages I sent (queued/delivered/dead_lettered/…)",
+    )
+    sent_parser.add_argument("--limit", type=int, default=20, help="Max rows (default 20)")
+    sent_parser.add_argument("--to", default=None, help="Only messages to this session")
+    sent_parser.add_argument(
+        "--id", dest="message_id", default=None,
+        help="One message: full id, or the 6-char tail from its ⟨#id⟩ token",
+    )
+    sent_parser.add_argument("--json", action="store_true", help="Output JSON (full bodies)")
+    sent_parser.set_defaults(func=cmd_msg_sent)
 
     pull_parser = msg_sub.add_parser("pull", help="Read + remove passive (ingest) messages")
     pull_parser.add_argument("-s", "--session", default=None, help="Session (default: current)")
