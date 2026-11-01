@@ -27,6 +27,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+
+def _safe_cwd() -> str:
+    """Standalone mirror of ``safety._core.safe_cwd`` (#1238) — never raises.
+
+    This module cannot import the engine (hooks run as isolated scripts), and a
+    dead cwd must not crash the audit write on the hook hot path.
+    """
+    pwd = os.environ.get("PWD")
+    if pwd:
+        return pwd
+    try:
+        return os.getcwd()
+    except OSError:
+        return os.path.expanduser("~") or "/"
+
 # The hook's parsed stdin payload. Each damage-control hook assigns this right
 # after ``json.load(sys.stdin)`` so every log_* call in that process carries
 # attribution without threading a kwarg through every call site. Claude Code
@@ -200,7 +215,7 @@ def log_entry(
         "pattern_matched": pattern_matched,
         "rule_id": rule_id,
         "escape_reason": escape_reason,
-        "cwd": cwd or os.environ.get("PWD") or os.getcwd(),
+        "cwd": cwd or _safe_cwd(),
         # Join keys for the outcome rows written by hooks/outcome_logger.py.
         "tool_use_id": _hook_field("tool_use_id"),
         "permission_mode": _hook_field("permission_mode"),
