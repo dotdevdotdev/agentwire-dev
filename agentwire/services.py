@@ -121,8 +121,7 @@ def is_service_session(name: str) -> bool:
 # ─────────────────────────────────────────────────────────────
 #
 # Every surface that enumerates the fleet (`agentwire list --sessions`, the
-# MCP sessions_list, the buddy's fleet_sessions tool, doctor's session
-# roll-up) uses THESE helpers to separate infrastructure services from
+# MCP sessions_list, doctor's session roll-up) uses THESE helpers to separate infrastructure services from
 # user-facing work, so a service session is summarized ("N services healthy")
 # instead of presented as delegated work. An UNHEALTHY service still surfaces
 # loudly — suppression applies to healthy infrastructure only.

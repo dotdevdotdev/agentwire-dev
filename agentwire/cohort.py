@@ -90,14 +90,6 @@ WORKTREE = "worktree"
 # Kinds a child's report-back can arrive as. `note` is included because a child
 # that fails mid-task may downgrade its report; `ingest` is not, since passive
 # messages are pull-only pointers the parent reads separately.
-#
-# `voice` is deliberately absent (#985): it is the OWNER speaking through the
-# buddy, never a child reporting on its task, so harvesting one into a cohort
-# roll-up would attribute the owner's words to a worker. The seam this creates
-# is worth knowing about, because the two halves filter on different fields:
-# The inbox drain delivers every kind (there is no cohort hold, #1224), so a
-# `voice` message from a pending child is simply pasted; _harvest below skips it.
-# Pinned in tests/unit/test_voice_kind.py::TestCohortInteraction.
 REPORT_KINDS = ("done", "request", "escalation", "note")
 
 # The idle handler's synthetic placeholder kind (#952). Harvested so the child

@@ -40,7 +40,7 @@ def test_say_plays_the_full_text_for_any_session_name(local_say):
     long = ("Three sessions are busy. The rest is a long tail of detail that nobody "
             "wants read aloud to them. ")
     capped = []
-    for name in ("agentwire-voice", "agentwire-buddy", "some-session"):
+    for name in ("agentwire-voice", "some-session"):
         played.clear()
         _say(long, name)
         if " ".join(played).split() != long.split():

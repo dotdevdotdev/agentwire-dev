@@ -1,14 +1,14 @@
 """Process ("command") custom services, and doctor's reporting leg (#983).
 
-A custom service used to be one thing: an agentwire agent session. The voice
-buddy's bridge is not that — it is a plain long-running process — and until it
+A custom service used to be one thing: an agentwire agent session. A bridge
+process is not that — it is a plain long-running process — and until it
 had somewhere to live it was hand-launched, which means it survived no reboot
 and appeared in no diagnostic.
 
 These pin the generic half of that: what a `command:` entry parses to, that it
 is supervised by tmux rather than by `agentwire new`, that its output lands on
 no world-readable surface, and that doctor reports it beside the agent
-services. Nothing here knows what the process is — the buddy is one caller of a
+services. Nothing here knows what the process is — a bridge is one caller of a
 mechanism that has no idea it exists.
 """
 
@@ -24,8 +24,8 @@ class TestCommandServiceSupervision:
     """tmux is the supervisor, and that is the secret-handling answer."""
 
     def _svc(self, **kw):
-        kw.setdefault("name", "buddy")
-        kw.setdefault("command", "agentwire buddy serve buddy --port 8788")
+        kw.setdefault("name", "bridge")
+        kw.setdefault("command", "my-bridge serve --port 8788")
         return CustomServiceConfig(**kw)
 
     def test_start_runs_the_command_under_tmux_not_agentwire_new(self, monkeypatch):
@@ -45,12 +45,12 @@ class TestCommandServiceSupervision:
                 "new-session",
                 "-d",
                 "-s",
-                "buddy",
+                "bridge",
                 "-c",
                 svc.project,
                 "sh -c 'while :; do sleep 3600; done'",
             ],
-            ["tmux", "set-option", "-w", "-t", "=buddy:", "remain-on-exit", "on"],
+            ["tmux", "set-option", "-w", "-t", "=bridge:", "remain-on-exit", "on"],
             [
                 "tmux",
                 "respawn-pane",
@@ -58,8 +58,8 @@ class TestCommandServiceSupervision:
                 "-c",
                 svc.project,
                 "-t",
-                "=buddy:.0",
-                "agentwire buddy serve buddy --port 8788",
+                "=bridge:.0",
+                "my-bridge serve --port 8788",
             ],
         ]
         # not `agentwire new` — the agent path is a different mechanism
@@ -93,7 +93,7 @@ class TestADyingProcessIsNotASuccessfulStart:
     """
 
     def _svc(self):
-        return CustomServiceConfig(name="buddy", command="agentwire buddy serve nope")
+        return CustomServiceConfig(name="bridge", command="my-bridge serve nope")
 
     @pytest.fixture(autouse=True)
     def _no_real_sleep(self, monkeypatch):
@@ -123,7 +123,7 @@ class TestTheHealthcheckMustSeeADeadPane:
         monkeypatch.setattr(services, "_tmux_session_exists", lambda n: True)
         monkeypatch.setattr(services, "_tmux_pane_dead", lambda n: True)
         monkeypatch.setattr(services, "_tmux_pane_tail", lambda n: "FATAL: boom")
-        healthy, detail = services.run_healthcheck(CustomServiceConfig(name="buddy", command="x"))
+        healthy, detail = services.run_healthcheck(CustomServiceConfig(name="bridge", command="x"))
         assert healthy is False
         assert "exited" in detail and "FATAL: boom" in detail
 

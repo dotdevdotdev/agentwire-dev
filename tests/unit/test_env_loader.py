@@ -1,7 +1,7 @@
 """The env-file loader (#1184): an EMPTY inherited variable must not shadow the file.
 
 python-dotenv's ``load_dotenv`` treats ``export OPENAI_API_KEY=`` as "already
-set" and skips the file's real value — which is how the buddy reported the key
+set" and skips the file's real value — which is how a service reported the key
 missing while it sat in ~/.agentwire/.env. ``os.environ`` is replaced by a
 plain dict so nothing here touches the real environment or any real file.
 """
@@ -11,7 +11,6 @@ import os
 import pytest
 
 from agentwire import env_loader
-from agentwire.voice_layer import realtime
 
 
 @pytest.fixture
@@ -52,14 +51,12 @@ def test_missing_file_is_a_no_op(environ, tmp_path):
 
 
 def test_not_set_error_says_when_an_empty_export_is_what_it_found(environ):
-    key = realtime.API_KEY_ENV
+    key = "OPENAI_API_KEY"
 
-    with pytest.raises(realtime.RealtimeError) as absent:
-        realtime.api_key()
+    absent = env_loader.missing_env_message(key)
     environ[key] = ""
-    with pytest.raises(realtime.RealtimeError) as empty:
-        realtime.api_key()
+    empty = env_loader.missing_env_message(key)
 
-    assert "is not set" in str(absent.value) and "empty" not in str(absent.value)
-    assert "empty string" in str(empty.value)
-    assert f"export {key}=" in str(empty.value)
+    assert "is not set" in absent and "empty" not in absent
+    assert "empty string" in empty
+    assert f"export {key}=" in empty

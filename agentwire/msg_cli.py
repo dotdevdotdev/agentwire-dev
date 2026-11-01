@@ -65,7 +65,7 @@ def cmd_msg_send(args) -> int:
     claimed = getattr(args, "from_session", None)
     if claimed and detected and claimed != detected:
         # A session inside tmux speaks as itself. `--from` exists for senders
-        # that are not a tmux session (the buddy bridge, scripts); letting a
+        # that are not a tmux session (bridges, scripts); letting a
         # session claim another's name is how a reply lands in the wrong inbox.
         msg = (f"--from {claimed!r} refused: this is session {detected!r}. "
                "A session cannot send as another session.")
@@ -104,19 +104,11 @@ def cmd_msg_send(args) -> int:
     # sender must learn the target is gone instead of reading a bare "Queued"
     # as delivery-in-progress. @all targets are live by construction, and with
     # tmux unreachable (live is None) we can't positively say gone — no warning.
-    # A recipient with a delivery adapter (voice-layer spike) is never in the
-    # tmux session list by design, so the gone warning would be a lie — and the
-    # dead-letter it predicts can't happen, since the drain spools it instead.
-    from .voice_layer import delivery as _delivery
-
     live = inbox.live_sessions()
     missing = (
         []
         if args.to == inbox.BROADCAST_TOKEN or live is None
-        else sorted(
-            t for t in ({m.to for m in written} - live)
-            if _delivery.adapter_for(t) is None
-        )
+        else sorted({m.to for m in written} - live)
     )
     warnings = [
         f"session '{t}' does not currently exist — message will dead-letter "
