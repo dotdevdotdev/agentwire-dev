@@ -46,12 +46,12 @@ class TestHealIdempotency:
         assert summary["rules_installed"]          # all bundled rules
         assert summary["matchers_added"] == len(safety_commands.DAMAGE_CONTROL_MATCHERS)
         # Every bundled rule of a default group landed (packs are opt-in, #1141).
-        from agentwire.safety.groups import AGENTWIRE_DEFAULT_PACKS, REGISTRY
+        from agentwire.safety.groups import DEFAULT_PACKS, REGISTRY
         installed = {p.name for p in safety_commands.RULES_DIR.glob("*.yaml")}
         bundled = {p.name for p in safety_commands.get_damage_control_source().glob("*.yaml")}
         pack_rules = {
             f for e in REGISTRY.values()
-            if e.kind == "pack" and e.name not in AGENTWIRE_DEFAULT_PACKS
+            if e.kind == "pack" and e.name not in DEFAULT_PACKS
             for f in e.files("rules")
         }
         assert bundled - pack_rules <= installed
