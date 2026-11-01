@@ -5,7 +5,7 @@
  *
  * This module holds the *catalogue*, not the bindings. Each component still
  * registers its own capture-phase keydown listener (there is no central
- * dispatcher — see desktop.js setupCollage / setupGlobalPtt etc.). When you
+ * dispatcher — see desktop.js setupCollage etc.). When you
  * add or change a real binding, update its row here too: the `where` field
  * names the handler so the two stay findable together.
  *
@@ -46,7 +46,7 @@ export const SHORTCUT_GROUPS = [
     {
         title: 'Voice',
         items: [
-            { combo: ['Mod', 'Space'], hold: true, desc: 'Push-to-talk — hold to speak to AgentWire (or the focused session)', where: 'desktop.js setupGlobalPtt / session-window.js' },
+            { combo: ['Mod', 'Space'], hold: true, desc: 'Push-to-talk — hold to speak to the focused session', where: 'session-window.js' },
         ],
     },
     {

@@ -731,7 +731,7 @@ export class SessionWindow {
         this._unbindPttHotkey = bindHotkey({
             code: 'Space',
             mod: true,
-            shift: false,  // Ctrl/Cmd+Shift+Space is the voice assistant's, from anywhere
+            shift: false,
             when: () => !!this.winbox && !!document.activeElement?.closest('.winbox')?.contains(container),
             onRelease: () => { if (this.pttState === 'recording') this._stopRecording(); },
         }, () => {
