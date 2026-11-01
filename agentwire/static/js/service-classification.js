@@ -14,8 +14,6 @@ const SERVICE_SESSIONS = new Set([
     'agentwire-kokoro',  // default-tier Kokoro TTS shim subprocess (:8102)
     'agentwire-scheduler',
     'agentwire-notifications',
-    'agentwire-buddy',
-    'agentwire-voice',  // portal voice assistant (#1198)
 ]);
 
 export function isService(name) { return SERVICE_SESSIONS.has(name); }

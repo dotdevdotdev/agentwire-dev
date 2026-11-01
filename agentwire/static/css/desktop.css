@@ -5513,38 +5513,6 @@ body.sidebar-pinned .sidebar-tab {
     opacity: 1;
 }
 
-.sidebar-ptt {
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    border: 2px solid var(--accent);
-    background: var(--chrome);
-    color: var(--accent);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    padding: 0;
-    transition: background 120ms ease, transform 100ms ease;
-}
-
-.sidebar-ptt:hover {
-    background: var(--hover);
-}
-
-.sidebar-ptt:active,
-.sidebar-ptt.recording {
-    background: var(--error);
-    border-color: var(--error);
-    transform: scale(0.95);
-}
-
-.sidebar-ptt.processing {
-    background: var(--orb-processing-dark);
-    border-color: var(--orb-processing);
-}
-
 .sidebar-voice-indicator {
     width: 28px;
     height: 28px;
@@ -5571,29 +5539,6 @@ body.sidebar-pinned .sidebar-tab {
     border-color: var(--accent);
     background: var(--hover);
     opacity: 1;
-}
-
-/* Voice assistant outcome states (#1198): driven by its speech hooks */
-.sidebar-voice-indicator.listening,
-.sidebar-voice-indicator.done,
-.sidebar-voice-indicator.failed,
-.sidebar-voice-indicator.approval {
-    border-radius: 50%;
-    border: 2px solid currentColor;
-    font-size: 14px;
-    font-weight: 700;
-    line-height: 1;
-}
-
-.sidebar-voice-indicator.listening { color: var(--orb-listening); }
-.sidebar-voice-indicator.done { color: var(--accent); }
-.sidebar-voice-indicator.failed { color: var(--error); }
-.sidebar-voice-indicator.approval { color: var(--orb-listening); }
-
-/* Standing approvals active (agentwire voice grants): a ring around the chip */
-.sidebar-voice-indicator.has-grant {
-    border-radius: 50%;
-    box-shadow: 0 0 0 2px var(--orb-listening);
 }
 
 .sidebar-voice-indicator .stop-icon,
