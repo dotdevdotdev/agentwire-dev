@@ -132,8 +132,10 @@
  },
  "counts": {
   "audit": 8,
-  "engine": 1016,
-  "hooks": 610
+  "engine": 1008,
+  "engine_by_platform": 8,
+  "hooks": 604,
+  "hooks_by_platform": 6
  },
  "engine": {
   "[\"Bash\", \"! rm -rf /tmp/x\", \"/golden/home\", \"default\"]": {
@@ -5808,32 +5810,8 @@
    "decision": "block",
    "rule_id": null
   },
-  "[\"Edit\", \"~/.AgentWire/DamageControl.yml\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
-   "rule_id": null
-  },
-  "[\"Edit\", \"~/.AgentWire/DamageControl.yml\", \"/golden/home\", \"kill-switch-off\"]": {
-   "decision": "block",
-   "rule_id": null
-  },
-  "[\"Edit\", \"~/.CLAUDE/Settings.json\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
-   "rule_id": null
-  },
-  "[\"Edit\", \"~/.CLAUDE/Settings.json\", \"/golden/home\", \"kill-switch-off\"]": {
-   "decision": "block",
-   "rule_id": null
-  },
-  "[\"Edit\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
-   "rule_id": null
-  },
   "[\"Edit\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "allow",
-   "rule_id": null
-  },
-  "[\"Edit\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
    "rule_id": null
   },
   "[\"Edit\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"kill-switch-off\"]": {
@@ -5936,16 +5914,8 @@
    "decision": "allow",
    "rule_id": null
   },
-  "[\"Read\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
-   "rule_id": null
-  },
   "[\"Read\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "allow",
-   "rule_id": null
-  },
-  "[\"Read\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
    "rule_id": null
   },
   "[\"Read\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"kill-switch-off\"]": {
@@ -6079,6 +6049,76 @@
   "[\"mcp\", \"mcp__other__list_things\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "allow",
    "rule_id": null
+  }
+ },
+ "engine_by_platform": {
+  "darwin": {
+   "[\"Edit\", \"~/.AgentWire/DamageControl.yml\", \"/golden/home\", \"default\"]": {
+    "decision": "block",
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.AgentWire/DamageControl.yml\", \"/golden/home\", \"kill-switch-off\"]": {
+    "decision": "block",
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.CLAUDE/Settings.json\", \"/golden/home\", \"default\"]": {
+    "decision": "block",
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.CLAUDE/Settings.json\", \"/golden/home\", \"kill-switch-off\"]": {
+    "decision": "block",
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"default\"]": {
+    "decision": "block",
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"default\"]": {
+    "decision": "block",
+    "rule_id": null
+   },
+   "[\"Read\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"default\"]": {
+    "decision": "block",
+    "rule_id": null
+   },
+   "[\"Read\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"default\"]": {
+    "decision": "block",
+    "rule_id": null
+   }
+  },
+  "linux": {
+   "[\"Edit\", \"~/.AgentWire/DamageControl.yml\", \"/golden/home\", \"default\"]": {
+    "decision": "allow",
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.AgentWire/DamageControl.yml\", \"/golden/home\", \"kill-switch-off\"]": {
+    "decision": "allow",
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.CLAUDE/Settings.json\", \"/golden/home\", \"default\"]": {
+    "decision": "allow",
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.CLAUDE/Settings.json\", \"/golden/home\", \"kill-switch-off\"]": {
+    "decision": "allow",
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"default\"]": {
+    "decision": "allow",
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"default\"]": {
+    "decision": "allow",
+    "rule_id": null
+   },
+   "[\"Read\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"default\"]": {
+    "decision": "allow",
+    "rule_id": null
+   },
+   "[\"Read\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"default\"]": {
+    "decision": "allow",
+    "rule_id": null
+   }
   }
  },
  "hooks": {
@@ -9538,30 +9578,6 @@
    "exit": 2,
    "rule_id": null
   },
-  "[\"Edit\", \"~/.AgentWire/DamageControl.yml\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": null
-  },
-  "[\"Edit\", \"~/.CLAUDE/Settings.json\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": null
-  },
-  "[\"Edit\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": null
-  },
-  "[\"Edit\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": null
-  },
   "[\"Edit\", \"~/.agentwire/config.yaml\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
@@ -9632,18 +9648,6 @@
    "audit": "allowed",
    "decision": "allow",
    "exit": 0,
-   "rule_id": null
-  },
-  "[\"Read\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": null
-  },
-  "[\"Read\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
    "rule_id": null
   },
   "[\"Read\", \"~/.aws/credentials\", \"/Users/x\", \"interactive\"]": {
@@ -9737,11 +9741,88 @@
    "exit": 0
   }
  },
+ "hooks_by_platform": {
+  "darwin": {
+   "[\"Edit\", \"~/.AgentWire/DamageControl.yml\", \"/golden/home\", \"interactive\"]": {
+    "audit": "blocked",
+    "decision": "block",
+    "exit": 2,
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.CLAUDE/Settings.json\", \"/golden/home\", \"interactive\"]": {
+    "audit": "blocked",
+    "decision": "block",
+    "exit": 2,
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"interactive\"]": {
+    "audit": "blocked",
+    "decision": "block",
+    "exit": 2,
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"interactive\"]": {
+    "audit": "blocked",
+    "decision": "block",
+    "exit": 2,
+    "rule_id": null
+   },
+   "[\"Read\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"interactive\"]": {
+    "audit": "blocked",
+    "decision": "block",
+    "exit": 2,
+    "rule_id": null
+   },
+   "[\"Read\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"interactive\"]": {
+    "audit": "blocked",
+    "decision": "block",
+    "exit": 2,
+    "rule_id": null
+   }
+  },
+  "linux": {
+   "[\"Edit\", \"~/.AgentWire/DamageControl.yml\", \"/golden/home\", \"interactive\"]": {
+    "audit": "allowed",
+    "decision": "allow",
+    "exit": 0,
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.CLAUDE/Settings.json\", \"/golden/home\", \"interactive\"]": {
+    "audit": "allowed",
+    "decision": "allow",
+    "exit": 0,
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"interactive\"]": {
+    "audit": "allowed",
+    "decision": "allow",
+    "exit": 0,
+    "rule_id": null
+   },
+   "[\"Edit\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"interactive\"]": {
+    "audit": "allowed",
+    "decision": "allow",
+    "exit": 0,
+    "rule_id": null
+   },
+   "[\"Read\", \"~/.SSH/ID_RSA\", \"/golden/home\", \"interactive\"]": {
+    "audit": "allowed",
+    "decision": "allow",
+    "exit": 0,
+    "rule_id": null
+   },
+   "[\"Read\", \"~/.Ssh/id_rsa\", \"/golden/home\", \"interactive\"]": {
+    "audit": "allowed",
+    "decision": "allow",
+    "exit": 0,
+    "rule_id": null
+   }
+  }
+ },
  "layers": [
   "engine",
   "hooks",
   "audit"
  ],
- "platform": "darwin",
  "schema": 1
 }

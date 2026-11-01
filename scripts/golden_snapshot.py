@@ -22,8 +22,11 @@ deliberate behaviour change lands as an explicit snapshot diff in its own PR.
 
 Determinism: the recorder pins HOME / PWD / AGENTWIRE_DIR to fixed, nonexistent-or-private
 locations and strips timestamps, so two recordings are byte-identical. Decisions are
-platform-sensitive in principle (path canonicalisation), so the snapshot header carries
-``platform``; ``check`` refuses to compare across platforms rather than report noise.
+platform-dependent in exactly one place: path-case folding (macOS folds, Linux is exact-case,
+#1217). Those rows are DISCOVERED (darwin and linux emulations disagree), stored per platform
+under ``*_by_platform``, and the host's emulation is proven against its real behaviour on
+every record, so a Linux value is derived from the rule and verified by Linux CI, not guessed.
+Every other row is compared unweakened on every platform.
 """
 
 from __future__ import annotations
@@ -274,8 +277,44 @@ def engine_decision(tool: str, text: str, config: Dict[str, Any]) -> Dict[str, A
     return {"decision": r["decision"], "rule_id": r.get("id")}
 
 
-def record_engine(items: List[Item]) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
+PATH_TOOLS = ("Edit", "Write", "Read")
+VARIANTS = ("darwin", "linux")
+
+
+def host_variant() -> str:
+    return "darwin" if sys.platform == "darwin" else "linux"
+
+
+@contextlib.contextmanager
+def casefold_as(variant: str) -> Iterator[None]:
+    """Emulate a platform's path-case behaviour.
+
+    ``_core._casefolds_paths`` is the ONLY platform switch in the engine (macOS folds,
+    Linux is exact-case except under a WSL ``/mnt/<drive>`` mount). Patching it lets one
+    machine compute both platforms' verdicts; ``record_engine`` then proves the emulation
+    against the host's REAL behaviour, so a lie fails loudly instead of being committed.
+    """
+    from agentwire.safety import _core
+
+    original = _core._casefolds_paths
+    if variant == "darwin":
+        _core._casefolds_paths = lambda path: True
+    else:
+        _core._casefolds_paths = lambda path: bool(_core._DRVFS_RE.match(path))
+    try:
+        yield
+    finally:
+        _core._casefolds_paths = original
+
+
+def record_engine(items: List[Item]) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    """Return (rows identical on every platform, {variant: rows that differ by platform}).
+
+    A row is platform-dependent exactly when the darwin and linux emulations disagree, so
+    the set is discovered, never hand-tagged, and every other row is compared unweakened.
+    """
+    per_variant: Dict[str, Dict[str, Any]] = {v: {} for v in VARIANTS}
+    real: Dict[str, Any] = {}
     for home in sorted({i["home"] for i in items}):
         with pinned_env(home):
             configs = {ks: _engine_config(ks) for ks in (False, True)}
@@ -284,8 +323,17 @@ def record_engine(items: List[Item]) -> Dict[str, Any]:
                     continue
                 for name in ENGINE_CONTEXTS:
                     key = record_key(item["tool"], item["input"], home, name)
-                    out[key] = engine_decision(item["tool"], item["input"], configs[name == "kill-switch-off"])
-    return out
+                    config = configs[name == "kill-switch-off"]
+                    real[key] = engine_decision(item["tool"], item["input"], config)
+                    for variant in VARIANTS:
+                        with casefold_as(variant):
+                            per_variant[variant][key] = engine_decision(item["tool"], item["input"], config)
+    wrong = [k for k in real if real[k] != per_variant[host_variant()][k]]
+    if wrong:
+        raise SystemExit(f"{host_variant()} emulation disagrees with real behaviour on {len(wrong)} rows: {wrong[:3]}")
+    differing = {k for k in real if per_variant["darwin"][k] != per_variant["linux"][k]}
+    invariant = {k: v for k, v in real.items() if k not in differing}
+    return invariant, {v: {k: per_variant[v][k] for k in sorted(differing)} for v in VARIANTS}
 
 
 def record_key(tool: str, text: str, home: str, context: str) -> str:
@@ -345,14 +393,22 @@ def audit_summary(aw: Path) -> Dict[str, Any]:
     return {"audit": row.get("decision"), "rule_id": row.get("rule_id")}
 
 
-def record_hooks(items: List[Item], engine: Dict[str, Any]) -> Dict[str, Any]:
+def derived_path_hook_row(engine_row: Dict[str, Any]) -> Dict[str, Any]:
+    """The hook row a path tool yields for an engine verdict (verified against the real run)."""
+    if engine_row["decision"] == "block":
+        return {"exit": 2, "decision": "block", "audit": "blocked", "rule_id": None}
+    return {"exit": 0, "decision": "allow", "audit": "allowed", "rule_id": None}
+
+
+def record_hooks(items: List[Item], engine: Dict[str, Any],
+                 by_platform: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
     jobs: List[Tuple[str, str, str, str, str, bool]] = []
     for item in items:
         if item["kill_switch"]:
             continue  # the kill switch is host state, not a hook payload field
         tool, text, home = item["tool"], item["input"], item["home"]
         jobs.append((record_key(tool, text, home, "interactive"), tool, text, home, "interactive", False))
-        ask = engine[record_key(tool, text, home, "default")]["decision"] == "ask"
+        ask = engine.get(record_key(tool, text, home, "default"), {}).get("decision") == "ask"
         if tool == "Bash" and ask:
             # Only an `ask` can change with the posture, so only asks are re-run.
             jobs.append((record_key(tool, text, home, "bypass"), tool, text, home, "bypass", False))
@@ -364,7 +420,21 @@ def record_hooks(items: List[Item], engine: Dict[str, Any]) -> Dict[str, Any]:
                    for key, tool, text, home, mode, unattended in jobs}
         for fut in concurrent.futures.as_completed(futures):
             results[futures[fut]] = fut.result()
-    return results
+    # A path-tool row whose engine verdict differs by platform: the host's real run is
+    # authoritative for the host's variant; the other variant is derived and the derivation
+    # is proven against the real run, so it cannot drift from what a hook actually emits.
+    platform_rows: Dict[str, Dict[str, Any]] = {v: {} for v in VARIANTS}
+    for key in sorted(results):
+        tool, text, home, mode = json.loads(key)
+        engine_key = record_key(tool, text, home, "default")
+        if tool in PATH_TOOLS and engine_key in by_platform["darwin"]:
+            for variant in VARIANTS:
+                platform_rows[variant][key] = derived_path_hook_row(by_platform[variant][engine_key])
+            if platform_rows[host_variant()][key] != results[key]:
+                raise SystemExit(f"derived hook row disagrees with the real run for {key}: "
+                                 f"{platform_rows[host_variant()][key]} != {results[key]}")
+            del results[key]
+    return results, platform_rows
 
 
 # --------------------------------------------------------------------------------------
@@ -410,18 +480,21 @@ def record(layers: Tuple[str, ...]) -> Dict[str, Any]:
     items = collect_items()
     snapshot: Dict[str, Any] = {
         "schema": SCHEMA_VERSION,
-        "platform": sys.platform,
         "layers": list(layers),
         "counts": {},
     }
-    engine = record_engine(items)
+    engine, engine_by_platform = record_engine(items)
     if "engine" in layers:
         snapshot["engine"] = engine
+        snapshot["engine_by_platform"] = engine_by_platform
     if "hooks" in layers:
-        snapshot["hooks"] = record_hooks(items, engine)
+        snapshot["hooks"], snapshot["hooks_by_platform"] = record_hooks(items, engine, engine_by_platform)
     if "audit" in layers:
         snapshot["audit"] = record_audit()
     snapshot["counts"] = {k: len(snapshot[k]) for k in LAYERS if k in snapshot}
+    for key in ("engine_by_platform", "hooks_by_platform"):
+        if key in snapshot:
+            snapshot["counts"][key] = len(snapshot[key]["darwin"])
     return snapshot
 
 
@@ -441,9 +514,6 @@ def cmd_record(args: argparse.Namespace) -> int:
 
 def cmd_check(args: argparse.Namespace) -> int:
     committed = json.loads(SNAPSHOT.read_text())
-    if committed["platform"] != sys.platform:
-        print(f"snapshot recorded on {committed['platform']}, this is {sys.platform}: refusing to compare")
-        return 3
     fresh = record(tuple(committed["layers"]))
     old, new = dump(committed), dump(fresh)
     if old == new:

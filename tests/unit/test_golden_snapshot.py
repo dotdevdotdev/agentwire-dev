@@ -39,6 +39,8 @@ def _diff(old, new):
 def test_engine_and_audit_layers_reproduce_the_snapshot(golden, committed):
     fresh = golden.record(("engine", "audit"))
     bad = _diff(committed["engine"], fresh["engine"]) + _diff(committed["audit"], fresh["audit"])
+    for variant in ("darwin", "linux"):
+        bad += _diff(committed["engine_by_platform"][variant], fresh["engine_by_platform"][variant])
     assert not bad, bad[:20]
 
 
@@ -46,16 +48,35 @@ def test_engine_and_audit_layers_reproduce_the_snapshot(golden, committed):
 def test_hook_layer_reproduces_the_snapshot(golden, committed):
     fresh = golden.record(("hooks",))
     bad = _diff(committed["hooks"], fresh["hooks"])
+    for variant in ("darwin", "linux"):
+        bad += _diff(committed["hooks_by_platform"][variant], fresh["hooks_by_platform"][variant])
     assert not bad, bad[:20]
 
 
 def test_snapshot_covers_every_hook_and_every_corpus_case(golden, committed):
     """The oracle is only as strong as its inputs: a corpus case missing from it is unpinned."""
     items = golden.collect_items()
+    known = set(committed["engine"]) | set(committed["engine_by_platform"]["darwin"])
     missing = [
         (i["tool"], i["input"][:80]) for i in items
-        if golden.record_key(i["tool"], i["input"], i["home"], "default") not in committed["engine"]
+        if golden.record_key(i["tool"], i["input"], i["home"], "default") not in known
     ]
-    hook_tools = {json.loads(k)[0] for k in committed["hooks"]}
+    hook_tools = {json.loads(k)[0] for k in committed["hooks"]} | {
+        json.loads(k)[0] for k in committed["hooks_by_platform"]["darwin"]}
     assert not missing, missing
     assert hook_tools == {"Bash", "Edit", "Read", "mcp"}, hook_tools
+
+
+def test_only_path_case_rows_differ_by_platform(committed):
+    """The per-platform split must stay narrow: a row may differ between darwin and linux only
+    for a path tool whose input has a case variant, and must differ in exactly the verdict.
+    Anything wider is a platform leak into the oracle, not a casefold difference."""
+    rows = committed["engine_by_platform"]
+    bad = []
+    for key, dar in rows["darwin"].items():
+        tool, text = json.loads(key)[:2]
+        lin = rows["linux"][key]
+        if not (tool in ("Edit", "Write", "Read") and text != text.lower() and dar["decision"] == "block"
+                and lin["decision"] == "allow"):
+            bad.append((key, dar, lin))
+    assert rows["darwin"] and not bad, bad[:10]
