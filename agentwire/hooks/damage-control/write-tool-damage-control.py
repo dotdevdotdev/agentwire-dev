@@ -50,7 +50,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "a3d5b78b6f420a1b161b1e56649add782844d6377d706adf503e983873a8408d", "generated_at": "2026-11-01T14:23:09Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "c65a0290be28f007d1eacc9a44254116a4bad45083386bd4904a6630a3b20718", "generated_at": "2026-11-01T14:57:00Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -614,6 +614,28 @@ def _parse_allowed_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     return {"path": entry["path"], "allow": ALL_OPERATIONS.copy()}
 
 
+def safe_cwd() -> str:
+    """The shell's working directory; NEVER raises (#1238).
+
+    ``os.environ.get("PWD", os.getcwd())`` evaluates ``os.getcwd()`` eagerly,
+    and that raises ``FileNotFoundError`` when the cwd was deleted out from
+    under the process (a worktree torn down beneath a live session). On the
+    hook hot path an uncaught crash exits 2 (block, #1223), so a dead cwd
+    would block every tool call. ``$PWD`` first (survives the deletion), then
+    ``getcwd()`` only when it is unset, then home, then ``/``.
+
+    ``audit_logger.py`` carries a standalone mirror (it cannot import this
+    module); ``test_safe_cwd.py`` pins the two to the same behavior.
+    """
+    pwd = os.environ.get("PWD")
+    if pwd:
+        return pwd
+    try:
+        return os.getcwd()
+    except OSError:
+        return os.path.expanduser("~") or "/"
+
+
 def _find_project_config() -> Tuple[str, List[Any]]:
     """Walk up from $PWD to find ``.damagecontrol.yml`` and return its allowed_paths.
 
@@ -624,7 +646,7 @@ def _find_project_config() -> Tuple[str, List[Any]]:
     set out to close. The allowlist is the one knob that overrides the protected
     check, so it must itself live behind the protected control plane (#467).
     """
-    cwd = os.environ.get("PWD", os.getcwd())
+    cwd = safe_cwd()
     current = os.path.abspath(cwd)
     while True:
         config_file = os.path.join(current, ".damagecontrol.yml")
@@ -2638,7 +2660,7 @@ def policy_file_parse_failures(
     if global_config_path is None:
         global_config_path = Path.home() / ".agentwire" / "damagecontrol.yml"
     candidates = [global_config_path]
-    current = os.path.abspath(cwd or os.environ.get("PWD", os.getcwd()))
+    current = os.path.abspath(cwd or safe_cwd())
     while True:
         project = os.path.join(current, ".damagecontrol.yml")
         if os.path.isfile(project):
@@ -2718,7 +2740,7 @@ def load_safety_config(
         _record_load_failure(global_config_path, exc, None)
 
     if cwd is None:
-        cwd = os.environ.get("PWD", os.getcwd())
+        cwd = safe_cwd()
     current = os.path.abspath(cwd)
     while True:
         candidate = os.path.join(current, ".damagecontrol.yml")
