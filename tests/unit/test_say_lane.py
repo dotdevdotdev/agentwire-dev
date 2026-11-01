@@ -1,5 +1,5 @@
 """`agentwire say` on the local-speaker path (#1198): one lane turn per
-utterance, and the voice assistant's speech capped to a headline."""
+utterance, spoken in full."""
 
 import argparse
 
@@ -28,43 +28,40 @@ def local_say(tmp_path, monkeypatch):
     return played, toasts, lane_dir
 
 
-def _say(text, session, kind="say", display=None):
+def _say(text, session, display=None):
     return channels_cli.cmd_say(argparse.Namespace(
         text=[text], json=False, voice=None, exaggeration=None, cfg=None,
-        session=session, kind=kind, display=display,
+        session=session, display=display,
     ))
 
 
-def test_the_voice_assistant_speaks_a_headline_and_shows_the_rest(local_say):
+def test_say_plays_the_full_text_for_any_session_name(local_say):
     played, toasts, _ = local_say
     long = ("Three sessions are busy. The rest is a long tail of detail that nobody "
-            "wants read aloud to them.")
-    assert _say(long, "agentwire-voice") == 0
-    assert " ".join(played) == "Three sessions are busy."
-    assert toasts == [long]
-
-
-def test_other_sessions_are_not_capped(local_say):
-    played, toasts, _ = local_say
-    long = "One sentence here. " * 10
-    _say(long, "some-session")
-    assert " ".join(played).split() == long.split()
+            "wants read aloud to them. ")
+    capped = []
+    for name in ("agentwire-voice", "agentwire-buddy", "some-session"):
+        played.clear()
+        _say(long, name)
+        if " ".join(played).split() != long.split():
+            capped.append(name)
+    assert not capped, capped
     assert toasts == []
 
 
 def test_a_turn_the_lane_dropped_plays_nothing(local_say, monkeypatch):
     played, _, lane_dir = local_say
     lane = playback_lane.Lane(directory=lane_dir)
-    head = lane.enqueue("say", "playing elsewhere", "x")
+    head = lane.enqueue("playing elsewhere", "x")
     lane.status(head)
 
-    # While this ack waits its turn, the session's report arrives: the ack is
-    # obsolete and must never reach the speakers.
-    def report_arrives(_seconds):
-        lane.enqueue("report", "Done.", "agentwire-voice", pid=999_999_999)
+    # While this say waits its turn, newer utterances arrive and push the
+    # backlog over budget: it is the oldest, so it is dropped and must never
+    # reach the speakers.
+    def backlog_grows(_seconds):
+        lane.enqueue(" ".join(["word"] * 60), "y", pid=999_999_999)
 
-    lane.sleep = report_arrives
+    lane.sleep = backlog_grows
     monkeypatch.setattr(channels_cli, "Lane", lambda: lane)
-    assert _say("On it.", "agentwire-voice", kind="ack") == 0
+    assert _say("On it.", "some-session") == 0
     assert played == []
-    assert [i["kind"] for i in lane._read()["items"]] == ["say", "report"]

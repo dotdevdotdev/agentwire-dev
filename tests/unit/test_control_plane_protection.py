@@ -44,10 +44,6 @@ CONTROL_PLANE_FILES = [
     # Per-project task-execution config (#720) — NOT .agentwire.yml, which was
     # split out and is agent-writable again.
     "/some/repo/.agentwire.tasks.yml",
-    # The voice assistant's standing-approval store + the hook's pending-ask
-    # record (#1198): writing either is approving a damage-control dialog.
-    os.path.expanduser("~/.agentwire/voice-approvals/grants.json"),
-    os.path.expanduser("~/.agentwire/voice-approvals/pending-ask.json"),
 ]
 
 

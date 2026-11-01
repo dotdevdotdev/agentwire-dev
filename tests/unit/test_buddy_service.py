@@ -13,7 +13,6 @@ import yaml
 from agentwire import buddy_cli, config_cli, tasks_cli
 from agentwire import config as config_mod
 from agentwire.config import load_config
-from agentwire.safety._core import check_protected_bash_command
 from agentwire.voice_layer import identity
 
 
@@ -85,19 +84,6 @@ def test_install_refuses_a_name_that_could_reach_the_shell(cfg_file, monkeypatch
 
     assert _run("install", "x;touch /tmp/pwn", "--no-start") == 1
     assert cfg_file.read_text() == before
-
-
-def test_an_agent_bash_tool_cannot_run_the_install():
-    blocked = [c for c in ("agentwire buddy service install",
-                           "agentwire buddy service uninstall buddy",
-                           "cd /tmp && agentwire  buddy service install --autostart")
-               if not check_protected_bash_command(c)[0]]
-    allowed = [c for c in ("agentwire buddy serve buddy",
-                           "agentwire services status agentwire-buddy",
-                           "git commit -m 'run agentwire buddy service install'")
-               if check_protected_bash_command(c)[0]]
-    assert not blocked, blocked
-    assert not allowed, allowed
 
 
 def test_doctor_names_the_install_command_until_a_service_exists(cfg_file, monkeypatch, capsys):
