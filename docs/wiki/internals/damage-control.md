@@ -1776,6 +1776,34 @@ agentwire does not set these controls: the immutable flag stops agentwire's own
 edits to the file too (`chflags nouchg` to change it), which is a decision for
 the person who owns the machine.
 
+## The seam: Profile, Guard.decide, adapter (#1209 M3)
+
+The engine knows what is dangerous in general; the host adds what is dangerous around itself.
+
+- **`safety/profile.py`** — `Profile`: protected paths, control-plane words, benign-path patterns,
+  `home_alias`, protected commands, the unattended env names and default grant ids, extra rules
+  dirs, MCP command templates, groups/packs, the grant hint and the block notifier. It only ADDS to
+  the kernel in `_core.py` (the project policy file, Claude Code's `settings.json` and hooks dir,
+  the profile's own policy file), so no profile can remove or loosen a kernel entry, and the
+  control-plane / protected-command checks still run before the kill switch.
+- **`safety/host_profile.py`** — AgentWire's profile (`build_profile`). `_core` installs it at import
+  (`install_profile`); the generated hooks inline it. Core ships an empty default grant list.
+- **`safety/policy.py`** — `Guard.decide(ToolCall, Context) -> Verdict`, the ladder that used to be
+  copy-pasted into the five hook `main()`s. Pure: it returns the audit row, stderr lines and
+  notification as data. The engine is passed in, so tests drive it with a stub engine
+  (`tests/unit/test_policy_ladder.py`).
+- **`safety/adapter.py`** — payload -> `ToolCall`/`Context`, and `render(verdict)`, the one place a
+  decision becomes an exit code. Each hook `main()` is `load config -> parse -> decide -> render`.
+- **Sources** — `load_config` takes a list of rule dirs and one or more tooldef dirs, in precedence
+  order (bundled, profile layers, host override). Merging is additive; a repeated rule id across
+  sources is recorded under `_duplicate_rule_ids`; an `allowedPaths` entry in an extension source that
+  would re-permit the control plane is dropped with a load failure.
+
+`scripts/regen_damage_control_hooks.py` inlines `profile`, `host_profile`, `_core`, `policy` and
+`adapter` (in that order) into each hook, so those files must stay stdlib + yaml and import nothing
+from `agentwire` (`tests/unit/test_engine_standalone.py`). Use `NamedTuple`, not `@dataclass`: a hook
+loaded by path has no `sys.modules` entry for a dataclass to resolve its annotations against.
+
 ## Troubleshooting
 
 ### Hook Not Blocking Expected Command
