@@ -22,7 +22,6 @@ def local_say(tmp_path, monkeypatch):
                         lambda text, **k: toasts.append(text) or True)
     monkeypatch.setattr(channels_cli, "_local_say_dispatch",
                         lambda chunk, *a, **k: (played.append(chunk) or 0, "local-speakers (kokoro)"))
-    monkeypatch.setattr("agentwire.fleet_activity.note_spoke", lambda *a, **k: {})
     lane_dir = tmp_path / "lane"
     monkeypatch.setattr(playback_lane, "default_dir", lambda: lane_dir)
     return played, toasts, lane_dir

@@ -128,3 +128,23 @@ def test_load_bearing_kinds_are_exactly_the_report_kinds_and_doctor_sees_them(is
     doctor_cli._render_dead_letter_section()
     out = capsys.readouterr().out
     assert "[!!]" in out and "done" in out
+
+
+def test_fleet_stack_is_gone_and_the_producers_it_hooked_still_work(isolate, monkeypatch):
+    import importlib
+
+    from agentwire.__main__ import build_parser
+
+    top = next(a for a in build_parser()._actions if isinstance(a.choices, dict)).choices
+    assert not {"alerts", "activity"} & set(top)
+    for mod in ("fleet_activity", "fleet_alerts", "alerts_cli", "activity_cli"):
+        with pytest.raises(ImportError):
+            importlib.import_module(f"agentwire.{mod}")
+
+    # A `done` enqueue (formerly noted as fleet activity) and a toast still work.
+    (msg,) = inbox.enqueue("orchestrator", "report", kind="done", sender="worker-1")
+    assert msg.kind == "done"
+    from agentwire import core
+
+    monkeypatch.setattr(core, "portal_request", lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+    assert core.post_desktop_notification("hi")["success"] is False

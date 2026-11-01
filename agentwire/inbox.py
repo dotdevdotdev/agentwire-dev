@@ -748,30 +748,7 @@ def enqueue(
         )
         written.append(msg)
     _ledger("record_sent", written)
-    if written and kind == "done":
-        _note_report(sender, text, [m.to for m in written])
     return written
-
-
-def _note_report(sender: str, text: str, recipients: list[str]) -> None:
-    """A ``done`` report-back is fleet awareness too (#1185).
-
-    Here, not in ``msg send``, because every report-back path ends in
-    :func:`enqueue` — the CLI, MCP ``msg_send``, ``notify-parent --queued`` —
-    and a per-caller copy is the one that drifts. The idle placeholder is kind
-    ``idle``, never ``done``, so it cannot reach this; machine mail is excluded
-    by SENDER, which is also the recursion guard (an announcement is itself a
-    ``done`` enqueue). Best-effort: the message is already written, so the
-    WHOLE body — imports included — sits inside the guard.
-    """
-    try:
-        from . import fleet_activity, fleet_alerts
-
-        if sender in fleet_alerts.MACHINE_SENDERS or sender == "unknown":
-            return
-        fleet_activity.note_session_reported(sender, text, recipients=recipients)
-    except Exception as exc:  # noqa: BLE001  # awareness must not break delivery
-        _log_event("report_note_failed", **{"from": sender}, error=str(exc))
 
 
 # =============================================================================
@@ -816,62 +793,6 @@ def _fmt_ts(ms: int) -> str:
 _ESCALATE_DIGEST_DETAIL_CAP = 10
 
 
-def _alert_dead_letters(batch: list[Message], reason: str) -> None:
-    """Mirror a dead-letter digest to subscribed sessions (#982).
-
-    ``request`` by default: a permanently lost report-back needs somebody to go
-    look at ``agentwire msg dead``, but it is not worth cutting across a
-    sentence — and the realistic bad case here is a single stuck recipient that
-    dead-lettered 147 messages in ~2s (2026-07-19). One alert per BATCH, the
-    same coalescing the digest email already does, so that shape buys one
-    message rather than 147.
-
-    The one promotion: if what was lost was itself an ``escalation``, the alert
-    is an escalation. That is not this module re-deriving urgency — the sender
-    already made the judgment, and a *lost interrupt* is precisely the failure
-    the tier exists for.
-
-    **Escalatable is not the interrupt tier**, and this is where the two axes
-    are easiest to conflate. A lost ``done`` / ``request`` reaches the owner by
-    email, but the promotion below stays keyed on ``escalation`` alone.
-    Widening it would make every routine report an alarm, which is the
-    "retires the tier" failure ``fleet_alerts`` exists to avoid.
-
-    Two recursion guards, because an alert is ordinary mail and can dead-letter
-    like any other. The recipient guard alone is not enough once more than one
-    session subscribes: an alert stranded on the way to subscriber A would
-    otherwise be reported to subscriber B, whose own copy is stuck for the same
-    reason, once per drain forever. So our own undelivered alerts are dropped
-    by SENDER, and every subscriber named as a recipient is excluded.
-
-    ``MACHINE_SENDERS`` rather than ``SENDER`` alone (#1016): lifecycle activity
-    is emitted under its own sender and is news by construction. "A 'session
-    went idle' notice was lost" is not worth an alert, and it would arrive
-    exactly when the fleet is already noisy enough to be stranding mail.
-    """
-    from . import fleet_alerts
-
-    try:
-        mirrored = [m for m in batch if m.sender not in fleet_alerts.MACHINE_SENDERS]
-        if not mirrored:
-            return
-        recipients = sorted({m.to for m in mirrored})
-        kind = "escalation" if any(m.kind == "escalation" for m in mirrored) else None
-        noun = "message" if len(mirrored) == 1 else "messages"
-        kinds = ", ".join(sorted({m.kind for m in mirrored}))
-        fleet_alerts.emit_for(
-            "dead_letter",
-            f"{len(mirrored)} load-bearing {noun} ({kinds}) to "
-            f"{', '.join(recipients)} {_undelivered_phrase(reason, plural=len(mirrored) != 1)} "
-            f"dead-lettered (last defer reason: {reason}). They are recoverable "
-            f"with `agentwire msg dead`, but nobody has seen them.",
-            kind=kind,
-            exclude=recipients,
-        )
-    except Exception as exc:  # best-effort; never break the drain
-        _log_event("dead_letter_alert_failed", count=len(batch), error=str(exc))
-
-
 def _undelivered_phrase(reason: str, plural: bool) -> str:
     """Owner-mail predicate up to "dead-lettered". An unconfirmed paste may still
     sit in the agent's queue, so it is never called "never delivered" (a re-send
@@ -904,7 +825,6 @@ def _escalate_dead_letters(messages: list[Message], reason: str) -> None:
     batch = load_bearing(messages)
     if not batch:
         return
-    _alert_dead_letters(batch, reason)
     try:
         import socket
 
@@ -1268,16 +1188,14 @@ def _ledger(fn: str, *args) -> None:
         _log_event("sent_ledger_failed", fn=fn, error=str(exc))
 
 
-def _note_delivered(
-    session: str, messages: list[Message], how: str = "pasted", verified: bool = True
-) -> None:
+def _note_delivered(session: str, messages: list[Message], how: str = "pasted") -> None:
     """Record that these messages were pasted to *session*, at every site that
     confirms a delivery: the cohort ledger (#1224, so a child's report the
     drain — not ``wait`` — delivered still resolves that child) and the
-    sender's sent ledger (#1231). *how*/*verified* grade the evidence; see
+    sender's sent ledger (#1231). *how* names the evidence; see
     ``sent_ledger.HOW_*``. Never raises.
     """
-    _ledger("record_delivered", messages, how, verified)
+    _ledger("record_delivered", messages, how)
     try:
         from . import cohort
 

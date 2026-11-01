@@ -1916,27 +1916,15 @@ def _get_agentwire_path() -> str:
 def post_desktop_notification(text: str, session: str | None = None,
                               priority: str = "normal", timeout: float | None = None,
                               artifact: dict | None = None) -> dict:
-    """The one call for a toast that carries TEXT, and the seam that records it (#1016).
+    """The one call for a toast that carries TEXT.
 
     Returns the portal's parsed response, plus ``success`` — never raises.
 
     Every producer of a text toast goes through here: `agentwire notify-user`,
     the MCP ``notify_user`` tool, `say --display`, and the zombie reaper's
-    high-priority notice. The MCP one used to POST on its own transport — and
-    since agents use MCP and humans use the CLI, the agent-generated toasts
-    were exactly the ones a CLI-side hook could not see. Recording per producer
-    is the shape that leaves the next producer silent, so the record lives
-    here, below all of them, where a new caller inherits it by construction.
-
-    **Not every POST to that endpoint, and the difference is the text.**
-    ``mcp_desktop._announce_artifact`` posts a bodiless click-to-open artifact
-    notice (#817) and deliberately stays where it is: it has no ``text``, so
-    routing it here would write ledger entries reading "toast from : " — an
-    entry with nothing in it is worse than no entry, since a reader would
-    offer it as something that happened.
-
-    **Recorded whether or not the portal took it.** A toast the portal refused
-    is the case where the record matters MOST: nothing reached the screen.
+    high-priority notice. ``mcp_desktop._announce_artifact`` posts a bodiless
+    click-to-open artifact notice (#817) and deliberately stays where it is:
+    it has no ``text``.
     """
     body: dict = {"text": text, "priority": priority}
     if session:
@@ -1973,12 +1961,6 @@ def post_desktop_notification(text: str, session: str | None = None,
         result = {"success": False,
                   "error": f"Portal not reachable. Is it running? ({exc})"}
 
-    try:
-        from . import fleet_activity
-
-        fleet_activity.note_toast(text, session=session or "", priority=priority)
-    except Exception:  # noqa: BLE001  # awareness must never break the toast
-        pass
     return result
 
 

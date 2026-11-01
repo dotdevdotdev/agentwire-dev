@@ -312,32 +312,6 @@ def cmd_say(args) -> int:
     toast_ok = _post_desktop_notification(display, session=session, priority="normal",
                                           timeout=30) if display else None
 
-    def _record_spoken(heard: str, sink: str) -> None:
-        """Record what the owner ACTUALLY heard, for the voice layer (#1016).
-
-        Takes the heard text rather than reading `text` from the enclosing
-        scope, because on the local path those differ: `say` chunks, and a
-        failure on chunk 3 of 4 still played chunks 1 and 2 out loud. Recording
-        the whole string would claim the owner heard a sentence that never
-        played; recording nothing would let the buddy later offer, as news,
-        something they already heard. Both are the same defect — a record that
-        does not match the room.
-
-        This entry is NEVER announced to the buddy, whatever it said. The owner
-        already heard it; a voice channel that reads the audio back is the
-        two-surfaces problem made worse. What the record buys is the opposite —
-        the buddy can see what the fleet has already said and decline to offer
-        it as news.
-        """
-        if not heard.strip():
-            return
-        from agentwire import fleet_activity
-
-        try:
-            fleet_activity.note_spoke(heard, session=session or "", sink=sink)
-        except Exception:  # noqa: BLE001  # speaking is the job; the record is not
-            pass
-
     def _say_result(rc: int, sink: str, clients: int = 0) -> int:
         """Report which sink actually received the audio (#444): browser
         (played by N connected clients), local speakers / OS voice, or a
@@ -358,8 +332,6 @@ def cmd_say(args) -> int:
         if has_connections:
             rc = _remote_say(text, actual_session, portal_url)
             # One dispatch, one outcome: the browser path is not chunked here.
-            if rc == 0:
-                _record_spoken(text, "browser")
             return _say_result(rc, "browser", clients)
 
     # No portal connections — chunk locally for better TTS quality. One turn
@@ -369,7 +341,6 @@ def cmd_say(args) -> int:
     chunks = chunk_text(text)
 
     last_sink = "os-voice"
-    spoken: list[str] = []
     with Lane().turn(text, session or "") as play:
         if not play:
             # Trimmed from an over-long backlog: dropping it is the policy working.
@@ -383,12 +354,8 @@ def cmd_say(args) -> int:
                 backend=backend, instructions=instructions, language=language, stream=stream
             )
             if result != 0:
-                # Partial: the chunks before this one PLAYED. Record exactly those.
-                _record_spoken(" ".join(spoken), last_sink)
                 return _say_result(result, last_sink)
-            spoken.append(chunk)
 
-    _record_spoken(" ".join(spoken), last_sink)
     return _say_result(0, last_sink)
 
 
