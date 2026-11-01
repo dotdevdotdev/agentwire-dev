@@ -1313,9 +1313,9 @@ def _carry_forward_carved_packs(state: Dict[str, Any]) -> List[str]:
     sticks. An edited file matches no shipped hash and is left to the human.
     """
     from agentwire.safety import packs
-    from agentwire.safety.groups import AGENTWIRE_DEFAULT_PACKS
+    from agentwire.safety.groups import DEFAULT_PACKS
 
-    wanted = [p for p in AGENTWIRE_DEFAULT_PACKS if p not in (state[packs.PACKS_KEY] or [])]
+    wanted = [p for p in DEFAULT_PACKS if p not in (state[packs.PACKS_KEY] or [])]
     installed = RULES_DIR / "agentwire.yaml"
     if not wanted or not installed.exists():
         return []

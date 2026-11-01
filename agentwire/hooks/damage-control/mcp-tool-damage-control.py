@@ -70,9 +70,268 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "b1ea0ea3c2c27db50be0e3e271859a50eb3f4c2161fc5e182e794fd94aee5ea2", "generated_at": "2026-11-01T16:20:54Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "e7310b2c0bcae6cd799b8c6bfff046016c656d69086fc8cb856ef325a7863a27", "generated_at": "2026-11-01T23:32:06Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
+# --- inlined from agentwire/safety/profile.py ---
+"""The host-supplied half of the damage-control engine (#1209 M3, section 4.2).
+
+The engine knows what is dangerous in general; a HOST (an application that embeds it)
+adds what is dangerous *around itself*: its own config and control-plane files, the
+commands that must never run through an agent, the env vars its scheduler stamps, the
+rule ids it is willing to grant unattended. A ``Profile`` is that whole surface, as
+plain data, so the engine has no host names in its logic.
+
+``Profile`` only ever ADDS. The generic control plane (the project ``.damagecontrol.yml``,
+``~/.claude/settings.json``, ``~/.claude/hooks/*``, the host's policy file) is a kernel
+that ``install_profile`` (in ``_core.py``) puts first and a profile cannot remove or
+reorder: the control-plane and protected-command checks run before the kill switch and
+nothing a profile supplies can loosen them.
+
+Standard library only, no imports from this package: it is inlined into the hooks next to
+``_core.py`` (``scripts/regen_damage_control_hooks.py``) and must work in either place.
+Plain ``NamedTuple``s, not dataclasses: a dataclass resolves its annotations through
+``sys.modules[cls.__module__]``, which a hook loaded by path (the tests, ``runpy``) lacks.
+"""
+
+from typing import NamedTuple, Tuple
+
+
+class GroupSpec(NamedTuple):
+    """One rule group or opt-in pack: which bundled files it owns (#1141)."""
+
+    name: str
+    kind: str  # "group" | "pack"
+    description: str
+    rules: Tuple[str, ...] = ()
+    tooldefs: Tuple[str, ...] = ()
+    kernel: bool = False
+    binaries: Tuple[str, ...] = ()  # vendor CLIs whose presence suggests a pack
+    # Rule files shipped by a host layer (``Profile.extra_rules_dirs``). Owned by the
+    # SAME entry as the generic file they were split from, so an opt-out or kernel pin
+    # still covers every entry that group covered before the split.
+    layer_rules: Tuple[str, ...] = ()
+
+    def files(self, section: str) -> Tuple[str, ...]:
+        """Every bundled file this entry owns in ``section`` ("rules" | "tooldefs")."""
+        return self.rules + self.layer_rules if section == "rules" else self.tooldefs
+
+
+class McpCommandTemplate(NamedTuple):
+    """How an outbound MCP tool maps onto the shell command it runs under the hood.
+
+    The synthesized command must match the same rule the Bash shell-out matches. The
+    body is omitted on purpose (privacy, audit clarity): rules key on the verb.
+    ``argv`` is the fixed prefix; each ``flags`` entry is ``(tool_input key, flag, repeat)``:
+    an empty value omits the flag; ``repeat`` lets a list value emit the flag once per item,
+    otherwise the value is rendered as one ``str()``.
+    """
+
+    tool: str  # short tool name, e.g. "email_send" (the part after the last "__")
+    argv: Tuple[str, ...]
+    flags: Tuple[Tuple[str, str, bool], ...] = ()
+
+
+class Profile(NamedTuple):
+    """Everything a host adds to the generic engine. Defaults are the generic engine."""
+
+    name: str = "generic"
+
+    # --- config home ------------------------------------------------------
+    # Where the host keeps its protected policy file (``damagecontrol.yml``) and its
+    # rule/tooldef overrides. ``config_dir_env`` (if set in the environment) relocates
+    # the override dirs only — never the policy file, which is always protected.
+    config_dir: str = "~/.damage-control"
+    config_dir_env: str = "DAMAGE_CONTROL_HOME"
+
+    # --- protected control plane (additive) -------------------------------
+    protected_paths: Tuple[str, ...] = ()
+    # Names a program may use for a control-plane location it builds at run time.
+    control_plane_words: Tuple[str, ...] = ()
+    # Extra regex alternatives for directories agents write by design (matched whole-segment).
+    benign_path_patterns: Tuple[str, ...] = ()
+    # Fixed stand-in for ``$HOME`` when judging what a ``~``-anchored entry covers.
+    home_alias: str = "/home/damage-control-canonical"
+
+    # --- protected commands (additive; no allowlist, no escape hatch, no kill switch) ---
+    protected_commands: Tuple[Tuple[str, str], ...] = ()
+
+    # --- unattended / headless --------------------------------------------
+    # The mechanism and scope evaluation live in the engine; the host names the env vars
+    # its scheduler stamps and the rule ids it grants by default (the engine ships none).
+    unattended_env: str = "DAMAGE_CONTROL_UNATTENDED"
+    unattended_allow_env: str = "DAMAGE_CONTROL_UNATTENDED_ALLOW"
+    default_unattended_allow: Tuple[str, ...] = ()
+    # First half of the sentence telling a blocked unattended run how to get a grant;
+    # ``{rule_id}`` is filled in. Empty = say nothing.
+    unattended_grant_hint: str = ""
+    # argv prefix run detached when an unattended action is blocked; the engine appends
+    # ``--reason R --rule-id ID --command C``. Empty = no notification.
+    unattended_block_notifier: Tuple[str, ...] = ()
+
+    # --- extra rules ------------------------------------------------------
+    # Directories (relative to the bundled hook dir) merged after the generic rules.
+    extra_rules_dirs: Tuple[str, ...] = ()
+
+    # --- MCP --------------------------------------------------------------
+    mcp_command_templates: Tuple[McpCommandTemplate, ...] = ()
+
+    # --- groups / packs ---------------------------------------------------
+    groups: Tuple[GroupSpec, ...] = ()
+    # ``{existing group name: layer rule files}`` the host adds to generic groups.
+    group_layer_rules: Tuple[Tuple[str, Tuple[str, ...]], ...] = ()
+    default_packs: Tuple[str, ...] = ()
+
+    def layer_rules_for(self, group: str) -> Tuple[str, ...]:
+        return dict(self.group_layer_rules).get(group, ())
+
+    def template_for(self, tool_name: str):
+        short = tool_name.split("__")[-1]
+        for t in self.mcp_command_templates:
+            if t.tool == short:
+                return t
+        return None
+
+
+GENERIC = Profile()
+
+__all__ = ["GENERIC", "GroupSpec", "McpCommandTemplate", "Profile"]
+
+
+# --- inlined from agentwire/safety/host_profile.py ---
+"""AgentWire's damage-control profile: everything the generic engine is told about AgentWire.
+
+``build_profile(Profile, ...)`` is the engine's host convention (``_core`` looks for a
+``host_profile`` module beside it and falls back to the generic profile when there is
+none). It takes the data classes as arguments rather than importing them so the SAME
+text can be inlined into the standalone hook scripts, where no package is importable
+(``scripts/regen_damage_control_hooks.py``). In #1209 M6 this file becomes
+``agentwire/safety_ext.py`` and the engine package drops it.
+"""
+
+
+def build_profile(profile_cls, group_cls, template_cls):
+    return profile_cls(
+        name="agentwire",
+        config_dir="~/.agentwire",
+        config_dir_env="AGENTWIRE_DIR",
+        protected_paths=(
+            "~/.agentwire/hooks/damage-control/*.py",  # the hook scripts themselves
+            "~/.agentwire/damage-control/*.yaml",      # the damage-control rule files
+            # Execution-plane configs: agentwire runs strings from these files through
+            # its OWN ``subprocess.run(..., shell=True)`` calls (scheduler gate commands
+            # in scheduler.py, service healthchecks in services.py) — those subprocesses
+            # do NOT traverse the Claude Code hook, so a policed agent that can write a
+            # gate/healthcheck gets unguarded code execution on the next tick (a
+            # confused-deputy escape). Treat them as control plane (#466 lockdown).
+            "~/.agentwire/scheduler.yaml",      # scheduler gate commands run via shell
+            "~/.agentwire/config.yaml",         # service healthcheck commands run via shell
+            # Per-project task-EXECUTION config (#720): split out of ``.agentwire.yml``,
+            # which is now purely declarative (type/roles/voice/parent/worktree) and
+            # agent-writable again — it carries no exec vector. ``.agentwire.tasks.yml``
+            # holds the ``tasks:`` block (pre/post/on_task_end/shell/unattended_allow),
+            # which agentwire runs the same way (confused-deputy risk above), so it
+            # stays protected. Authored via propose-and-promote: an agent drafts to the
+            # UNPROTECTED ``.agentwire.tasks.proposed.yml`` staging file; a human reviews
+            # (``agentwire tasks review``) and promotes (``agentwire tasks promote``) —
+            # the agent never writes the live file. See ``agentwire/tasks_cli.py``.
+            "*.agentwire.tasks.yml",            # project task-execution config (any dir)
+        ),
+        control_plane_words=(".agentwire",),
+        benign_path_patterns=(r'(?:^|/)\.agentwire/(?:wiki|artifacts)(?:/|$)',),
+        home_alias="/home/agentwire-canonical",
+        # ``agentwire tasks promote`` is the confused-deputy escape itself (#720/#721):
+        # the host-trusted program that copies a vetted draft into the protected
+        # ``.agentwire.tasks.yml``. If a policed/unattended agent could invoke the CLI
+        # itself, the file protection is moot. This is defense in depth ON TOP OF
+        # ``cmd_tasks_promote``'s own runtime refusal (unattended check + host-context
+        # gate in ``tasks_cli.py``), which is what closes the ``python3 -c "from
+        # agentwire.tasks_cli import cmd_tasks_promote; ..."`` bypass.
+        protected_commands=(
+            (
+                r'\bagentwire\s+tasks\s+promote\b',
+                "agentwire tasks promote writes the protected .agentwire.tasks.yml — "
+                "host-only, run it from your own terminal (not through an agent).",
+            ),
+            (
+                r'\bagentwire\s+safety\s+(?:packs|groups)\s+(?:enable|disable)\b',
+                "agentwire safety packs/groups enable|disable changes damage-control "
+                "policy — host-only, run it from your own terminal (not through an agent).",
+            ),
+        ),
+        unattended_env="AGENTWIRE_UNATTENDED",
+        unattended_allow_env="AGENTWIRE_UNATTENDED_ALLOW",
+        unattended_grant_hint=(
+            "To permit this for an unattended task, add rule id '{rule_id}' "
+            "to its .agentwire.tasks.yml task `unattended_allow`"
+        ),
+        unattended_block_notifier=("agentwire", "safety", "notify-unattended-block"),
+        # The built-in grants. Written in the SAME shape as a task's ``unattended_allow``
+        # (bare id = unscoped, or ``{id, paths}`` = scoped) and parsed by the same parser
+        # (#914). Deliberately UNSCOPED — narrowing them is a host policy decision, and a
+        # task can already express a narrower grant (naming a rule at a more specific
+        # level REPLACES this one). These ids only exist if the LOADED tooldefs carry
+        # them; ``agentwire doctor`` reports a drifted install (``_check_unattended_defaults``).
+        default_unattended_allow=(
+            "git.add",       # stage files
+            "git.add-u",     # stage tracked changes
+            "git.commit",    # commit
+            "git.push",      # push (force/delete are SEPARATE hard-block/ask rules)
+            "gh.pr-create",  # open a PR — the human-reviewed gate
+            "outbound.agentwire-email",  # blanket allow, any recipient (#804)
+            # Run the project's own tooling — tests, linters, the project CLI (#925).
+            #
+            # This tier is `ask` because `uv run` executes code, which is true of every
+            # scheduled task by definition: the dispatch already granted "run this
+            # agent on this repo". Withholding the project's OWN test runner from it
+            # does not withhold code execution, it only withholds VERIFICATION — the
+            # task still writes the change and still opens the PR, just without having
+            # been able to run the suite over it. 18 of the 111 unattended blocks
+            # measured over the 14 days to 2026-08-06 were exactly this.
+            #
+            # Safe to allow only because the id it grants cannot shadow a hard block.
+            # Verified, not assumed: rules are evaluated in order and the FIRST match
+            # returns its id, so an earlier `ask` rule CAN hide a later `block` — the
+            # matrix in tests/unit/test_unattended_allow.py pins that every dangerous
+            # form behind `uv run` still comes back with the DESTRUCTIVE rule's id, not
+            # this one (the launcher-payload rescan that guarantees it landed in #1028).
+            #
+            # BOTH ids, deliberately. `uv run <script.py>` and `uv run <cmd>` are two
+            # tooldef lines that compile to the IDENTICAL pattern `\buv\s+run\b`, so
+            # which id a command comes back with is decided by which yaml line sits
+            # higher, not by anything about the command. Allowlisting only one would be
+            # guarding the phrasing: reorder uv.yaml and the permission silently
+            # evaporates with nothing failing to say so.
+            "tooldef.uv-run-a-script-in-project-environment",
+            "tooldef.uv-run-a-command-in-project-environment",
+        ),
+        extra_rules_dirs=("agentwire-rules",),
+        # Outbound MCP tools and the shell command they run under the hood. Keep in
+        # lockstep with ``email_send`` / ``quo_send`` in ``agentwire/mcp_server.py`` and
+        # the ``outbound.agentwire-*`` rules.
+        mcp_command_templates=(
+            template_cls("email_send", ("agentwire", "email"),
+                               (("to", "--to", True), ("subject", "--subject", False))),
+            template_cls("quo_send", ("agentwire", "quo"), (("to", "--to", False),)),
+        ),
+        groups=(
+            group_cls("agentwire", "group", "AgentWire state and session destruction",
+                      layer_rules=("agentwire.yaml",)),
+        ),
+        group_layer_rules=(
+            ("control-plane", ("agentwire-control-plane.yaml",)),
+            ("core", ("agentwire-core.yaml",)),
+            ("mcp-tools", ("agentwire-mcp-tools.yaml",)),
+            ("outbound", ("agentwire-outbound.yaml",)),
+        ),
+        # ``tmux`` was part of the always-on ``agentwire`` group before it was carved into
+        # a generic opt-in pack (#1209 M2); AgentWire is a tmux tool, so it keeps the two
+        # rules by default.
+        default_packs=("tmux",),
+    )
+
+
+# --- inlined from agentwire/safety/_core.py ---
 """
 Shared damage-control logic for both the agentwire CLI (`agentwire safety check`)
 and the Claude Code PreToolUse hooks (bash/edit/write).
@@ -88,6 +347,8 @@ import contextlib
 import fnmatch
 import functools
 import glob
+import importlib
+import importlib.util
 import itertools
 import json
 import os
@@ -119,6 +380,96 @@ def _rx(pattern: str, flags: int = re.IGNORECASE) -> "re.Pattern[str]":
     ``except re.error`` still fires at the same place.
     """
     return re.compile(pattern, flags)
+
+
+# ============================================================================
+# HOST PROFILE (#1209 M3)
+# ============================================================================
+#
+# Everything the engine is told about the application embedding it lives in a
+# ``Profile`` (``profile.py``) and arrives through ``install_profile``. The
+# engine's own control plane is the KERNEL below; a profile only ADDS to it, so
+# no extension can remove or loosen a kernel entry — and the control-plane and
+# protected-command checks that read these run before the kill switch.
+#
+# ``install_profile`` rebinds the module globals the rest of this file reads
+# (``PROTECTED_CONTROL_PLANE_PATHS`` …). The last line of the module installs the
+# host's profile: the sibling ``host_profile`` module when this file is imported
+# as a package member, or the ``build_profile`` the hook generator inlined above
+# it. Neither present ⇒ the generic profile.
+
+_KERNEL_PROTECTED_PATHS = (
+    "*.damagecontrol.yml",              # project kill switch + rule knobs (any dir)
+    "~/.claude/settings.json",          # PreToolUse hook registration
+    "~/.claude/hooks/*",                # the host's Claude Code hooks
+)
+_KERNEL_CONTROL_PLANE_WORDS = (".claude", "damagecontrol", "settings.json")
+# Directories under those names that agents write by design — matched on a whole path segment.
+_KERNEL_BENIGN_PATTERNS = (r'(?:^|/)\.claude/projects/[^/]+/memory(?:/|$)',)
+
+POLICY_FILE_NAME = "damagecontrol.yml"
+
+PROFILE: Any = None
+PROTECTED_CONTROL_PLANE_PATHS: List[str] = []
+PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = []
+# Core ships NO grants; the host's profile supplies its defaults.
+DEFAULT_UNATTENDED_ALLOW: List[str] = []
+_CANONICAL_HOME = ""
+_CONTROL_PLANE_WORDS: Tuple[str, ...] = ()
+_BENIGN_PATH_RE: Any = None
+
+
+def _data_classes() -> Tuple[Any, Any, Any]:
+    """``(Profile, GroupSpec, McpCommandTemplate)``: inlined above this file in a hook, else ``profile.py``."""
+    g = globals()
+    if "Profile" in g:
+        return g["Profile"], g["GroupSpec"], g["McpCommandTemplate"]
+    mod = importlib.import_module(f"{__package__}.profile")
+    return mod.Profile, mod.GroupSpec, mod.McpCommandTemplate
+
+
+def host_path(path: str) -> Path:
+    """A profile path (``~/``-relative or absolute) as a ``Path``; resolves ``~`` via ``Path.home()``."""
+    return Path.home() / path[2:] if path.startswith("~/") else Path(path)
+
+
+def policy_file_path() -> Path:
+    """The host's PROTECTED global policy file: kill switch, ``disabled_rules``, grants, packs."""
+    return host_path(PROFILE.config_dir) / POLICY_FILE_NAME
+
+
+def config_override_dir() -> Path:
+    """Where the host keeps its rule/tooldef overrides (relocatable by the profile's env var)."""
+    default = os.path.expanduser(PROFILE.config_dir)
+    return Path(os.environ.get(PROFILE.config_dir_env, default) if PROFILE.config_dir_env else default)
+
+
+def install_profile(profile: Any) -> None:
+    """Make ``profile`` the one this process judges by. Additive over the kernel; idempotent."""
+    global PROFILE, PROTECTED_CONTROL_PLANE_PATHS, PROTECTED_COMMAND_PATTERNS
+    global DEFAULT_UNATTENDED_ALLOW, _CANONICAL_HOME, _CONTROL_PLANE_WORDS, _BENIGN_PATH_RE
+    PROFILE = profile
+    PROTECTED_CONTROL_PLANE_PATHS = [
+        f"{profile.config_dir}/{POLICY_FILE_NAME}",  # global kill switch + rule knobs
+        *_KERNEL_PROTECTED_PATHS,
+        *profile.protected_paths,
+    ]
+    PROTECTED_COMMAND_PATTERNS = list(profile.protected_commands)
+    DEFAULT_UNATTENDED_ALLOW = list(profile.default_unattended_allow)
+    _CANONICAL_HOME = profile.home_alias
+    _CONTROL_PLANE_WORDS = _KERNEL_CONTROL_PLANE_WORDS + tuple(profile.control_plane_words)
+    _BENIGN_PATH_RE = _rx("|".join(_KERNEL_BENIGN_PATTERNS + tuple(profile.benign_path_patterns)))
+
+
+def _default_profile() -> Any:
+    """The host's profile: ``build_profile`` inlined above us, else the sibling ``host_profile`` module, else generic."""
+    profile_cls, group_cls, template_cls = _data_classes()
+    build = globals().get("build_profile")
+    if build is None and __package__:
+        if importlib.util.find_spec(f"{__package__}.host_profile") is not None:
+            # Found ⇒ import it for real: a broken host profile must raise, never fall back to generic.
+            build = importlib.import_module(f"{__package__}.host_profile").build_profile
+    return build(profile_cls, group_cls, template_cls) if build else profile_cls()
 
 
 # ============================================================================
@@ -691,7 +1042,7 @@ def _find_project_config() -> Tuple[str, List[Any]]:
 
 def _read_global_allowed_paths() -> List[Any]:
     """Top-level ``allowed_paths`` of the protected global policy file in ``~/.agentwire/``."""
-    path = Path.home() / ".agentwire" / "damagecontrol.yml"
+    path = policy_file_path()
     try:
         if yaml and path.is_file():
             with open(path, "r") as f:
@@ -1594,15 +1945,94 @@ def _assign_rule_id(
     return candidate
 
 
+def resolve_rule_sources(bundle_dir: Path) -> List[Path]:
+    """The rules directories to load, in precedence order.
+
+    A directory of the host's own rule overrides (``<config dir>/damage-control``) that
+    holds any rule file replaces the bundle wholesale; otherwise the bundled generic
+    rules come first and the profile's extra dirs (``Profile.extra_rules_dirs``, relative
+    to ``bundle_dir``) after them. See :func:`load_config` for how sources merge.
+    """
+    override = config_override_dir() / "damage-control"
+    if override.exists() and any(override.glob("*.yaml")):
+        return [override]
+    return bundled_rule_sources(bundle_dir)
+
+
+def bundled_rule_sources(bundle_dir: Path) -> List[Path]:
+    """The shipped rules dirs under ``bundle_dir``: generic first, then the profile's layers."""
+    return [bundle_dir / "rules"] + [bundle_dir / d for d in PROFILE.extra_rules_dirs]
+
+
+def resolve_tooldef_sources(bundled: Path) -> List[Path]:
+    """The tooldef directories to load: the host's overrides win over ``bundled``; none if absent."""
+    override = config_override_dir() / "tooldefs"
+    if override.exists() and any(override.glob("*.yaml")):
+        return [override]
+    return [bundled] if bundled.exists() else []
+
+
+def synthesize_mcp_command(tool_name: str, tool_input: Dict[str, Any]) -> Optional[str]:
+    """The shell command an outbound MCP tool runs under the hood, or None for any other tool.
+
+    Declarative: the profile's ``mcp_command_templates`` name the tool and the argv it maps
+    to, so the SAME rule the Bash shell-out matches fires for the tool call. The body is
+    omitted on purpose (privacy, audit clarity) — rules key on the verb, not the payload.
+    """
+    template = PROFILE.template_for(tool_name)
+    if template is None:
+        return None
+    parts = list(template.argv)
+    for key, flag, repeat in template.flags:
+        value = tool_input.get(key)
+        items = value if repeat and isinstance(value, list) else ([value] if value else [])
+        for item in items:
+            parts += [flag, str(item)]
+    return " ".join(parts)
+
+
+def _without_control_plane_loosening(
+    items: List[Any], source: Path, failures: List[Dict[str, Any]]
+) -> List[Any]:
+    """``items`` minus any ``allowedPaths`` entry that would re-permit the protected control plane.
+
+    The allowlist is the one human, host-side override of the control plane, so a rules
+    file an EXTENSION ships (a profile layer, an overlay) must not carry one: that would let
+    the thing being extended be loosened by the extension. Dropped loudly, never silently.
+    """
+    kept = []
+    for item in items:
+        if isinstance(item, dict) and isinstance(item.get("path"), str) and control_plane_allowlist([item]):
+            _record_load_failure(
+                source,
+                ValueError(
+                    f"allowedPaths entry {item['path']!r} would re-permit the protected control plane; "
+                    "an extension rules source cannot loosen it — entry ignored"
+                ),
+                failures,
+            )
+            continue
+        kept.append(item)
+    return kept
+
+
 def load_config(
     rules_dir: Any,
-    tooldefs_dir: Optional[Path] = None,
+    tooldefs_dir: Any = None,
 ) -> Dict[str, Any]:
-    """Load and merge all rule YAMLs in ``rules_dir`` plus tooldef ask-patterns.
+    """Load and merge the rule YAMLs of every source in ``rules_dir`` plus tooldef ask-patterns.
 
-    ``rules_dir`` is one directory or a list of them (the bundled generic rules and
-    the AgentWire layer). Files merge in sorted FILE-NAME order across all of them,
-    exactly as if they sat in one flat directory.
+    Sources, in precedence order (:func:`resolve_rule_sources`): the bundled generic rules,
+    then profile-supplied dirs, then the host's overrides. ``rules_dir`` is one directory or
+    a list of them; ``tooldefs_dir`` is None, one directory, or a list. Files merge in sorted
+    FILE-NAME order across all of them, exactly as if they sat in one flat directory.
+
+    Merging is additive: a source can add rules but never remove or reorder another's, and
+    an extension's ``allowedPaths`` cannot re-permit the protected control plane
+    (``guarded_allowlist``). A rule id appearing twice across ANY sources is a load error —
+    both rules stay live, the id is recorded under ``_duplicate_rule_ids``, and doctor / lint
+    surface it — because ``disabled_rules`` and ``unattended_allow`` name rules by id and an
+    ambiguous id makes a relaxation ambiguous.
 
     Bash patterns get a stable ``id`` field (``"<file>.<slug-of-reason>"``) so
     they can be referenced by the ``safety.disabled_rules`` config.
@@ -1628,12 +2058,16 @@ def load_config(
     duplicate_ids: set = set()
     parse_failures: List[Dict[str, Any]] = []
     yaml_files = sorted((f for d in rules_dirs for f in d.glob("*.yaml")), key=lambda f: f.name)
+    # Every source after the first is an extension (a profile layer, an overlay).
+    extension_files = {f for d in rules_dirs[1:] for f in d.glob("*.yaml")}
     for rules_file in yaml_files:
         try:
             with open(rules_file, "r") as f:
                 data = yaml.safe_load(f) or {}
             for key in merged:
                 items = data.get(key, []) or []
+                if key == "allowedPaths" and rules_file in extension_files:
+                    items = _without_control_plane_loosening(items, rules_file, parse_failures)
                 if key in ("bashToolPatterns", "mcpToolPolicies"):
                     for it in items:
                         if isinstance(it, dict):
@@ -1642,8 +2076,9 @@ def load_config(
                 merged[key].extend(items)
         except Exception as exc:
             _record_load_failure(rules_file, exc, parse_failures)
-    if tooldefs_dir is not None:
-        tooldef_patterns = load_write_patterns_from_tooldefs(tooldefs_dir, parse_failures)
+    tooldef_dirs = [] if tooldefs_dir is None else ([tooldefs_dir] if isinstance(tooldefs_dir, Path) else list(tooldefs_dir))
+    for tooldef_source in tooldef_dirs:
+        tooldef_patterns = load_write_patterns_from_tooldefs(tooldef_source, parse_failures)
         for it in tooldef_patterns:
             _assign_rule_id(it, "tooldef", taken_ids, duplicate_ids)
             it.setdefault("source", "tooldef")
@@ -1739,65 +2174,10 @@ def load_config(
 # regardless. Interactive bypass sessions (no ``AGENTWIRE_UNATTENDED``) are
 # unaffected too — their ``ask`` still resolves the old way.
 
-# The built-in grants. Written in the SAME shape as a task's
-# ``unattended_allow`` (bare id = unscoped, or ``{id, paths}`` = scoped) and
-# parsed by the same parser, so a scope is expressible HERE too — not only in a
-# per-task entry (#914 review §2). That matters because these ids are the
-# widest grants in the system: ``git.commit`` / ``git.push`` unscoped means any
-# repo on the machine, in every scheduled task, forever.
-#
-# They are deliberately left UNSCOPED here — narrowing them is a host policy
-# decision, not something this file should make on every install's behalf, and
-# a task that needs a narrower grant can already express it: naming a rule at a
-# more specific level REPLACES this one (see the precedence note above), so a
-# task's ``{id: git.commit, paths: [<store>]}`` genuinely binds rather than
-# being swallowed by this unscoped default. A host that wants the narrow form
-# machine-wide writes the scoped entry in ``~/.agentwire/damagecontrol.yml``.
-#
-# NOTE (#916 / review §2): these ids only exist if the LOADED tooldefs carry
-# them. ``~/.agentwire/tooldefs/`` wins over the bundled copy and never
-# self-heals, so on a drifted install five of the six name no rule at all and
-# every one of these actions is blocked unattended. ``agentwire doctor`` now
-# reports that (``_check_unattended_defaults``) instead of leaving it to be
-# rediscovered as a nightly timeout.
-DEFAULT_UNATTENDED_ALLOW = [
-    "git.add",       # stage files
-    "git.add-u",     # stage tracked changes
-    "git.commit",    # commit
-    "git.push",      # push (force/delete are SEPARATE hard-block/ask rules)
-    "gh.pr-create",  # open a PR — the human-reviewed gate
-    "outbound.agentwire-email",  # blanket allow, any recipient (#804)
-    # Run the project's own tooling — tests, linters, the project CLI (#925).
-    #
-    # This tier is `ask` because `uv run` executes code, which is true of every
-    # scheduled task by definition: the dispatch already granted "run this
-    # agent on this repo". Withholding the project's OWN test runner from it
-    # does not withhold code execution, it only withholds VERIFICATION — the
-    # task still writes the change and still opens the PR, just without having
-    # been able to run the suite over it. 18 of the 111 unattended blocks
-    # measured over the 14 days to 2026-08-06 were exactly this.
-    #
-    # Safe to allow only because the id it grants cannot shadow a hard block.
-    # Verified, not assumed: rules are evaluated in order and the FIRST match
-    # returns its id, so an earlier `ask` rule CAN hide a later `block` — the
-    # matrix in tests/unit/test_unattended_allow.py pins that every dangerous
-    # form behind `uv run` still comes back with the DESTRUCTIVE rule's id, not
-    # this one (the launcher-payload rescan that guarantees it landed in #1028).
-    #
-    # BOTH ids, deliberately. `uv run <script.py>` and `uv run <cmd>` are two
-    # tooldef lines that compile to the IDENTICAL pattern `\buv\s+run\b`, so
-    # which id a command comes back with is decided by which yaml line sits
-    # higher, not by anything about the command. Allowlisting only one would be
-    # guarding the phrasing: reorder uv.yaml and the permission silently
-    # evaporates with nothing failing to say so.
-    "tooldef.uv-run-a-script-in-project-environment",
-    "tooldef.uv-run-a-command-in-project-environment",
-]
-
 
 def is_unattended() -> bool:
     """True when this session was dispatched with no human present (scheduler)."""
-    return os.environ.get("AGENTWIRE_UNATTENDED") == "1"
+    return os.environ.get(PROFILE.unattended_env) == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -1897,7 +2277,7 @@ def _env_unattended_allow() -> Any:
     for the common case. ``scheduler/dispatch.py::_unattended_env`` is the only
     writer; see ``encode_unattended_allow``.
     """
-    raw = os.environ.get("AGENTWIRE_UNATTENDED_ALLOW", "")
+    raw = os.environ.get(PROFILE.unattended_allow_env, "")
     if not raw.strip():
         return []
     if raw.lstrip().startswith("["):
@@ -2683,7 +3063,7 @@ def policy_file_parse_failures(
     if not yaml:
         return failures
     if global_config_path is None:
-        global_config_path = Path.home() / ".agentwire" / "damagecontrol.yml"
+        global_config_path = policy_file_path()
     candidates = [global_config_path]
     current = os.path.abspath(cwd or safe_cwd())
     while True:
@@ -2753,7 +3133,7 @@ def load_safety_config(
         return local_enabled
 
     if global_config_path is None:
-        global_config_path = Path.home() / ".agentwire" / "damagecontrol.yml"
+        global_config_path = policy_file_path()
     try:
         if global_config_path.exists():
             with open(global_config_path, "r") as f:
@@ -2809,32 +3189,6 @@ def load_safety_config(
 # The guarantee: the agent only ever operates within the freedom the human
 # preset. Loosening is always a host-side act.
 
-PROTECTED_CONTROL_PLANE_PATHS = [
-    "~/.agentwire/damagecontrol.yml",   # global kill switch + rule knobs
-    "*.damagecontrol.yml",              # project kill switch + rule knobs (any dir)
-    "~/.claude/settings.json",          # PreToolUse hook registration
-    "~/.agentwire/hooks/damage-control/*.py",  # the hook scripts themselves
-    "~/.claude/hooks/*",                # agentwire-owned Claude Code hooks
-    "~/.agentwire/damage-control/*.yaml",      # the damage-control rule files
-    # Execution-plane configs: agentwire runs strings from these files through
-    # its OWN ``subprocess.run(..., shell=True)`` calls (scheduler gate commands
-    # in scheduler.py, service healthchecks in services.py) — those subprocesses
-    # do NOT traverse the Claude Code hook, so a policed agent that can write a
-    # gate/healthcheck gets unguarded code execution on the next tick (a
-    # confused-deputy escape). Treat them as control plane (#466 lockdown).
-    "~/.agentwire/scheduler.yaml",      # scheduler gate commands run via shell
-    "~/.agentwire/config.yaml",         # service healthcheck commands run via shell
-    # Per-project task-EXECUTION config (#720): split out of ``.agentwire.yml``,
-    # which is now purely declarative (type/roles/voice/parent/worktree) and
-    # agent-writable again — it carries no exec vector. ``.agentwire.tasks.yml``
-    # holds the ``tasks:`` block (pre/post/on_task_end/shell/unattended_allow),
-    # which agentwire runs the same way (confused-deputy risk above), so it
-    # stays protected. Authored via propose-and-promote: an agent drafts to the
-    # UNPROTECTED ``.agentwire.tasks.proposed.yml`` staging file; a human reviews
-    # (``agentwire tasks review``) and promotes (``agentwire tasks promote``) —
-    # the agent never writes the live file. See ``agentwire/tasks_cli.py``.
-    "*.agentwire.tasks.yml",            # project task-execution config (any dir)
-]
 
 
 def control_plane_allowlist_overlaps(
@@ -2871,8 +3225,6 @@ def control_plane_allowlist_overlaps(
                 out.append((entry["path"], prot))
     return out
 
-
-_CANONICAL_HOME = "/home/agentwire-canonical"
 
 
 @functools.lru_cache(maxsize=16)
@@ -5878,9 +6230,6 @@ _INTERPRETER_START_RE = _rx(r'\b' + _INTERPRETERS + r'\b')
 _INTERPRETER_NAME_RE = _rx(r'(?:' + _INTERPRETERS + r')')
 # Words the program text uses for a control-plane directory or file, even when the
 # path itself is assembled at run time (``'damage'+'control.yml'``, ``join(h, '.claude')``).
-_CONTROL_PLANE_WORDS = (".agentwire", ".claude", "damagecontrol", "settings.json")
-# Directories under those names that agents write by design — matched on a whole path segment.
-_BENIGN_PATH_RE = _rx(r'(?:^|/)\.claude/projects/[^/]+/memory(?:/|$)|(?:^|/)\.agentwire/(?:wiki|artifacts)(?:/|$)')
 # The ONE expression shape the exemption covers: a single string literal, optionally
 # the sole argument of ``expanduser`` / ``Path``. Anything else (a variable, a join, ``+``,
 # ``os.pardir``, a call) is not a path the scan can read, so it is not exempt.
@@ -6379,19 +6728,6 @@ def _refused_for_quoted_substitution(
 # — that second gate is what actually closes the ``python3 -c
 # "from agentwire.tasks_cli import cmd_tasks_promote; ..."`` bypass, since a
 # raw interpreter call never matches a bash command pattern at all.
-
-PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = [
-    (
-        r'\bagentwire\s+tasks\s+promote\b',
-        "agentwire tasks promote writes the protected .agentwire.tasks.yml — "
-        "host-only, run it from your own terminal (not through an agent).",
-    ),
-    (
-        r'\bagentwire\s+safety\s+(?:packs|groups)\s+(?:enable|disable)\b',
-        "agentwire safety packs/groups enable|disable changes damage-control "
-        "policy — host-only, run it from your own terminal (not through an agent).",
-    ),
-]
 
 
 def check_protected_bash_command(command: str) -> Tuple[bool, str]:
@@ -10552,111 +10888,99 @@ def check_mcp_tool(tool_name: str, config: Dict[str, Any]) -> Dict[str, Any]:
         "mutates": None,
         "matched": False,
     }
-# === END GENERATED ===
-
-# An audit-log failure never changes the decision (#1108).
-log_allowed, log_asked, log_blocked, log_disabled, log_escape = (
-    audit_best_effort(f) for f in (log_allowed, log_asked, log_blocked, log_disabled, log_escape)
-)
 
 
-# ============================================================================
-# HOOK ENTRY POINT
-# ============================================================================
+# Last: judge by the host's profile from the first call on (see HOST PROFILE above).
+install_profile(_default_profile())
 
 
-def _resolve_rules_dir():
-    """User override (~/.agentwire/damage-control/) wins; else bundled rules/."""
-    user_dir = Path(os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire")))
-    user_rules = user_dir / "damage-control"
-    if user_rules.exists() and any(user_rules.glob("*.yaml")):
-        return user_rules
-    return [Path(__file__).parent / "rules", Path(__file__).parent / "agentwire-rules"]
+# --- inlined from agentwire/safety/policy.py ---
+"""The policy ladder, lifted out of the five hook ``main()``s (#1209 M3, section 4.1).
 
+``Guard.decide(ToolCall, Context) -> Verdict`` is the one place that turns an engine
+finding into allow / ask / block: bypass demotion, the unverifiable carve-out, the
+unattended fail-closed path with its grants, the kill switch, and the MCP screening.
+It is pure — it does no I/O and never exits. The caller supplies facts (``ToolCall``,
+``Context``) and renders the ``Verdict`` (``adapter.py``).
 
-def _resolve_tooldefs_dir():
-    """User tooldefs (~/.agentwire/tooldefs/) win; else bundled."""
-    user_dir = Path(os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire")))
-    user_tooldefs = user_dir / "tooldefs"
-    if user_tooldefs.exists() and any(user_tooldefs.glob("*.yaml")):
-        return user_tooldefs
-    bundled = Path(__file__).parent.parent.parent / "tooldefs"
-    return bundled if bundled.exists() else None
+The engine functions the ladder needs are reached through ``engine``, an object that
+exposes them as attributes (the ``_core`` module in-process, the hook's own namespace
+when inlined). Taking it as an argument keeps this file free of imports from the
+package, so it concatenates into a standalone hook, and lets the ladder be tested
+against a stub engine — the bypass x unverifiable x unattended x grant matrix needs no
+rule files and no subprocess.
 
+Control-plane and protected-path checks run BEFORE the kill switch; nothing the
+profile or the context supplies can loosen them.
+"""
 
-def _notify_unattended_block(command: str, reason: str, rule_id: str | None) -> None:
-    """Fire-and-forget: email the owner that an unattended action was blocked.
+import re
+from typing import Any, Dict, NamedTuple, Optional, Tuple
 
-    The hook is a PEP 723 script (pyyaml-only) and can't import the agentwire
-    package, so it shells out to the installed CLI, which emails via the same
-    Resend wiring usage-limit recovery uses. Detached + non-blocking so SMTP
-    never sits on the hook's hot path; failures are swallowed (the block has
-    already fired and is audit-logged regardless).
-    """
-    import subprocess
-    try:
-        subprocess.Popen(
-            ["agentwire", "safety", "notify-unattended-block",
-             "--reason", reason or "",
-             "--rule-id", rule_id or "",
-             "--command", command[:500]],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception:
-        pass
+BYPASS = "bypass"
+DEFAULT = "default"
 
+ALLOW = "allow"
+ASK = "ask"
+BLOCK = "block"
 
-# Outbound MCP tools and how to synthesize the equivalent shell command they
-# run under the hood. The synthesized command must match the same outbound.*
-# rule the Bash shell-out matches — body is omitted (privacy + audit clarity);
-# the rule keys on the verb, not the payload.
-def _synthesize_command(tool_name: str, tool_input: dict) -> str | None:
-    """Return the ``agentwire <verb> …`` command an outbound MCP tool runs, or None.
+# Rule id of the ambiguous-command fallback; an operand-position substitution is
+# allowed unattended, a verb-concealing one (``unverifiable``) never is (#934/#925).
+AMBIGUOUS_COMMAND_RULE = "core.ambiguous-command"
 
-    Keep these in lockstep with ``email_send`` / ``quo_send`` in
-    ``agentwire/mcp_server.py`` and the ``outbound.agentwire-*`` rules.
-    """
-    short = tool_name.split("__")[-1]  # mcp__agentwire__email_send -> email_send
-
-    if short == "email_send":
-        parts = ["agentwire", "email"]
-        to = tool_input.get("to")
-        recipients = to if isinstance(to, list) else ([to] if to else [])
-        for addr in recipients:
-            parts += ["--to", str(addr)]
-        subject = tool_input.get("subject")
-        if subject:
-            parts += ["--subject", str(subject)]
-        return " ".join(parts)
-
-    if short == "quo_send":
-        parts = ["agentwire", "quo"]
-        to = tool_input.get("to")
-        if to:
-            parts += ["--to", str(to)]
-        return " ".join(parts)
-
-    return None
-
-
-# Bridge for installs whose ~/.agentwire/damage-control/ predates
-# mcp-tools.yaml (#923): a stale user rules dir wins over the bundled copy and
-# carries no ``mcpToolPolicies``, so per-tool classification loads empty. Until
-# the heal installs the missing file, control-plane screening must not degrade
-# below the #1036 posture — this regex is consulted ONLY when zero policies
-# loaded. With policies present, the same shape lives as DATA (the
-# ``mcp.writeish-name`` entry in mcp-tools.yaml) and this constant is inert.
+# Bridge for installs whose rules dir predates ``mcp-tools.yaml`` (#923): a stale user
+# rules dir wins over the bundled copy and carries no ``mcpToolPolicies``, so per-tool
+# classification loads empty. Until the heal installs the missing file, control-plane
+# screening must not degrade below the #1036 posture — consulted ONLY when zero policies
+# loaded. With policies present, the same shape lives as DATA (the ``mcp.writeish-name``
+# entry in mcp-tools.yaml) and this constant is inert.
 _WRITEISH_BRIDGE_RE = re.compile(
     r"(write|edit|delete|remove|move|rename|create|append|patch|mkdir|"
     r"rmdir|copy|upload|chmod|prune|kill|purge)",
     re.IGNORECASE,
 )
 
+# Per path-kind: the phrase in the block message.
+_PATH_VERB = {"read": "read of", "write": "write to", "edit": "edit to"}
 
-def _iter_string_values(obj):
+
+class ToolCall(NamedTuple):
+    kind: str  # shell | read | write | edit | mcp
+    tool_name: str
+    command: str = ""  # shell: the command line
+    paths: Tuple[str, ...] = ()  # read / write / edit: the target path
+    tool_input: Optional[Dict[str, Any]] = None  # mcp: the call's arguments
+    cwd: Optional[str] = None  # shell: the directory the harness reports
+
+
+class Context(NamedTuple):
+    mode: str = DEFAULT  # "bypass" = the human opted out of ask-escalation friction
+    unattended: bool = False  # no human present (scheduler dispatch)
+
+
+class Verdict(NamedTuple):
+    decision: str  # allow | ask | block
+    reason: str = ""
+    rule_id: Optional[str] = None
+    unverifiable: bool = False
+    disabled: bool = False
+    escape: bool = False
+    allowed_by: Optional[str] = None
+    # What the caller must do beyond the decision itself. All data: the ladder stays pure.
+    audit: Optional[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = None  # (event, args, kwargs)
+    stderr: Tuple[str, ...] = ()
+    notify: Optional[Tuple[str, str, Optional[str]]] = None  # (subject, reason, rule_id)
+
+
+def _audit(event: str, *args: Any, **kwargs: Any) -> Tuple[str, Tuple[Any, ...], Dict[str, Any]]:
+    return (event, args, kwargs)
+
+
+def _allowed(tool: str, subject: str, **kwargs: Any) -> Verdict:
+    return Verdict(ALLOW, audit=_audit("allowed", tool, subject, user_approved=False, **kwargs))
+
+
+def _iter_string_values(obj: Any):
     """Every string in ``obj``, iteratively (no recursion limit to crash on)."""
     stack = [obj]
     while stack:
@@ -10669,7 +10993,7 @@ def _iter_string_values(obj):
             stack.extend(cur)
 
 
-def _pathlike_args(tool_input: dict):
+def _pathlike_args(tool_input: Dict[str, Any]):
     """String argument values that plausibly name a filesystem path.
 
     Whitespace-bearing strings are prose, ``://`` marks a URL; what remains is
@@ -10687,197 +11011,359 @@ def _pathlike_args(tool_input: dict):
             yield s
 
 
-def _screen_tool_paths(tool_name: str, tool_input: dict, config: dict, writeish: bool) -> None:
-    """Exit 2 when a path-valued argument violates the path ladders (#923).
+class Guard:
+    """Decides tool calls against a loaded ``config`` using ``engine``'s checks."""
 
-    Zero-access secrets block on MENTION for every tool (same semantics as
-    check_read_path — the path's mere presence in a call is the leak); the
-    protected control plane is readable by design, so it is only enforced when
-    the tool's POLICY says it mutates (``writeish``).
-    """
-    allowed = load_allowed_paths(config)
-    for p in _pathlike_args(tool_input):
-        blocked, reason = check_read_path(p, config)
-        if not blocked and writeish:
-            blocked, reason = check_protected_path(p, allowed)
+    def __init__(self, config: Dict[str, Any], engine: Any) -> None:
+        self.config = config
+        self.e = engine
+
+    def decide(self, call: ToolCall, ctx: Context) -> Verdict:
+        if call.kind in _PATH_VERB:
+            return self._decide_path(call)
+        if call.kind == "shell":
+            return self._decide_command(call, ctx, call.command, synthesized=False)
+        if call.kind == "mcp":
+            return self._decide_mcp(call, ctx)
+        raise ValueError(f"unknown tool-call kind: {call.kind!r}")
+
+    # -- Read / Write / Edit ---------------------------------------------
+
+    def _decide_path(self, call: ToolCall) -> Verdict:
+        e, path = self.e, call.paths[0]
+        check = e.check_read_path if call.kind == "read" else e.check_path
+        # The protected control plane is enforced even when safety is disabled, so
+        # it must run BEFORE the kill-switch short-circuit (#466).
+        blocked, reason = check(path, self.config)
         if blocked:
-            log_blocked(tool_name, p, reason)
-            print(f"SECURITY: Blocked MCP tool argument: {reason}: {p}", file=sys.stderr)
-            sys.exit(2)
+            return Verdict(
+                BLOCK, reason,
+                audit=_audit("blocked", call.tool_name, path, reason),
+                stderr=(f"SECURITY: Blocked {_PATH_VERB[call.kind]} {reason}: {path}",),
+            )
+        if self.config["safety"].get("enabled", True) is False:
+            return Verdict(ALLOW, disabled=True, audit=_audit("disabled", call.tool_name, path))
+        return _allowed(call.tool_name, path)
 
+    # -- Shell commands, and the shell command an outbound MCP tool runs --------
 
-def main() -> None:
-    config = load_config(_resolve_rules_dir(), _resolve_tooldefs_dir())
-    config["safety"] = load_safety_config()
+    def _decide_command(self, call: ToolCall, ctx: Context, command: str, synthesized: bool) -> Verdict:
+        """``synthesized``: ``command`` stands in for an MCP tool call — it names no directory."""
+        e, tool = self.e, call.tool_name
+        if synthesized:
+            result = e.check_command(command, self.config)
+        else:
+            result = e.check_command(command, self.config, cwd=call.cwd)
+        decision, reason = result["decision"], result["reason"]
+        rule_id, pattern = result.get("id"), result.get("pattern")
+        shown = f"Command: {command[:100]}{'...' if len(command) > 100 else ''}"
 
-    input_data = read_hook_input()
+        if decision == BLOCK:
+            return Verdict(
+                BLOCK, reason, rule_id,
+                audit=_audit("blocked", tool, command, reason, pattern=pattern, rule_id=rule_id),
+                stderr=(f"SECURITY: Blocked: {reason}", shown),
+            )
+        if decision == ASK and ctx.unattended:
+            return self._unattended_ask(call, command, result, shown, synthesized)
+        if decision == ASK and (ctx.mode != BYPASS or result.get("unverifiable")):
+            # ``unverifiable`` (#934): a verb-concealing shape — eval, base64-pipe, a
+            # substitution deciding what runs or feeding a wrapper's payload — keeps its
+            # ask even under bypass. Bypass means "don't stop me for things you
+            # recognize"; it never meant "don't stop me for things you can't see".
+            return Verdict(ASK, reason, rule_id, unverifiable=bool(result.get("unverifiable")),
+                           audit=_audit("asked", tool, command, reason))
+        if result.get("escape"):
+            return Verdict(ALLOW, escape=True,
+                           audit=_audit("escape", tool, command, result.get("escape_reason") or ""))
+        if result.get("disabled"):
+            return Verdict(ALLOW, disabled=True, audit=_audit("disabled", tool, command))
+        if synthesized:
+            return _allowed(tool, command)
+        return _allowed(tool, command, allowed_by=result.get("allowed_by"))
 
-    # Session attribution for audit rows (#940): hand the parsed payload to
-    # audit_logger so every log_* call carries the conversation id. Fail-open.
-    try:
-        import audit_logger as _audit_logger
-        _audit_logger.HOOK_INPUT = input_data
-    except Exception:
-        pass
+    def _unattended_ask(self, call: ToolCall, command: str, result: Dict[str, Any],
+                        shown: str, synthesized: bool) -> Verdict:
+        """No human present, so the interactive confirm is meaningless: fail closed.
 
-    tool_name = input_data.get("tool_name", "")
-    tool_input = input_data.get("tool_input", {}) or {}
-    # Same bypass semantics as the Bash hook: bypassPermissions / auto turn the
-    # interactive ask into allow, but hard blocks and the unattended fail-closed
-    # ladder still fire.
-    permission_mode = input_data.get("permission_mode", "")
-    bypass_modes = {"bypassPermissions", "auto"}
+        BLOCK + notify the owner, unless the matched rule carries an unattended grant —
+        and, when that grant is path-scoped (#914), unless this command's target
+        directory is inside it.
+        """
+        e, tool = self.e, call.tool_name
+        reason, rule_id, pattern = result["reason"], result.get("id"), result.get("pattern")
+        if not synthesized and rule_id == AMBIGUOUS_COMMAND_RULE and not result.get("unverifiable"):
+            # #925 Part 3, against the #934 classifier: an operand-position substitution
+            # is the most common phrasing in shell and every rule has already scanned its
+            # masked form. Only VERB CONCEALMENT is non-redundant coverage, so the
+            # unattended refusal is scoped to ``unverifiable``.
+            return _allowed(tool, command)
+        grants = e.resolve_unattended_grants(self.config)
+        if synthesized:
+            # A synthesized command names no directory, so a path-scoped grant cannot be
+            # evaluated and must refuse (#914). Unscoped grants are unaffected.
+            granted, why = e.unattended_grant_allows(
+                rule_id, command, grants, e.safe_cwd(), pattern=pattern, scopeable=False,
+            )
+        else:
+            granted, why = e.unattended_grant_allows(
+                rule_id, command, grants, call.cwd or e.safe_cwd(), pattern=pattern,
+            )
+        if granted:
+            return _allowed(tool, command)
+        text = f"{reason} — {why}"
+        return Verdict(
+            BLOCK, reason, rule_id,
+            audit=_audit("blocked", tool, command, f"unattended: {text}", pattern=pattern, rule_id=rule_id),
+            stderr=(f"SECURITY: Blocked (unattended — no human to confirm): {reason}", shown,
+                    f"Why: {why}") + self._grant_hint(rule_id, grants, scoped_form=not synthesized),
+            notify=(command, text, rule_id),
+        )
 
-    command = _synthesize_command(tool_name, tool_input)
-    if not command:
-        # Not a gated outbound tool: run the per-tool policy ladder (#923
-        # option 1) and screen path-valued arguments — an operation refused
-        # via Bash must not be permitted via a tool.
-        policy = check_mcp_tool(tool_name, config)
-        decision = policy["decision"]
-        reason = policy["reason"]
-        rule_id = policy.get("id")
+    def _grant_hint(self, rule_id: Optional[str], grants: Dict[str, Any], scoped_form: bool) -> Tuple[str, ...]:
+        hint = self.e.PROFILE.unattended_grant_hint
+        if not (hint and rule_id and rule_id not in grants):
+            return ()
+        text = hint.format(rule_id=rule_id)
+        if scoped_form:
+            text += f" (optionally scoped: `- {{id: {rule_id}, paths: [<dir>/]}}`)"
+        return (text + ".",)
 
-        if decision == "block":
-            log_blocked(tool_name, tool_name, reason)
-            print(f"SECURITY: Blocked MCP tool: {reason}", file=sys.stderr)
-            sys.exit(2)
+    # -- MCP tools ----------------------------------------------------------
 
-        # Path screening runs before any allow/ask verdict is emitted: a
-        # protected path argument blocks regardless of the tool's tier.
+    def _decide_mcp(self, call: ToolCall, ctx: Context) -> Verdict:
+        e, tool_input = self.e, call.tool_input or {}
+        command = e.synthesize_mcp_command(call.tool_name, tool_input)
+        if command:
+            return self._decide_command(call, ctx, command, synthesized=True)
+        # Not a gated outbound tool: run the per-tool policy ladder (#923) and screen
+        # path-valued arguments — an operation refused via Bash must not be permitted
+        # via a tool.
+        tool, config = call.tool_name, self.config
+        policy = e.check_mcp_tool(tool, config)
+        decision, reason, rule_id = policy["decision"], policy["reason"], policy.get("id")
+        if decision == BLOCK:
+            return Verdict(BLOCK, reason, rule_id, audit=_audit("blocked", tool, tool, reason),
+                           stderr=(f"SECURITY: Blocked MCP tool: {reason}",))
+
+        # Path screening runs before any allow/ask verdict: a protected path argument
+        # blocks regardless of the tool's tier.
         mutates = policy.get("mutates")
         if mutates is None and not config.get("mcpToolPolicies"):
-            # Stale rules dir with no policies loaded — see _WRITEISH_BRIDGE_RE.
-            mutates = bool(_WRITEISH_BRIDGE_RE.search(tool_name.split("__")[-1]))
+            mutates = bool(_WRITEISH_BRIDGE_RE.search(tool.split("__")[-1]))
         budget_exceeded = False
         try:
-            with scan_deadline(SCAN_DEADLINE_SECONDS):
-                _screen_tool_paths(tool_name, tool_input, config, bool(mutates))
-        except ScanBudgetExceeded:
-            # Arguments too large to screen in time: fail closed (#1108) — an
-            # unverifiable ask, so bypass cannot demote it and unattended blocks.
-            # The kill switch turns the budget off with everything else.
-            # A protected control-plane path anywhere in the arguments is never
-            # exempted by the switch.
-            if not kill_switch_off(config) or any(
-                mentions_control_plane(s) for s in _iter_string_values(tool_input)
+            with e.scan_deadline(e.SCAN_DEADLINE_SECONDS):
+                screened = self._screen_tool_paths(tool, tool_input, bool(mutates))
+            if screened is not None:
+                return screened
+        except e.ScanBudgetExceeded:
+            # Arguments too large to screen in time: fail closed (#1108) — an unverifiable
+            # ask, so bypass cannot demote it and unattended blocks. The kill switch turns
+            # the budget off with everything else; a protected control-plane path anywhere
+            # in the arguments is never exempted by the switch.
+            if not e.kill_switch_off(config) or any(
+                e.mentions_control_plane(s) for s in _iter_string_values(tool_input)
             ):
                 budget_exceeded = True
-                decision = "ask"
-                rule_id = "core.scan-budget"
+                decision, rule_id = ASK, "core.scan-budget"
                 reason = (
-                    f"MCP tool arguments exceeded the {SCAN_DEADLINE_SECONDS:g}s screening "
+                    f"MCP tool arguments exceeded the {e.SCAN_DEADLINE_SECONDS:g}s screening "
                     "budget — too large to analyze safely; a human must confirm "
                     "(not demoted by bypass)"
                 )
 
-        if decision == "ask" and is_unattended():
-            # No human present: fail closed unless the policy's id is granted.
-            # A tool call names no directory, so scopeable=False — a
-            # path-scoped grant refuses rather than guessing (#914).
-            grants = resolve_unattended_grants(config)
-            granted, why = unattended_grant_allows(
-                rule_id, tool_name, grants, safe_cwd(), scopeable=False,
-            )
-            if granted:
-                log_allowed(tool_name, tool_name, user_approved=False)
-                sys.exit(0)
-            try:
-                log_blocked(tool_name, tool_name, f"unattended: {reason} — {why}",
-                            rule_id=rule_id)
-            except TypeError:
-                log_blocked(tool_name, tool_name, f"unattended: {reason} — {why}")
-            _notify_unattended_block(tool_name, f"{reason} — {why}", rule_id)
-            print(f"SECURITY: Blocked (unattended — no human to confirm): {reason}",
-                  file=sys.stderr)
-            print(f"Tool: {tool_name}", file=sys.stderr)
-            print(f"Why: {why}", file=sys.stderr)
-            if rule_id and rule_id not in grants:
-                print(f"To permit this for an unattended task, add rule id "
-                      f"'{rule_id}' to its .agentwire.tasks.yml task `unattended_allow`.",
-                      file=sys.stderr)
-            sys.exit(2)
-        elif decision == "ask" and (
-            permission_mode not in bypass_modes or budget_exceeded
-        ):
-            log_asked(tool_name, tool_name, reason)
-            print(json.dumps({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "ask",
-                    "permissionDecisionReason": reason,
-                }
-            }))
-            sys.exit(0)
+        if decision == ASK and ctx.unattended:
+            return self._unattended_mcp_ask(tool, reason, rule_id)
+        if decision == ASK and (ctx.mode != BYPASS or budget_exceeded):
+            return Verdict(ASK, reason, rule_id, unverifiable=budget_exceeded,
+                           audit=_audit("asked", tool, tool, reason))
+        return Verdict(ALLOW)
 
-        sys.exit(0)
-
-    result = check_command(command, config)
-    decision = result["decision"]
-    reason = result["reason"]
-
-    if decision == "block":
-        try:
-            log_blocked(tool_name, command, reason, pattern=result.get("pattern"), rule_id=result.get("id"))
-        except TypeError:
-            log_blocked(tool_name, command, reason)
-        print(f"SECURITY: Blocked: {reason}", file=sys.stderr)
-        print(f"Command: {command[:100]}{'...' if len(command) > 100 else ''}", file=sys.stderr)
-        sys.exit(2)
-    elif decision == "ask" and is_unattended():
-        # No human present (scheduler dispatch). The interactive confirm is
-        # meaningless, so fail closed: BLOCK + notify the owner, unless the
-        # matched rule is explicitly on the unattended allowlist.
-        rule_id = result.get("id")
-        grants = resolve_unattended_grants(config)
-        # `command` here is SYNTHESIZED from the tool call (`agentwire email
-        # --to …`) — it names no directory, so a path-scoped grant cannot be
-        # evaluated and must refuse (#914). Unscoped grants are unaffected.
-        granted, why = unattended_grant_allows(
-            rule_id, command, grants, safe_cwd(),
-            pattern=result.get("pattern"), scopeable=False,
-        )
+    def _unattended_mcp_ask(self, tool: str, reason: str, rule_id: Optional[str]) -> Verdict:
+        e = self.e
+        # A tool call names no directory, so scopeable=False — a path-scoped grant
+        # refuses rather than guessing (#914).
+        grants = e.resolve_unattended_grants(self.config)
+        granted, why = e.unattended_grant_allows(rule_id, tool, grants, e.safe_cwd(), scopeable=False)
         if granted:
-            log_allowed(tool_name, command, user_approved=False)
-            sys.exit(0)
-        try:
-            log_blocked(tool_name, command, f"unattended: {reason} — {why}",
-                        pattern=result.get("pattern"), rule_id=rule_id)
-        except TypeError:
-            log_blocked(tool_name, command, f"unattended: {reason} — {why}")
-        _notify_unattended_block(command, f"{reason} — {why}", rule_id)
-        print(f"SECURITY: Blocked (unattended — no human to confirm): {reason}", file=sys.stderr)
-        print(f"Command: {command[:100]}{'...' if len(command) > 100 else ''}", file=sys.stderr)
-        print(f"Why: {why}", file=sys.stderr)
-        if rule_id and rule_id not in grants:
-            print(f"To permit this for an unattended task, add rule id "
-                  f"'{rule_id}' to its .agentwire.tasks.yml task `unattended_allow`.",
-                  file=sys.stderr)
+            return _allowed(tool, tool)
+        text = f"{reason} — {why}"
+        return Verdict(
+            BLOCK, reason, rule_id,
+            audit=_audit("blocked", tool, tool, f"unattended: {text}", rule_id=rule_id),
+            stderr=(f"SECURITY: Blocked (unattended — no human to confirm): {reason}",
+                    f"Tool: {tool}", f"Why: {why}")
+            + self._grant_hint(rule_id, grants, scoped_form=False),
+            notify=(tool, text, rule_id),
+        )
+
+    def _screen_tool_paths(self, tool: str, tool_input: Dict[str, Any], writeish: bool) -> Optional[Verdict]:
+        """A block Verdict when a path-valued argument violates the path ladders (#923).
+
+        Zero-access secrets block on MENTION for every tool (same semantics as
+        ``check_read_path`` — the path's mere presence in a call is the leak); the
+        protected control plane is readable by design, so it is only enforced when the
+        tool's POLICY says it mutates (``writeish``).
+        """
+        e = self.e
+        allowed = e.load_allowed_paths(self.config)
+        for p in _pathlike_args(tool_input):
+            blocked, reason = e.check_read_path(p, self.config)
+            if not blocked and writeish:
+                blocked, reason = e.check_protected_path(p, allowed)
+            if blocked:
+                return Verdict(
+                    BLOCK, reason, audit=_audit("blocked", tool, p, reason),
+                    stderr=(f"SECURITY: Blocked MCP tool argument: {reason}: {p}",),
+                )
+        return None
+
+
+# --- inlined from agentwire/safety/adapter.py ---
+"""Claude Code adapter (#1209 M3): hook payload -> ``ToolCall``/``Context``, ``Verdict`` -> exit code.
+
+The five PreToolUse hooks differ only in WHICH tools they handle and how their
+rule sources load; every one is ``parse -> decide -> render``, and this file holds the
+parse and render halves (``policy.Guard`` is the decide half). A hook declares a tool
+table ``{tool_name: (kind, (payload fields...))}`` and calls these in order.
+
+``render`` is the only place a decision becomes an exit code, a stderr line, an audit row
+and a notification, so a verdict that reaches it can only be rendered one way.
+
+Standard library only; inlined into the hooks after ``policy.py`` (see ``policy.py`` for
+why the engine arrives as an argument).
+"""
+
+import importlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+# ``permission_mode`` values that mean the human opted out of ask-escalation friction:
+#   - "bypassPermissions" -> --dangerously-skip-permissions
+#   - "auto"              -> autonomous /loop or similar auto mode
+# Hard blocks still fire either way; an ``ask`` becomes an allow — EXCEPT an unverifiable one.
+BYPASS_PERMISSION_MODES = frozenset({"bypassPermissions", "auto"})
+
+# stdout of an ask: Claude Code's PreToolUse permission-decision envelope.
+_HOOK_EVENT = "PreToolUse"
+
+
+def _policy() -> Tuple[Any, Any, str]:
+    """``(ToolCall, Context, BYPASS)``: inlined above this file in a hook, else ``policy.py``."""
+    g = globals()
+    if "ToolCall" in g:
+        return g["ToolCall"], g["Context"], g["BYPASS"]
+    mod = importlib.import_module(f"{__package__}.policy")
+    return mod.ToolCall, mod.Context, mod.BYPASS
+
+
+def load_hook_config(engine: Any, hook_file: str, tooldefs: bool) -> Dict[str, Any]:
+    """The merged rule set for the hook at ``hook_file``, plus the effective safety knobs.
+
+    Rules load from the sources ``engine.resolve_rule_sources`` names, relative to the
+    directory the hook sits in. ``tooldefs`` is True for the hooks that judge shell commands.
+    """
+    bundle = Path(hook_file).parent
+    sources = engine.resolve_rule_sources(bundle)
+    tooldef_sources = engine.resolve_tooldef_sources(bundle.parent.parent / "tooldefs") if tooldefs else None
+    config = engine.load_config(sources, tooldef_sources)
+    config["safety"] = engine.load_safety_config()
+    return config
+
+
+def parse_payload(payload: Dict[str, Any], tools: Optional[Dict[str, Tuple[str, Tuple[str, ...]]]],
+                  engine: Any) -> Tuple[Any, Any]:
+    """``(ToolCall | None, Context)``; no call means this hook has nothing to judge.
+
+    ``tools`` maps a tool name to ``(kind, fields)``: for ``shell`` the field names the
+    command, for read/write/edit the target path (the first non-empty field wins). ``None``
+    means every tool is an ``mcp`` call.
+    """
+    tool_call, context, bypass = _policy()
+    # Session attribution for audit rows (#940): hand the parsed payload to audit_logger
+    # so every log_* call carries the conversation id. Fail-open.
+    audit_logger = sys.modules.get("audit_logger")  # the hook imported it (or the import failed)
+    if audit_logger is not None:
+        audit_logger.HOOK_INPUT = payload
+
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {})
+    ctx = context(
+        mode=bypass if payload.get("permission_mode", "") in BYPASS_PERMISSION_MODES else "default",
+        unattended=engine.is_unattended(),
+    )
+    if tools is None:
+        return tool_call("mcp", tool_name, tool_input=tool_input or {}), ctx
+    if tool_name not in tools:
+        return None, ctx
+    kind, fields = tools[tool_name]
+    value = next((tool_input.get(f, "") for f in fields if tool_input.get(f, "")), "")
+    if not value:
+        return None, ctx
+    if kind == "shell":
+        return tool_call(kind, tool_name, command=value, cwd=payload.get("cwd")), ctx
+    return tool_call(kind, tool_name, paths=(value,)), ctx
+
+
+def notify_unattended_block(engine: Any, subject: str, reason: str, rule_id: Optional[str]) -> None:
+    """Fire-and-forget: tell the owner an unattended action was blocked.
+
+    Runs the profile's notifier argv, detached and non-blocking so it never sits on the
+    hook's hot path; failures are swallowed (the block has already fired and is
+    audit-logged regardless). A hook is stdlib-only and cannot import the host, hence the
+    subprocess.
+    """
+    argv = engine.PROFILE.unattended_block_notifier
+    if not argv:
+        return
+    try:
+        subprocess.Popen(
+            [*argv, "--reason", reason or "", "--rule-id", rule_id or "", "--command", subject[:500]],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
+
+def render(verdict: Any, engine: Any) -> None:
+    """Carry out ``verdict`` and exit: audit row, notification, stderr, then the exit code / ask envelope."""
+    if verdict.audit:
+        event, args, kwargs = verdict.audit
+        # An audit-log failure never changes the decision (#1108).
+        engine.audit_best_effort(getattr(engine, f"log_{event}"))(*args, **kwargs)
+    if verdict.notify:
+        notify_unattended_block(engine, *verdict.notify)
+    for line in verdict.stderr:
+        print(line, file=sys.stderr)
+    if verdict.decision == "block":
         sys.exit(2)
-    elif decision == "ask" and (
-        permission_mode not in bypass_modes or result.get("unverifiable")
-    ):
-        # Same #934 rule as the Bash hook: a verb-concealing (unverifiable)
-        # ask is never demoted to allow by bypassPermissions/auto.
-        log_asked(tool_name, command, reason)
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "ask",
-                "permissionDecisionReason": reason,
-            }
-        }
-        print(json.dumps(output))
+    if verdict.decision == "ask":
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": _HOOK_EVENT,
+            "permissionDecision": "ask",
+            "permissionDecisionReason": verdict.reason,
+        }}))
+    sys.exit(0)
+# === END GENERATED ===
+
+import types
+
+# Every tool is an MCP call: ``None`` means no tool table (see adapter.parse_payload).
+TOOLS = None
+
+
+def main() -> None:
+    engine = types.SimpleNamespace(**globals())
+    guard = Guard(load_hook_config(engine, __file__, tooldefs=True), engine)
+    call, ctx = parse_payload(read_hook_input(), TOOLS, engine)
+    if call is None:
         sys.exit(0)
-    elif result.get("escape"):
-        log_escape(tool_name, command, result.get("escape_reason") or "")
-        sys.exit(0)
-    elif result.get("disabled"):
-        log_disabled(tool_name, command)
-        sys.exit(0)
-    else:
-        log_allowed(tool_name, command, user_approved=False)
-        sys.exit(0)
+    render(guard.decide(call, ctx), engine)
 
 
 if __name__ == "__main__":

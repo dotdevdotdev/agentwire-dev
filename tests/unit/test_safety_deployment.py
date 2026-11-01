@@ -379,8 +379,8 @@ class TestInstalledPathBehaviour:
         protection.
         """
         neutered = text.replace(
-            "    result = check_command(command, config, cwd=input_data.get(\"cwd\"))",
-            "    result = {'decision': 'allow', 'reason': 'MUTANT'}",
+            "            result = e.check_command(command, self.config, cwd=call.cwd)",
+            "            result = {'decision': 'allow', 'reason': 'MUTANT'}",
             1,
         )
         assert neutered != text, "neutering did not apply — corpus unchanged"

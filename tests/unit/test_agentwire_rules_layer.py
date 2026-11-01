@@ -15,7 +15,7 @@ import pytest
 
 from agentwire import safety_commands
 from agentwire.safety import packs
-from agentwire.safety.groups import AGENTWIRE_DEFAULT_PACKS, REGISTRY, bundled_files, unclassified
+from agentwire.safety.groups import DEFAULT_PACKS, REGISTRY, bundled_files, unclassified
 from tests.unit.test_safety_packs import home  # noqa: F401  (fixture)
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -86,7 +86,7 @@ def test_decided_machine_with_the_old_agentwire_file_keeps_its_tmux_rules(machin
 
     summary = safety_commands.heal_damage_control(quiet=True)
 
-    assert summary["packs_migrated"] == list(AGENTWIRE_DEFAULT_PACKS)
+    assert summary["packs_migrated"] == list(DEFAULT_PACKS)
     assert set(packs.read_state(safety_commands.DAMAGECONTROL_FILE)["packs"]) == {"aws", "tmux"}
     assert (safety_commands.RULES_DIR / "tmux.yaml").exists()
     verdict = safety_commands.check_command_safety("tmux kill-server")

@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from agentwire.safety.groups import AGENTWIRE_DEFAULT_PACKS, REGISTRY, Entry
+from agentwire.safety.groups import DEFAULT_PACKS, REGISTRY, Entry
 
 try:
     import yaml
@@ -126,7 +126,7 @@ def migrate_packs(state: Dict[str, Any], installed: Dict[str, Set[str]]) -> List
     """Packs to record as enabled for a pre-packs install, or ``[]``.
 
     Only while ``state["packs"]`` is None. A fresh machine starts with every pack
-    off except AgentWire's own defaults (``AGENTWIRE_DEFAULT_PACKS``). On an
+    off except the host's defaults (``DEFAULT_PACKS``). On an
     existing machine (something is already installed)
     machine EVERY pack is enabled, not just those with files present: before
     packs, heal reinstalled any missing bundled file, so a partial install
@@ -136,7 +136,7 @@ def migrate_packs(state: Dict[str, Any], installed: Dict[str, Set[str]]) -> List
     if state[PACKS_KEY] is not None or state.get("broken"):
         return []
     if not any(installed.get(section) for section in ("rules", "tooldefs")):
-        return sorted(AGENTWIRE_DEFAULT_PACKS)
+        return sorted(DEFAULT_PACKS)
     return sorted(e.name for e in REGISTRY.values() if e.kind == "pack")
 
 
