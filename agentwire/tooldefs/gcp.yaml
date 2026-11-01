@@ -6,7 +6,8 @@ install: brew install --cask google-cloud-sdk
 
 commands:
   # Auth & config
-  - cmd: "gcloud auth login"
+  - id: tooldef.google-cloud-cli-authenticate-with-a-google-account
+    cmd: "gcloud auth login"
     access: write
     description: Authenticate with a Google account
 
@@ -18,7 +19,8 @@ commands:
     access: read
     description: Show current CLI configuration
 
-  - cmd: "gcloud config set project <project-id>"
+  - id: tooldef.google-cloud-cli-set-the-active-gcp-project
+    cmd: "gcloud config set project <project-id>"
     access: write
     description: Set the active GCP project
 
@@ -31,7 +33,8 @@ commands:
     access: read
     description: Show project details
 
-  - cmd: "gcloud projects create <project-id>"
+  - id: tooldef.google-cloud-cli-create-a-new-gcp-project
+    cmd: "gcloud projects create <project-id>"
     access: write
     description: Create a new GCP project
 
@@ -48,15 +51,18 @@ commands:
     access: read
     description: Show VM instance details
 
-  - cmd: "gcloud compute instances start <name>"
+  - id: tooldef.google-cloud-cli-start-a-stopped-vm-instance
+    cmd: "gcloud compute instances start <name>"
     access: write
     description: Start a stopped VM instance
 
-  - cmd: "gcloud compute instances stop <name>"
+  - id: tooldef.google-cloud-cli-stop-a-running-vm-instance
+    cmd: "gcloud compute instances stop <name>"
     access: write
     description: Stop a running VM instance
 
-  - cmd: "gcloud compute instances create <name>"
+  - id: tooldef.google-cloud-cli-create-a-new-vm-instance
+    cmd: "gcloud compute instances create <name>"
     access: write
     description: Create a new VM instance
 
@@ -69,11 +75,13 @@ commands:
     access: read
     description: List buckets or objects
 
-  - cmd: "gcloud storage cp <src> <dst>"
+  - id: tooldef.google-cloud-cli-copy-files-to-from-cloud-storage
+    cmd: "gcloud storage cp <src> <dst>"
     access: write
     description: Copy files to/from Cloud Storage
 
-  - cmd: "gcloud storage rm gs://<bucket>/<object>"
+  - id: tooldef.google-cloud-cli-delete-a-single-object
+    cmd: "gcloud storage rm gs://<bucket>/<object>"
     access: write
     description: Delete a single object
 
@@ -90,7 +98,8 @@ commands:
     access: read
     description: Show Cloud SQL instance details
 
-  - cmd: "gcloud sql instances create <name>"
+  - id: tooldef.google-cloud-cli-create-a-cloud-sql-instance
+    cmd: "gcloud sql instances create <name>"
     access: write
     description: Create a Cloud SQL instance
 
@@ -107,7 +116,8 @@ commands:
     access: read
     description: Show function details
 
-  - cmd: "gcloud functions deploy <name>"
+  - id: tooldef.google-cloud-cli-deploy-a-cloud-function
+    cmd: "gcloud functions deploy <name>"
     access: write
     description: Deploy a Cloud Function
 
@@ -120,7 +130,8 @@ commands:
     access: read
     description: List service accounts
 
-  - cmd: "gcloud iam service-accounts create <name>"
+  - id: tooldef.google-cloud-cli-create-a-service-account
+    cmd: "gcloud iam service-accounts create <name>"
     access: write
     description: Create a service account
 
@@ -137,7 +148,8 @@ commands:
     access: read
     description: Show GKE cluster details
 
-  - cmd: "gcloud container clusters create <name>"
+  - id: tooldef.google-cloud-cli-create-a-gke-cluster
+    cmd: "gcloud container clusters create <name>"
     access: write
     description: Create a GKE cluster
 

@@ -10,15 +10,18 @@ commands:
     access: read
     description: List local images
 
-  - cmd: "docker pull <image>"
+  - id: tooldef.docker-download-an-image-from-registry
+    cmd: "docker pull <image>"
     access: write
     description: Download an image from registry
 
-  - cmd: "docker build -t <name> ."
+  - id: tooldef.docker-build-image-from-dockerfile
+    cmd: "docker build -t <name> ."
     access: write
     description: Build image from Dockerfile
 
-  - cmd: "docker rmi <image>"
+  - id: tooldef.docker-remove-a-local-image
+    cmd: "docker rmi <image>"
     access: write
     description: Remove a local image
 
@@ -39,23 +42,28 @@ commands:
     access: read
     description: View detailed container info
 
-  - cmd: "docker run <image>"
+  - id: tooldef.docker-create-and-start-a-container
+    cmd: "docker run <image>"
     access: write
     description: Create and start a container
 
-  - cmd: "docker start <container>"
+  - id: tooldef.docker-start-stopped-container
+    cmd: "docker start <container>"
     access: write
     description: Start stopped container
 
-  - cmd: "docker stop <container>"
+  - id: tooldef.docker-stop-running-container
+    cmd: "docker stop <container>"
     access: write
     description: Stop running container
 
-  - cmd: "docker exec -it <container> <cmd>"
+  - id: tooldef.docker-execute-command-in-running-container
+    cmd: "docker exec -it <container> <cmd>"
     access: write
     description: Execute command in running container
 
-  - cmd: "docker rm <container>"
+  - id: tooldef.docker-remove-a-stopped-container
+    cmd: "docker rm <container>"
     access: write
     description: Remove a stopped container
 
@@ -89,20 +97,24 @@ commands:
     access: read
     description: View compose service logs
 
-  - cmd: "docker compose up [-d]"
+  - id: tooldef.docker-start-compose-services
+    cmd: "docker compose up [-d]"
     access: write
     description: Start compose services
 
-  - cmd: "docker compose down"
+  - id: tooldef.docker-stop-and-remove-compose-containers
+    cmd: "docker compose down"
     access: write
     description: Stop and remove compose containers
 
-  - cmd: "docker compose build"
+  - id: tooldef.docker-build-compose-service-images
+    cmd: "docker compose build"
     access: write
     description: Build compose service images
 
   # Cleanup
-  - cmd: "docker system prune"
+  - id: tooldef.docker-remove-stopped-containers-unused-networks-dangling-im
+    cmd: "docker system prune"
     access: write
     description: Remove stopped containers, unused networks, dangling images
 

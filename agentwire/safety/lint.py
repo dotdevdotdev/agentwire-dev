@@ -244,6 +244,38 @@ def unattended_defaults_missing(config: dict) -> list[str]:
     return sorted(rid for rid in defaults if rid not in known)
 
 
+def unpinned_rules(rules_dir: Path, tooldefs_dir: Optional[Path] = None) -> list[str]:
+    """Rules that carry no explicit ``id:`` (#1209 M1), as ``file: reason`` lines.
+
+    A derived id comes from the ``reason:`` text, so a typo fix renames it and
+    silently breaks every ``disabled_rules`` / ``unattended_allow`` entry and audit
+    query naming it. Reads the raw YAML (the loader derives ids, so it cannot see
+    the gap); tooldef commands count only when they compile to a rule
+    (``access: write``).
+    """
+    import yaml
+
+    missing: list[str] = []
+
+    def unpinned(item: Any) -> bool:
+        return isinstance(item, dict) and not str(item.get("id") or "").strip()
+
+    for path in sorted(rules_dir.glob("*.yaml")):
+        data = yaml.safe_load(path.read_text()) or {}
+        for key in ("bashToolPatterns", "mcpToolPolicies"):
+            for item in data.get(key) or []:
+                if unpinned(item):
+                    label = item.get("reason") or item.get("pattern") or item.get("tool")
+                    missing.append(f"{path.name}: {label}")
+    if tooldefs_dir is not None:
+        for path in sorted(tooldefs_dir.glob("*.yaml")):
+            data = yaml.safe_load(path.read_text()) or {}
+            for item in data.get("commands") or []:
+                if unpinned(item) and item.get("access") == "write":
+                    missing.append(f"{path.name}: {item.get('cmd')}")
+    return missing
+
+
 def load_effective_config(
     rules_dir: Optional[Path] = None,
     tooldefs_dir: Optional[Path] = None,

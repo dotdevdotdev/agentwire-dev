@@ -26,17 +26,20 @@
 bashToolPatterns:
   # Remote machine-state operations — no local rule twin exists for these, so
   # the rescan alone leaves them uncovered.
-  - pattern: '\bssh\s+.*\breboot\b'
+  - id: remote.ssh-remote-reboot
+    pattern: '\bssh\s+.*\breboot\b'
     reason: SSH remote reboot
     ask: true
     anchored: false
 
-  - pattern: '\bssh\s+.*\bshutdown\b'
+  - id: remote.ssh-remote-shutdown
+    pattern: '\bssh\s+.*\bshutdown\b'
     reason: SSH remote shutdown
     ask: true
     anchored: false
 
-  - pattern: '\bssh\s+.*\bsystemctl\s+stop\b'
+  - id: remote.ssh-remote-service-stop
+    pattern: '\bssh\s+.*\bsystemctl\s+stop\b'
     reason: SSH remote service stop
     ask: true
     anchored: false
@@ -44,6 +47,7 @@ bashToolPatterns:
   # Deliberately STRICTER than the local tier: `docker rm -f` locally is
   # ask-tier (tooldef); on a remote box it stays a hard block — deleting this
   # twin would downgrade the wrapped form from block to ask.
-  - pattern: '\bssh\s+.*\bdocker\s+rm\s+.*-f'
+  - id: remote.ssh-remote-docker-rm-f
+    pattern: '\bssh\s+.*\bdocker\s+rm\s+.*-f'
     reason: SSH remote docker rm -f
     anchored: false

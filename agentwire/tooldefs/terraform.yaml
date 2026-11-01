@@ -6,7 +6,8 @@ install: brew install terraform
 
 commands:
   # Read
-  - cmd: "terraform init"
+  - id: tooldef.terraform-initialize-working-directory-downloads-providers
+    cmd: "terraform init"
     access: write
     description: Initialize working directory (downloads providers)
 
@@ -31,15 +32,18 @@ commands:
     description: Show output values
 
   # Write
-  - cmd: "terraform apply"
+  - id: tooldef.terraform-apply-planned-changes-to-infrastructure
+    cmd: "terraform apply"
     access: write
     description: Apply planned changes to infrastructure
 
-  - cmd: "terraform apply <plan-file>"
+  - id: tooldef.terraform-apply-a-saved-plan
+    cmd: "terraform apply <plan-file>"
     access: write
     description: Apply a saved plan
 
-  - cmd: "terraform import <resource> <id>"
+  - id: tooldef.terraform-import-existing-infrastructure-into-state
+    cmd: "terraform import <resource> <id>"
     access: write
     description: Import existing infrastructure into state
 

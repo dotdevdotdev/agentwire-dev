@@ -5,51 +5,61 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # GIT DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
-  - pattern: '\bgit\s+reset\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--hard\b'
+  - id: git.git-reset-hard-use-soft-or-stash
+    pattern: '\bgit\s+reset\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--hard\b'
     pattern_src: '\bgit\s+reset\s+{ARGS}--hard\b'
     reason: git reset --hard (use --soft or stash)
     anchored: true
 
-  - pattern: '\bgit\s+clean\s+(?!(?:[^;&|]*\s)?(?:-(?!-)[a-z]*n[a-z]*(?=[\s;&|)`]|$)|--dry-run\b))(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?!-)[a-z]*[fd][a-z]*|--force)(?=[\s;&|)`]|$)'
+  - id: git.git-clean-with-force-directory-flags
+    pattern: '\bgit\s+clean\s+(?!(?:[^;&|]*\s)?(?:-(?!-)[a-z]*n[a-z]*(?=[\s;&|)`]|$)|--dry-run\b))(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?!-)[a-z]*[fd][a-z]*|--force)(?=[\s;&|)`]|$)'
     pattern_src: '\bgit\s+clean\s+(?!(?:[^;&|]*\s)?(?:-(?!-)[a-z]*n[a-z]*(?=[\s;&|)`]|$)|--dry-run\b)){ARGS}(?:-(?!-)[a-z]*[fd][a-z]*|--force)(?=[\s;&|)`]|$)'
     reason: git clean with force/directory flags
     anchored: true
 
   # Note: This blocks --force but NOT --force-with-lease
-  - pattern: '\bgit\s+push\s+.*--force(?!-with-lease)'
+  - id: git.git-push-force-use-force-with-lease
+    pattern: '\bgit\s+push\s+.*--force(?!-with-lease)'
     reason: git push --force (use --force-with-lease)
     anchored: true
 
-  - pattern: '\bgit\s+push\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-(?!-)[a-z]*f[a-z]*(?=[\s;&|)`]|$)'
+  - id: git.git-push-f-use-force-with-lease
+    pattern: '\bgit\s+push\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-(?!-)[a-z]*f[a-z]*(?=[\s;&|)`]|$)'
     pattern_src: '\bgit\s+push\s+{ARGS}-(?!-)[a-z]*f[a-z]*(?=[\s;&|)`]|$)'
     reason: git push -f (use --force-with-lease)
     anchored: true
 
-  - pattern: '\bgit\s+stash\s+clear\b'
+  - id: git.git-stash-clear-deletes-all-stashes
+    pattern: '\bgit\s+stash\s+clear\b'
     reason: git stash clear (deletes ALL stashes)
     anchored: true
 
-  - pattern: '\bgit\s+reflog\s+expire\b'
+  - id: git.git-reflog-expire-destroys-recovery-mechanism
+    pattern: '\bgit\s+reflog\s+expire\b'
     reason: git reflog expire (destroys recovery mechanism)
     anchored: true
 
-  - pattern: '\bgit\s+gc\s+.*--prune=now'
+  - id: git.git-gc-prune-now-can-lose-dangling-commits
+    pattern: '\bgit\s+gc\s+.*--prune=now'
     reason: git gc --prune=now (can lose dangling commits)
     anchored: true
 
-  - pattern: '\bgit\s+filter-branch\b'
+  - id: git.git-filter-branch-rewrites-entire-history
+    pattern: '\bgit\s+filter-branch\b'
     reason: git filter-branch (rewrites entire history)
     anchored: true
 
   # ---------------------------------------------------------------------------
   # GIT OPERATIONS REQUIRING CONFIRMATION (ask: true)
   # ---------------------------------------------------------------------------
-  - pattern: '\bgit\s+checkout\s+--\s*\.'
+  - id: git.discards-all-uncommitted-changes
+    pattern: '\bgit\s+checkout\s+--\s*\.'
     reason: Discards all uncommitted changes
     ask: true
     anchored: true
 
-  - pattern: '\bgit\s+restore\s+\.'
+  - id: git.discards-all-uncommitted-changes-2
+    pattern: '\bgit\s+restore\s+\.'
     reason: Discards all uncommitted changes
     ask: true
     anchored: true
@@ -74,24 +84,28 @@ bashToolPatterns:
     ask: true
     anchored: true
 
-  - pattern: '\bgit\s+stash\s+drop\b'
+  - id: git.permanently-deletes-a-stash
+    pattern: '\bgit\s+stash\s+drop\b'
     reason: Permanently deletes a stash
     ask: true
     anchored: true
 
-  - pattern: '\bgit\s+branch\s+(?:(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\s;&|)`]|$)|(?=(?:[^;&|]*\s)?(?:-(?!-)[a-z]*d[a-z]*|--delete)(?=[\s;&|)`]|$))(?=(?:[^;&|]*\s)?(?:-(?!-)[a-z]*f[a-z]*|--force)(?=[\s;&|)`]|$)))'
+  - id: git.force-deletes-branch-even-if-unmerged
+    pattern: '\bgit\s+branch\s+(?:(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\s;&|)`]|$)|(?=(?:[^;&|]*\s)?(?:-(?!-)[a-z]*d[a-z]*|--delete)(?=[\s;&|)`]|$))(?=(?:[^;&|]*\s)?(?:-(?!-)[a-z]*f[a-z]*|--force)(?=[\s;&|)`]|$)))'
     pattern_src: '\bgit\s+branch\s+(?:{ARGS}-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\s;&|)`]|$)|(?=(?:[^;&|]*\s)?(?:-(?!-)[a-z]*d[a-z]*|--delete)(?=[\s;&|)`]|$))(?=(?:[^;&|]*\s)?(?:-(?!-)[a-z]*f[a-z]*|--force)(?=[\s;&|)`]|$)))'
     reason: Force deletes branch (even if unmerged)
     ask: true
     anchored: true
 
-  - pattern: '\bgit\s+push\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--delete\b'
+  - id: git.deletes-remote-branch
+    pattern: '\bgit\s+push\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--delete\b'
     pattern_src: '\bgit\s+push\s+{ARGS}--delete\b'
     reason: Deletes remote branch
     ask: true
     anchored: true
 
-  - pattern: '\bgit\s+push\s+\S+\s+:\S+'
+  - id: git.deletes-remote-branch-old-syntax
+    pattern: '\bgit\s+push\s+\S+\s+:\S+'
     reason: Deletes remote branch (old syntax)
     ask: true
     anchored: true
@@ -100,6 +114,7 @@ bashToolPatterns:
   # GITHUB CLI DESTRUCTIVE OPERATIONS (default-on: moved out of the cloud-hosting
   # pack so a fresh install keeps it, #1141)
   # ---------------------------------------------------------------------------
-  - pattern: '\bgh\s+repo\s+delete\b'
+  - id: git.gh-repo-delete-deletes-repository
+    pattern: '\bgh\s+repo\s+delete\b'
     reason: gh repo delete (deletes repository)
     anchored: true

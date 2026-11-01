@@ -18,37 +18,45 @@ commands:
     access: read
     description: Check for security vulnerabilities
 
-  - cmd: "npm run <script>"
+  - id: tooldef.npm-run-a-package-json-script
+    cmd: "npm run <script>"
     access: write
     description: Run a package.json script
 
   # Package management
-  - cmd: "npm install"
+  - id: tooldef.npm-install-all-dependencies-from-package-json
+    cmd: "npm install"
     access: write
     description: Install all dependencies from package.json
 
-  - cmd: "npm install <package>"
+  - id: tooldef.npm-install-a-package
+    cmd: "npm install <package>"
     access: write
     description: Install a package
 
-  - cmd: "npm install -D <package>"
+  - id: tooldef.npm-install-a-dev-dependency
+    cmd: "npm install -D <package>"
     access: write
     description: Install a dev dependency
 
-  - cmd: "npm uninstall <package>"
+  - id: tooldef.npm-remove-a-package
+    cmd: "npm uninstall <package>"
     access: write
     description: Remove a package
 
-  - cmd: "npm update [<package>]"
+  - id: tooldef.npm-update-packages-to-latest-allowed-versions
+    cmd: "npm update [<package>]"
     access: write
     description: Update packages to latest allowed versions
 
-  - cmd: "npm ci"
+  - id: tooldef.npm-clean-install-from-package-lock-json-faster-deterministi
+    cmd: "npm ci"
     access: write
     description: Clean install from package-lock.json (faster, deterministic)
 
   # Publishing
-  - cmd: "npm publish"
+  - id: tooldef.npm-publish-package-to-npm-registry
+    cmd: "npm publish"
     access: write
     description: Publish package to npm registry
 

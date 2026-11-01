@@ -1701,6 +1701,25 @@ default — in practice it **grants** it: `git add`/`commit`/`push` and
 whenever tooldefs change; narrow it with `unattended_allow` in
 `~/.agentwire/damagecontrol.yml` (path-scoped entries supported, #914).
 
+### Rule ids are frozen (#1209 M1)
+
+Every rule pattern, MCP policy and write-tier tooldef command carries an explicit
+`id:`; none is derived from the `reason:` text any more (a derived id made a typo
+fix a silent rename). Policy:
+
+- **Ids are frozen.** Editing a `reason:`, `pattern:` or description never changes an id.
+- **Removing or renaming an id is a changelog entry**, not a refactor: it breaks
+  `disabled_rules`, `unattended_allow` and audit queries that name it. Record it in the
+  release notes, and update `corpus/golden/rule_ids.json` in the same PR.
+- **No alias shim.** The old id simply stops resolving; `doctor` already reports a grant
+  naming no rule.
+- **Adding a rule** means writing its `id:` (`<file>.<slug>`, or `tooldef.<slug>` for
+  tooldefs) and adding it to `rule_ids.json`.
+
+Enforced by `tests/unit/test_rule_ids_pinned.py`: `safety.lint.unpinned_rules` rejects a
+rule with no `id:`, the sorted id set must equal `corpus/golden/rule_ids.json`, ids must be
+unique, and every `DEFAULT_UNATTENDED_ALLOW` id must resolve to a loaded rule.
+
 ### Duplicate rule ids
 
 `_assign_rule_id` honours an explicit `id:` verbatim — pinning is the point, and

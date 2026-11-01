@@ -5,39 +5,47 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # DOCKER DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
-  - pattern: '\bdocker\s+system\s+prune\s+.*-a'
+  - id: containers.docker-system-prune-a-removes-all-unused-data
+    pattern: '\bdocker\s+system\s+prune\s+.*-a'
     reason: docker system prune -a (removes all unused data)
     anchored: true
 
-  - pattern: '\bdocker\s+rmi\s+.*-f'
+  - id: containers.docker-rmi-f-force-removes-images
+    pattern: '\bdocker\s+rmi\s+.*-f'
     reason: docker rmi -f (force removes images)
     anchored: true
 
-  - pattern: '\bdocker\s+volume\s+rm\b'
+  - id: containers.docker-volume-rm-data-loss
+    pattern: '\bdocker\s+volume\s+rm\b'
     reason: docker volume rm (data loss)
     anchored: true
 
-  - pattern: '\bdocker\s+volume\s+prune\b'
+  - id: containers.docker-volume-prune-removes-unused-volumes
+    pattern: '\bdocker\s+volume\s+prune\b'
     reason: docker volume prune (removes unused volumes)
     anchored: true
 
   # ---------------------------------------------------------------------------
   # KUBERNETES (kubectl) DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
-  - pattern: '\bkubectl\s+delete\s+namespace\b'
+  - id: containers.kubectl-delete-namespace
+    pattern: '\bkubectl\s+delete\s+namespace\b'
     reason: kubectl delete namespace
     anchored: true
 
-  - pattern: '\bkubectl\s+delete\s+(?=(?:[^;&|]*\s)?--all(?=[\s;&|)`]|$))(?=(?:[^;&|]*\s)?all(?=[\s;&|)`]|$))'
+  - id: containers.kubectl-delete-all-all
+    pattern: '\bkubectl\s+delete\s+(?=(?:[^;&|]*\s)?--all(?=[\s;&|)`]|$))(?=(?:[^;&|]*\s)?all(?=[\s;&|)`]|$))'
     pattern_src: '\bkubectl\s+delete\s+(?=(?:[^;&|]*\s)?--all(?=[\s;&|)`]|$))(?=(?:[^;&|]*\s)?all(?=[\s;&|)`]|$))'
     reason: kubectl delete all --all
     anchored: true
 
-  - pattern: '\bkubectl\s+delete\s+.*--all\s+--all-namespaces'
+  - id: containers.kubectl-delete-across-all-namespaces
+    pattern: '\bkubectl\s+delete\s+.*--all\s+--all-namespaces'
     reason: kubectl delete across all namespaces
     anchored: true
 
-  - pattern: '\bhelm\s+uninstall\b'
+  - id: containers.helm-uninstall-removes-release
+    pattern: '\bhelm\s+uninstall\b'
     reason: helm uninstall (removes release)
     anchored: true
 

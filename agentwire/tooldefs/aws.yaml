@@ -19,15 +19,18 @@ commands:
     access: read
     description: List buckets or objects
 
-  - cmd: "aws s3 cp <src> <dst>"
+  - id: tooldef.aws-cli-copy-files-to-from-s3
+    cmd: "aws s3 cp <src> <dst>"
     access: write
     description: Copy files to/from S3
 
-  - cmd: "aws s3 sync <src> <dst>"
+  - id: tooldef.aws-cli-sync-directory-to-from-s3
+    cmd: "aws s3 sync <src> <dst>"
     access: write
     description: Sync directory to/from S3
 
-  - cmd: "aws s3 rm s3://<bucket>/<key>"
+  - id: tooldef.aws-cli-delete-a-single-s3-object
+    cmd: "aws s3 rm s3://<bucket>/<key>"
     access: write
     description: Delete a single S3 object
 
@@ -48,11 +51,13 @@ commands:
     access: read
     description: List VPCs
 
-  - cmd: "aws ec2 start-instances --instance-ids <id>"
+  - id: tooldef.aws-cli-start-stopped-ec2-instances
+    cmd: "aws ec2 start-instances --instance-ids <id>"
     access: write
     description: Start stopped EC2 instances
 
-  - cmd: "aws ec2 stop-instances --instance-ids <id>"
+  - id: tooldef.aws-cli-stop-running-ec2-instances
+    cmd: "aws ec2 stop-instances --instance-ids <id>"
     access: write
     description: Stop running EC2 instances
 
@@ -74,7 +79,8 @@ commands:
     access: read
     description: List Lambda functions
 
-  - cmd: "aws lambda invoke --function-name <name> <outfile>"
+  - id: tooldef.aws-cli-invoke-a-lambda-function
+    cmd: "aws lambda invoke --function-name <name> <outfile>"
     access: write
     description: Invoke a Lambda function
 

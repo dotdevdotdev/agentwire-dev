@@ -4,22 +4,27 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # FIREBASE DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
-  - pattern: '\bfirebase\s+projects:delete\b'
+  - id: firebase.firebase-projects-delete-deletes-entire-project
+    pattern: '\bfirebase\s+projects:delete\b'
     reason: firebase projects:delete (deletes entire project)
     anchored: true
 
-  - pattern: '\bfirebase\s+firestore:delete\s+.*--all-collections'
+  - id: firebase.firebase-firestore-delete-all-collections-wipes-all-data
+    pattern: '\bfirebase\s+firestore:delete\s+.*--all-collections'
     reason: firebase firestore:delete --all-collections (wipes all data)
     anchored: true
 
-  - pattern: '\bfirebase\s+database:remove\b'
+  - id: firebase.firebase-database-remove-wipes-realtime-db
+    pattern: '\bfirebase\s+database:remove\b'
     reason: firebase database:remove (wipes Realtime DB)
     anchored: true
 
-  - pattern: '\bfirebase\s+hosting:disable\b'
+  - id: firebase.firebase-hosting-disable
+    pattern: '\bfirebase\s+hosting:disable\b'
     reason: firebase hosting:disable
     anchored: true
 
-  - pattern: '\bfirebase\s+functions:delete\b'
+  - id: firebase.firebase-functions-delete
+    pattern: '\bfirebase\s+functions:delete\b'
     reason: firebase functions:delete
     anchored: true
