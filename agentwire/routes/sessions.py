@@ -20,8 +20,6 @@ import time
 
 from aiohttp import web
 
-from ..voice_hooks import SESSION as VOICE_SESSION
-
 logger = logging.getLogger(__name__)
 
 
@@ -133,12 +131,7 @@ class SessionsRoutesMixin:
             has_connections = False
             connection_count = 0
 
-            if name == VOICE_SESSION:
-                # The voice assistant has no window of its own: whoever has the
-                # portal open is its audience (see server.speak).
-                connection_count = len(self.dashboard_clients)
-                has_connections = connection_count > 0
-            elif name in self.active_sessions:
+            if name in self.active_sessions:
                 session = self.active_sessions[name]
                 connection_count = len(session.clients)
                 has_connections = connection_count > 0

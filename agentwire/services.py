@@ -91,8 +91,6 @@ _BUILTIN_SERVICE_SESSIONS = frozenset({
     "agentwire-stt",
     "agentwire-kokoro",
     "agentwire-scheduler",
-    "agentwire-buddy",
-    "agentwire-voice",
 })
 
 

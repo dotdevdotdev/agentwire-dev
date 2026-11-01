@@ -50,7 +50,7 @@ except ImportError:
 
 
 # === BEGIN AGENTWIRE HOOK STAMP (generated — do not edit) ===
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "e8b843f7c6cf9b512d4284f424effcad8545ed9fa6fd19fc1ba7425bb448bf33", "generated_at": "2026-10-31T14:18:13Z"}
+AGENTWIRE_HOOK_STAMP = {"core_sha256": "a3d5b78b6f420a1b161b1e56649add782844d6377d706adf503e983873a8408d", "generated_at": "2026-11-01T14:23:09Z"}
 # === END AGENTWIRE HOOK STAMP ===
 # === BEGIN GENERATED FROM agentwire/safety/_core.py ===
 """
@@ -78,7 +78,6 @@ import shutil
 import signal
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
@@ -1755,62 +1754,6 @@ def is_unattended() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Voice-assistant marker (#1198)
-# ---------------------------------------------------------------------------
-#
-# The portal voice assistant runs bypass, which demotes every ask-tier rule
-# (push, merge, worktree removal, session kill, ...) to a silent allow — so
-# "destructive actions get a spoken confirm" rested on a role prompt alone.
-# ``AGENTWIRE_VOICE=1`` (set on that one session's launch via its role's
-# ``--settings`` env) makes an ask stay an ask: a real dialog the voice layer
-# reads out. It only ever TIGHTENS — it never turns an ask or a block into an
-# allow — and a session without it is byte-for-byte unchanged.
-#
-# Under the marker the dialog also names its rule (``[rule: <id>]``) and the
-# hook records the pending ask in ``~/.agentwire/voice-approvals/pending-ask.json``: the
-# standing-approval grant store keys on that RECORD, never on pane text (the
-# dialog shows the command too, and a command can contain any text).
-# Unverifiable asks and scan-budget overruns are recorded never-grantable.
-
-
-def is_voice_session() -> bool:
-    """True for the portal voice assistant's session (see above)."""
-    return os.environ.get("AGENTWIRE_VOICE") == "1"
-
-
-#: The protected directory (see PROTECTED_CONTROL_PLANE_PATHS) holding the
-#: grant store and the hook's record of the ask on screen.
-VOICE_APPROVALS_DIR = "voice-approvals"
-VOICE_PENDING_ASK_FILE = "pending-ask.json"
-
-
-def voice_pending_ask_path() -> Path:
-    """Where the HOOK records the ask now on screen. ``AGENTWIRE_DIR`` moves it,
-    like the audit log — safe here because a hook's environment is the agent
-    process's, which a tool call cannot change. The reader (``voice_grants``)
-    resolves the real home itself."""
-    base = Path(os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire")))
-    return base / VOICE_APPROVALS_DIR / VOICE_PENDING_ASK_FILE
-
-
-def voice_ask_reason(reason: str, rule_id: "str | None", tool: str, grantable: bool) -> str:
-    """Record this ask for the voice grant store; return the dialog reason with
-    its rule named. Best-effort record: a failed write leaves the ask a plain
-    dialog (answerable once, never covered by a grant)."""
-    rule = rule_id or "unknown"
-    grantable = grantable and bool(rule_id)
-    try:
-        path = voice_pending_ask_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "rule_id": rule_id, "tool": tool, "grantable": grantable, "ts": time.time(),
-        }))
-    except OSError:
-        pass
-    return f"{reason} [rule: {rule}{'' if grantable else '; never grantable'}]"
-
-
-# ---------------------------------------------------------------------------
 # Grant parsing
 # ---------------------------------------------------------------------------
 
@@ -2844,15 +2787,6 @@ PROTECTED_CONTROL_PLANE_PATHS = [
     # (``agentwire tasks review``) and promotes (``agentwire tasks promote``) —
     # the agent never writes the live file. See ``agentwire/tasks_cli.py``.
     "*.agentwire.tasks.yml",            # project task-execution config (any dir)
-    # The voice assistant's standing-approval store and the hook's record of
-    # the pending ask (#1198). A grant presses Yes on a damage-control dialog,
-    # so writing either file is approving by hand: only the hook process and
-    # the owner's `agentwire voice` CLI write them — never a tool call. A
-    # PREFIX entry, so it covers the directory itself too: otherwise it could
-    # be moved away and a fake one (grants.json and all) moved into its place.
-    # Its own directory, named so that the prefix matches nothing else
-    # (~/.agentwire/voices/ holds TTS voice samples and stays agent-writable).
-    "~/.agentwire/voice-approvals",
 ]
 
 
@@ -6409,18 +6343,6 @@ PROTECTED_COMMAND_PATTERNS: List[Tuple[str, str]] = [
         r'\bagentwire\s+safety\s+(?:packs|groups)\s+(?:enable|disable)\b',
         "agentwire safety packs/groups enable|disable changes damage-control "
         "policy — host-only, run it from your own terminal (not through an agent).",
-    ),
-    (
-        r'\bagentwire\s+buddy\s+service\s+(?:install|uninstall)\b',
-        "agentwire buddy service install|uninstall writes a supervised command into "
-        "~/.agentwire/config.yaml — host-only, run it from your own terminal (not "
-        "through an agent).",
-    ),
-    (
-        r'\bagentwire\s+voice\s+(?:install|uninstall)\b',
-        "agentwire voice install|uninstall writes the voice assistant's service entry "
-        "into ~/.agentwire/config.yaml — host-only, run it from your own terminal (not "
-        "through an agent).",
     ),
 ]
 

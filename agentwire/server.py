@@ -64,7 +64,6 @@ from .security import (
     validate_startup_security,
 )
 from .ssh import ssh_base_opts
-from .voice_hooks import SESSION as VOICE_SESSION
 from .worktree import parse_session_name
 
 logger = logging.getLogger(__name__)
@@ -144,16 +143,6 @@ def should_nag_idle_session(
     if prior is None:
         return True
     return last_output_timestamp > prior
-
-
-@dataclass
-class _DashboardAudience:
-    """A broadcast target shaped like a Session: a snapshot of the dashboard
-    sockets (every open portal page). Lets ``speak`` hand the voice
-    assistant's audio to the same chunk/broadcast path as any session."""
-
-    clients: set
-    name: str = "dashboard"
 
 
 @dataclass
@@ -1237,20 +1226,6 @@ class AgentWireServer(
 
             machines_data = await self._get_machines_data()
             await ws.send_json({"type": "machines_update", "machines": machines_data})
-
-            # Send current agentwire session activity state
-            agentwire_activity = self.session_activity.get(VOICE_SESSION, {})
-            if agentwire_activity:
-                last_timestamp = agentwire_activity.get("last_output_timestamp", 0.0)
-                time_since = time.time() - last_timestamp if last_timestamp else float('inf')
-                threshold = self.config.server.activity_threshold_seconds
-                is_active = time_since <= threshold
-                await ws.send_json({
-                    "type": "session_activity",
-                    "session": VOICE_SESSION,
-                    "active": is_active
-                })
-                logger.info(f"[Dashboard] Sent initial {VOICE_SESSION} activity: {'active' if is_active else 'idle'}")
         except Exception as e:
             logger.error(f"Failed to send initial dashboard state: {e}")
 
@@ -2806,7 +2781,7 @@ class AgentWireServer(
         from .playback_lane import Lane
 
         binary = "/usr/bin/say" if _sys.platform == "darwin" else "espeak"
-        async with Lane().aturn("say", text) as play:
+        async with Lane().aturn(text) as play:
             if not play:
                 return True
             try:
@@ -2848,7 +2823,7 @@ class AgentWireServer(
         """
         from .playback_lane import Lane
 
-        async with Lane().aturn("say", text) as play:
+        async with Lane().aturn(text) as play:
             if not play:
                 return True
             return await self._play_wav_file(wav_bytes)
@@ -2883,9 +2858,6 @@ class AgentWireServer(
         Audio is broadcast only to clients connected to this specific session
         (terminal, monitor, or chat windows viewing that session).
 
-        Special case: the voice assistant (``agentwire-voice``) speaks to the
-        dashboard — every open portal page — since it has no window of its own.
-
         Special case: the `agentwire-notifications` session is a meta-session —
         its audio is meant for whoever is watching the dashboard. If it has no
         own clients, fan the audio out across every session that does, so the
@@ -2902,16 +2874,8 @@ class AgentWireServer(
 
         # Notifications session: fan out to whichever session(s) the user
         # currently has open, since this session itself rarely has listeners.
-        # Voice assistant: it has no window of its own — its audience is the
-        # dashboard socket every open portal page holds, which plays audio
-        # through the page's one sequential queue (#1198).
         fanout_targets: list = []
-        if session_name == VOICE_SESSION:
-            if not self.dashboard_clients:
-                logger.warning(f"[{session_name}] speak: no portal page open")
-                return await self._speak_no_clients_fallback(text)
-            fanout_targets = [_DashboardAudience(set(self.dashboard_clients))]
-        elif session_name == "agentwire-notifications" and not session.clients:
+        if session_name == "agentwire-notifications" and not session.clients:
             fanout_targets = [
                 s for s in self.active_sessions.values()
                 if s.name != session_name and s.clients

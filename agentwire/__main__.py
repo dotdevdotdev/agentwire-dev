@@ -189,7 +189,7 @@ Command Categories:
     from . import doctor_cli, history_cli, machine_cli, safety_cli
     from . import handoff_cli, hooks_cli, mcp_cli, roles_cli, tunnels_cli
     from . import notify_cli, palette_cli, push_cli, repo_cli, system_cli, wiki_cli
-    from . import restart_cli, tabs_cli, voice_cli, wait_cli, worktree_cli
+    from . import restart_cli, tabs_cli, wait_cli, worktree_cli
     from . import buddy_cli  # BETA: gated on beta.voice_layer (default off)
     from .council import cli as council_cli
 
@@ -231,7 +231,6 @@ Command Categories:
         wait_cli.register_wait_parser,
         worktree_cli.register_helper_parser,
         buddy_cli.register_buddy_parser,
-        voice_cli.register_voice_parser,
     ]
     for _reg in _REGISTRARS:
         _reg(subparsers)

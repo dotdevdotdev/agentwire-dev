@@ -31,7 +31,7 @@ from .project_config import (
     get_parent_from_config,
     resolve_posture,
 )
-from .roles import RoleConfig, merge_roles, role_settings
+from .roles import RoleConfig, merge_roles
 from .worktree import git_common_dir, git_root, main_worktree, parse_session_name
 
 # Default config directory
@@ -695,12 +695,6 @@ def build_agent_command(
 
         if merged.disallowed_tools:
             parts.append(f"--disallowedTools {','.join(merged.disallowed_tools)}")
-
-    # Role-owned hooks (e.g. the voice assistant's speech hooks) — inline JSON,
-    # so nothing is written per launch and only this process sees them.
-    settings = role_settings(role_names)
-    if settings:
-        parts.append(f"--settings {shlex.quote(json.dumps(settings, separators=(',', ':')))}")
 
     if merged and merged.instructions:
         # Written to a file rather than inlined to avoid shell escaping

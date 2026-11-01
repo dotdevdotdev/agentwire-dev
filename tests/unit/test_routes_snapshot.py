@@ -128,8 +128,6 @@ BASELINE_ROUTES = frozenset({
     ("HEAD", "/ws/{name}"),
     ("POST", "/api/active-session"),
     ("POST", "/api/answer/{name}"),
-    ("POST", "/api/voice/ask"),
-    ("POST", "/api/voice/state"),
     ("POST", "/api/artifacts/upload"),
     ("POST", "/api/config"),
     ("POST", "/api/config/reload"),
@@ -215,3 +213,18 @@ def test_route_table_unchanged():
         "was lost or duplicated — fix the registrar. Update BASELINE_ROUTES "
         "only when routes genuinely change (real feature add/remove)."
     )
+
+
+def test_voice_routes_are_exactly_the_stt_tts_surface():
+    """The voice domain registers the seven STT/TTS/answer routes and nothing
+    else: no assistant-ask or assistant-state endpoint."""
+    from aiohttp import web
+
+    from agentwire.routes.voice import register_voice_routes
+
+    app = web.Application()
+    register_voice_routes(AgentWireServer(Config()), app)
+    assert {path for method, path in _route_set(app) if method != "HEAD"} == {
+        "/transcribe", "/send/{name}", "/api/say/{name}", "/api/local-tts/{name}",
+        "/api/answer/{name}", "/api/voices", "/api/voice-status",
+    }

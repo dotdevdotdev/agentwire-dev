@@ -348,38 +348,6 @@ def resolve_roles(
     return [intrinsic] if intrinsic else []
 
 
-def _voice_assistant_settings() -> dict:
-    from ..voice_hooks import claude_settings
-
-    return claude_settings()
-
-
-#: Roles that carry Claude Code settings (hooks) of their own. They ride the
-#: launch line as ``claude --settings '<json>'``, so they reach only sessions
-#: launched with that role, and ``agentwire restart`` regenerates them from the
-#: recorded role names. Keyed by role name; the value builds the settings dict.
-ROLE_SETTINGS = {
-    "voice-assistant": _voice_assistant_settings,
-}
-
-
-def role_settings(role_names: list[str]) -> dict | None:
-    """Merged ``--settings`` (hooks + env) for *role_names*, or None when none
-    carry any. Hook lists concatenate per event; env keys merge."""
-    hooks: dict[str, list] = {}
-    env: dict[str, str] = {}
-    for name in role_names:
-        build = ROLE_SETTINGS.get(name)
-        if build is None:
-            continue
-        built = build()
-        for event, entries in built.get("hooks", {}).items():
-            hooks.setdefault(event, []).extend(entries)
-        env.update(built.get("env", {}))
-    settings = {**({"hooks": hooks} if hooks else {}), **({"env": env} if env else {})}
-    return settings or None
-
-
 def discover_role(name: str, project_path: Path | None = None) -> Path | None:
     """Find a role file by name using discovery order.
 
