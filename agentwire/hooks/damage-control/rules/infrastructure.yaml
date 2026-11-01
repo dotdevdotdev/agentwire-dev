@@ -5,23 +5,28 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # INFRASTRUCTURE AS CODE DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
-  - pattern: '\bterraform\s+destroy\b'
+  - id: infrastructure.terraform-destroy-destroys-all-infrastructure
+    pattern: '\bterraform\s+destroy\b'
     reason: terraform destroy (destroys all infrastructure)
     anchored: true
 
-  - pattern: '\bpulumi\s+destroy\b'
+  - id: infrastructure.pulumi-destroy-destroys-all-resources
+    pattern: '\bpulumi\s+destroy\b'
     reason: pulumi destroy (destroys all resources)
     anchored: true
 
-  - pattern: '\bserverless\s+remove\b'
+  - id: infrastructure.serverless-remove-removes-stack
+    pattern: '\bserverless\s+remove\b'
     reason: serverless remove (removes stack)
     anchored: true
 
-  - pattern: '\bsls\s+remove\b'
+  - id: infrastructure.sls-remove-removes-stack
+    pattern: '\bsls\s+remove\b'
     reason: sls remove (removes stack)
     anchored: true
 
-  - pattern: '\bsam\s+delete\b'
+  - id: infrastructure.sam-delete-deletes-sam-application
+    pattern: '\bsam\s+delete\b'
     reason: sam delete (deletes SAM application)
     anchored: true
 

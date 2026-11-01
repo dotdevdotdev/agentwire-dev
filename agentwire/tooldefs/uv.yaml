@@ -6,41 +6,50 @@ install: brew install uv
 
 commands:
   # Project management
-  - cmd: "uv init [<name>]"
+  - id: tooldef.uv-initialize-a-new-python-project
+    cmd: "uv init [<name>]"
     access: write
     description: Initialize a new Python project
 
-  - cmd: "uv sync"
+  - id: tooldef.uv-install-dependencies-from-uv-lock
+    cmd: "uv sync"
     access: write
     description: Install dependencies from uv.lock
 
-  - cmd: "uv add <package>"
+  - id: tooldef.uv-add-a-dependency
+    cmd: "uv add <package>"
     access: write
     description: Add a dependency
 
-  - cmd: "uv remove <package>"
+  - id: tooldef.uv-remove-a-dependency
+    cmd: "uv remove <package>"
     access: write
     description: Remove a dependency
 
-  - cmd: "uv lock"
+  - id: tooldef.uv-update-uv-lock-without-installing
+    cmd: "uv lock"
     access: write
     description: Update uv.lock without installing
 
   # Running
-  - cmd: "uv run <script.py>"
+  - id: tooldef.uv-run-a-script-in-project-environment
+    cmd: "uv run <script.py>"
     access: write
     description: Run a script in project environment
 
-  - cmd: "uv run <cmd>"
+  - id: tooldef.uv-run-a-command-in-project-environment
+    cmd: "uv run <cmd>"
     access: write
     description: Run a command in project environment
 
   # Tools
-  - cmd: "uv tool install <package>"
+  - id: tooldef.uv-install-a-cli-tool-globally
+    cmd: "uv tool install <package>"
     access: write
     description: Install a CLI tool globally
 
-  - cmd: "uv tool run <tool>"
+  - id: tooldef.uv-run-a-tool-without-installing-like-uvx
+    cmd: "uv tool run <tool>"
     access: write
     description: Run a tool without installing (like uvx)
 
@@ -48,7 +57,8 @@ commands:
     access: read
     description: List installed tools
 
-  - cmd: "uv tool uninstall <tool>"
+  - id: tooldef.uv-uninstall-a-tool
+    cmd: "uv tool uninstall <tool>"
     access: write
     description: Uninstall a tool
 
@@ -57,16 +67,19 @@ commands:
     access: read
     description: List available Python versions
 
-  - cmd: "uv python install <version>"
+  - id: tooldef.uv-install-a-python-version
+    cmd: "uv python install <version>"
     access: write
     description: Install a Python version
 
   # Build & publish
-  - cmd: "uv build"
+  - id: tooldef.uv-build-wheel-and-sdist-for-distribution
+    cmd: "uv build"
     access: write
     description: Build wheel and sdist for distribution
 
-  - cmd: "uv publish"
+  - id: tooldef.uv-publish-package-to-pypi
+    cmd: "uv publish"
     access: write
     description: Publish package to PyPI
 

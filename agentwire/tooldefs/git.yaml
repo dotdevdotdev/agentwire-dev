@@ -61,11 +61,13 @@ commands:
     description: Create a commit
     id: git.commit
 
-  - cmd: "git stash"
+  - id: tooldef.git-stash-current-changes
+    cmd: "git stash"
     access: write
     description: Stash current changes
 
-  - cmd: "git stash pop"
+  - id: tooldef.git-apply-most-recent-stash
+    cmd: "git stash pop"
     access: write
     description: Apply most recent stash
 
@@ -74,19 +76,23 @@ commands:
   # the first flag), so the description must name the whole operation — the old
   # "Create and switch to new branch" misdescribed a refused
   # ``git checkout -- <file>`` (#933).
-  - cmd: "git checkout <target>"
+  - id: tooldef.git-switch-branches-create-one-b-or-restore-working-tree-fil
+    cmd: "git checkout <target>"
     access: write
     description: Switch branches, create one (-b), or restore working-tree files (overwrites uncommitted changes to restored paths)
 
-  - cmd: "git merge <branch>"
+  - id: tooldef.git-merge-branch-into-current
+    cmd: "git merge <branch>"
     access: write
     description: Merge branch into current
 
-  - cmd: "git rebase <branch>"
+  - id: tooldef.git-rebase-current-branch-onto-another
+    cmd: "git rebase <branch>"
     access: write
     description: Rebase current branch onto another
 
-  - cmd: "git cherry-pick <commit>"
+  - id: tooldef.git-apply-a-commit-to-current-branch
+    cmd: "git cherry-pick <commit>"
     access: write
     description: Apply a commit to current branch
 
@@ -95,7 +101,8 @@ commands:
     access: read
     description: Download remote changes without merging
 
-  - cmd: "git pull"
+  - id: tooldef.git-fetch-and-merge-remote-changes
+    cmd: "git pull"
     access: write
     description: Fetch and merge remote changes
 
@@ -104,7 +111,8 @@ commands:
     description: Push commits to remote
     id: git.push
 
-  - cmd: "git push --force-with-lease"
+  - id: tooldef.git-force-push-only-if-remote-hasn-t-changed-safer-than-forc
+    cmd: "git push --force-with-lease"
     access: write
     description: Force push only if remote hasn't changed (safer than --force)
 

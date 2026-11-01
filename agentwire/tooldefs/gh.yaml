@@ -14,15 +14,18 @@ commands:
     access: read
     description: View repository details
 
-  - cmd: "gh repo clone <repo>"
+  - id: tooldef.github-cli-clone-a-repository
+    cmd: "gh repo clone <repo>"
     access: write
     description: Clone a repository
 
-  - cmd: "gh repo create [<name>]"
+  - id: tooldef.github-cli-create-a-new-repository
+    cmd: "gh repo create [<name>]"
     access: write
     description: Create a new repository
 
-  - cmd: "gh repo fork <repo>"
+  - id: tooldef.github-cli-fork-a-repository
+    cmd: "gh repo fork <repo>"
     access: write
     description: Fork a repository
 
@@ -52,19 +55,23 @@ commands:
     description: Create a pull request
     id: gh.pr-create
 
-  - cmd: "gh pr merge [<pr>]"
+  - id: tooldef.github-cli-merge-a-pull-request
+    cmd: "gh pr merge [<pr>]"
     access: write
     description: Merge a pull request
 
-  - cmd: "gh pr close [<pr>]"
+  - id: tooldef.github-cli-close-a-pull-request
+    cmd: "gh pr close [<pr>]"
     access: write
     description: Close a pull request
 
-  - cmd: "gh pr comment [<pr>] --body '<text>'"
+  - id: tooldef.github-cli-add-a-comment-to-a-pr
+    cmd: "gh pr comment [<pr>] --body '<text>'"
     access: write
     description: Add a comment to a PR
 
-  - cmd: "gh pr review [<pr>] --approve"
+  - id: tooldef.github-cli-approve-a-pull-request
+    cmd: "gh pr review [<pr>] --approve"
     access: write
     description: Approve a pull request
 
@@ -77,15 +84,18 @@ commands:
     access: read
     description: View issue details
 
-  - cmd: "gh issue create"
+  - id: tooldef.github-cli-create-an-issue
+    cmd: "gh issue create"
     access: write
     description: Create an issue
 
-  - cmd: "gh issue close <issue>"
+  - id: tooldef.github-cli-close-an-issue
+    cmd: "gh issue close <issue>"
     access: write
     description: Close an issue
 
-  - cmd: "gh issue comment <issue> --body '<text>'"
+  - id: tooldef.github-cli-comment-on-an-issue
+    cmd: "gh issue comment <issue> --body '<text>'"
     access: write
     description: Comment on an issue
 
@@ -98,7 +108,8 @@ commands:
     access: read
     description: View release details
 
-  - cmd: "gh release create <tag>"
+  - id: tooldef.github-cli-create-a-release
+    cmd: "gh release create <tag>"
     access: write
     description: Create a release
 
@@ -123,7 +134,8 @@ commands:
     access: read
     description: List workflows
 
-  - cmd: "gh workflow run <workflow>"
+  - id: tooldef.github-cli-manually-trigger-a-workflow
+    cmd: "gh workflow run <workflow>"
     access: write
     description: Manually trigger a workflow
 

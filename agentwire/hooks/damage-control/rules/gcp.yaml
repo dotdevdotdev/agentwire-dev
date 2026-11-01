@@ -4,31 +4,38 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # GCP (gcloud) DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
-  - pattern: '\bgcloud\s+projects\s+delete\b'
+  - id: gcp.gcloud-projects-delete-deletes-entire-project
+    pattern: '\bgcloud\s+projects\s+delete\b'
     reason: gcloud projects delete (DELETES ENTIRE PROJECT)
     anchored: true
 
-  - pattern: '\bgcloud\s+compute\s+instances\s+delete\b'
+  - id: gcp.gcloud-compute-instances-delete
+    pattern: '\bgcloud\s+compute\s+instances\s+delete\b'
     reason: gcloud compute instances delete
     anchored: true
 
-  - pattern: '\bgcloud\s+sql\s+instances\s+delete\b'
+  - id: gcp.gcloud-sql-instances-delete
+    pattern: '\bgcloud\s+sql\s+instances\s+delete\b'
     reason: gcloud sql instances delete
     anchored: true
 
-  - pattern: '\bgcloud\s+container\s+clusters\s+delete\b'
+  - id: gcp.gcloud-container-clusters-delete-gke
+    pattern: '\bgcloud\s+container\s+clusters\s+delete\b'
     reason: gcloud container clusters delete (GKE)
     anchored: true
 
-  - pattern: '\bgcloud\s+storage\s+rm\s+.*-r'
+  - id: gcp.gcloud-storage-rm-r-recursive-delete
+    pattern: '\bgcloud\s+storage\s+rm\s+.*-r'
     reason: gcloud storage rm -r (recursive delete)
     anchored: true
 
-  - pattern: '\bgcloud\s+functions\s+delete\b'
+  - id: gcp.gcloud-functions-delete
+    pattern: '\bgcloud\s+functions\s+delete\b'
     reason: gcloud functions delete
     anchored: true
 
-  - pattern: '\bgcloud\s+iam\s+service-accounts\s+delete\b'
+  - id: gcp.gcloud-iam-service-accounts-delete
+    pattern: '\bgcloud\s+iam\s+service-accounts\s+delete\b'
     reason: gcloud iam service-accounts delete
     anchored: true
 

@@ -6,51 +6,61 @@ bashToolPatterns:
   # DESTRUCTIVE FILE OPERATIONS
   # ---------------------------------------------------------------------------
   # {ARGS} (#1125): the flag may follow any operand (`rm foo -rf x`), up to `--`.
-  - pattern: '\brm\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-(?!-)[a-z]*[rf][a-z]*(?=[\s;&|)`]|$)'
+  - id: core.rm-with-recursive-or-force-flags
+    pattern: '\brm\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-(?!-)[a-z]*[rf][a-z]*(?=[\s;&|)`]|$)'
     pattern_src: '\brm\s+{ARGS}-(?!-)[a-z]*[rf][a-z]*(?=[\s;&|)`]|$)'
     reason: rm with recursive or force flags
     anchored: true
 
-  - pattern: '\brm\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--recursive'
+  - id: core.rm-with-recursive-flag
+    pattern: '\brm\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--recursive'
     pattern_src: '\brm\s+{ARGS}--recursive'
     reason: rm with --recursive flag
     anchored: true
 
-  - pattern: '\brm\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--force'
+  - id: core.rm-with-force-flag
+    pattern: '\brm\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?--force'
     pattern_src: '\brm\s+{ARGS}--force'
     reason: rm with --force flag
     anchored: true
 
-  - pattern: '\bsudo\s+rm\b'
+  - id: core.sudo-rm
+    pattern: '\bsudo\s+rm\b'
     reason: sudo rm
     anchored: true
 
-  - pattern: '\brmdir\b'
+  - id: core.rmdir-use-git-clean-or-manual-cleanup
+    pattern: '\brmdir\b'
     reason: rmdir (use git clean or manual cleanup)
     bypassable: true
     anchored: true
 
-  - pattern: '\brm\s+[^-]'
+  - id: core.rm-file-deletion-use-git-clean-or-manual-cleanup
+    pattern: '\brm\s+[^-]'
     reason: rm file deletion (use git clean or manual cleanup)
     bypassable: true
     anchored: true
 
-  - pattern: '(?:^|[;&|])\s*trash\s+'
+  - id: core.trash-command-moves-files-to-trash-use-git-clean-or-manual-c
+    pattern: '(?:^|[;&|])\s*trash\s+'
     reason: trash command (moves files to trash - use git clean or manual cleanup)
     bypassable: true
     anchored: true
 
   # Non-``rm`` deletion paths that the literal-``rm`` rules miss.
-  - pattern: '\bfind\b.*\s-delete\b'
+  - id: core.find-delete-recursive-deletion-use-git-clean-or-manual-clean
+    pattern: '\bfind\b.*\s-delete\b'
     reason: find -delete (recursive deletion - use git clean or manual cleanup)
     bypassable: true
     anchored: true
 
-  - pattern: '\bfind\b.*-(?:exec|execdir|ok|okdir)\s+(?:\S*/)?chmod\s+(?:-[^\s;&|]*\s+)*(?:--\s+)?0?777\b'
+  - id: core.find-exec-chmod-777-world-writable
+    pattern: '\bfind\b.*-(?:exec|execdir|ok|okdir)\s+(?:\S*/)?chmod\s+(?:-[^\s;&|]*\s+)*(?:--\s+)?0?777\b'
     reason: find -exec chmod 777 (world writable)
     anchored: true
 
-  - pattern: '\bfind\b.*-exec\s+rm\b'
+  - id: core.find-exec-rm-deletion-via-find-use-git-clean-or-manual-clean
+    pattern: '\bfind\b.*-exec\s+rm\b'
     reason: find -exec rm (deletion via find - use git clean or manual cleanup)
     bypassable: true
     anchored: true
@@ -60,19 +70,22 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # The mode is the first non-flag operand: in `chmod u+x 777` the 777 is a
   # FILE (#1133). Only option tokens (`-R`, `-v`, `--reference=…`) may precede it.
-  - pattern: '\bchmod\s+(?:-[^\s;&|]*\s+)*(?:--\s+)?0?777\b'
+  - id: core.chmod-777-world-writable
+    pattern: '\bchmod\s+(?:-[^\s;&|]*\s+)*(?:--\s+)?0?777\b'
     reason: chmod 777 (world writable)
     anchored: true
 
   # Recursive stays wide on purpose: with `-R`, an unreadable mode token
   # (`chmod -R ${m:-x} 777 /`) must not hide a world-writable tree, so 777
   # ANYWHERE refuses. Price: `chmod -R u+x 777` (a file named 777) still blocks.
-  - pattern: '\bchmod\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$).*777'
+  - id: core.recursive-chmod-777
+    pattern: '\bchmod\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$).*777'
     pattern_src: '\bchmod\s+{ARGS}(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$).*777'
     reason: recursive chmod 777
     anchored: true
 
-  - pattern: '\bchown\s+(?=[^;&|]*\broot\b)(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$)'
+  - id: core.recursive-chown-to-root
+    pattern: '\bchown\s+(?=[^;&|]*\broot\b)(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$)'
     pattern_src: '\bchown\s+(?=[^;&|]*\broot\b){ARGS}(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\s;&|)`]|$)'
     reason: recursive chown to root
     anchored: true
@@ -80,11 +93,13 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # SYSTEM-LEVEL DESTRUCTION
   # ---------------------------------------------------------------------------
-  - pattern: '\bmkfs\.'
+  - id: core.filesystem-format-command
+    pattern: '\bmkfs\.'
     reason: filesystem format command
     anchored: true
 
-  - pattern: '\bdd\s+.*of=/dev/'
+  - id: core.dd-writing-to-device
+    pattern: '\bdd\s+.*of=/dev/'
     reason: dd writing to device
     anchored: true
 
@@ -97,12 +112,14 @@ bashToolPatterns:
   # `-1` anywhere but the FIRST operand is a pid: bash parses options only up
   # front, so `kill --signal TERM -1`, `kill -s KILL 1 -1`, `kill 123 -1` all
   # signal every process. (As the first operand it is SIGHUP: `kill -1 123`.)
-  - pattern: '\bkill\s+(?:[^\s;&|]+\s+)+-1(?=[\s;&|)`]|$)'
+  - id: core.kill-all-processes
+    pattern: '\bkill\s+(?:[^\s;&|]+\s+)+-1(?=[\s;&|)`]|$)'
     reason: kill all processes
     anchored: true
 
   # `kill -1 -9`: -1 first, then another option.
-  - pattern: '\bkill\s+-1(?=\s)[^;&|]*?\s-[A-Za-z0-9]'
+  - id: core.kill-all-processes-2
+    pattern: '\bkill\s+-1(?=\s)[^;&|]*?\s-[A-Za-z0-9]'
     reason: kill all processes
     anchored: true
 
@@ -132,12 +149,14 @@ bashToolPatterns:
     ask: true
     anchored: true
 
-  - pattern: '\bkillall\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-9\b'
+  - id: core.killall-9
+    pattern: '\bkillall\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-9\b'
     pattern_src: '\bkillall\s+{ARGS}-9\b'
     reason: killall -9
     anchored: true
 
-  - pattern: '\bpkill\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-9\b'
+  - id: core.pkill-9
+    pattern: '\bpkill\s+(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?-9\b'
     pattern_src: '\bpkill\s+{ARGS}-9\b'
     reason: pkill -9
     anchored: true
@@ -145,7 +164,8 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # HISTORY/SHELL MANIPULATION
   # ---------------------------------------------------------------------------
-  - pattern: '\bhistory\s+-c\b'
+  - id: core.clearing-shell-history
+    pattern: '\bhistory\s+-c\b'
     reason: clearing shell history
     anchored: true
 

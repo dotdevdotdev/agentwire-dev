@@ -261,7 +261,7 @@ class TestDoctorDirection:
     def test_removed_protections_are_named(self, capsys):
         """"Differ from bundled" cannot tell a tweak from a disabled deploy tier."""
         bundled = (BUNDLED_RULES / "cloud-hosting.yaml").read_text()
-        stripped = bundled.replace(r"  - pattern: '\bnetlify\s+sites:delete\b'", "  - pattern: 'ZZZ-NEVER'")
+        stripped = bundled.replace(r"    pattern: '\bnetlify\s+sites:delete\b'", "    pattern: 'ZZZ-NEVER'")
         assert stripped != bundled, "mutation did not change the corpus"
         (safety_commands.RULES_DIR / "cloud-hosting.yaml").write_text(stripped)
 
@@ -337,7 +337,7 @@ class TestInstalledPathBehaviour:
 
         bundled = (BUNDLED_RULES / "cloud-hosting.yaml").read_text()
         stale = bundled.replace(
-            r"  - pattern: '\bnetlify\s+sites:delete\b'", "  - pattern: 'ZZZ-NEVER'"
+            r"    pattern: '\bnetlify\s+sites:delete\b'", "    pattern: 'ZZZ-NEVER'"
         )
         assert stale != bundled, "mutation did not change the corpus"
         target = safety_commands.RULES_DIR / "cloud-hosting.yaml"

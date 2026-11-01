@@ -5,6 +5,7 @@
 # ask-tier through the npm tooldef, which belongs to this same group.
 
 bashToolPatterns:
-  - pattern: '\bnpm\s+unpublish\b'
+  - id: registry.npm-unpublish-removes-package-from-registry
+    pattern: '\bnpm\s+unpublish\b'
     reason: npm unpublish (removes package from registry)
     anchored: true

@@ -5,19 +5,23 @@ bashToolPatterns:
   # ---------------------------------------------------------------------------
   # DATABASE CLI DESTRUCTIVE OPERATIONS
   # ---------------------------------------------------------------------------
-  - pattern: '\bredis-cli\s+FLUSHALL'
+  - id: databases.redis-cli-flushall-wipes-all-data
+    pattern: '\bredis-cli\s+FLUSHALL'
     reason: redis-cli FLUSHALL (wipes ALL data)
     anchored: true
 
-  - pattern: '\bredis-cli\s+FLUSHDB'
+  - id: databases.redis-cli-flushdb-wipes-database
+    pattern: '\bredis-cli\s+FLUSHDB'
     reason: redis-cli FLUSHDB (wipes database)
     anchored: true
 
-  - pattern: '\bdropdb\b'
+  - id: databases.postgresql-dropdb
+    pattern: '\bdropdb\b'
     reason: PostgreSQL dropdb
     anchored: true
 
-  - pattern: '\bmysqladmin\s+drop\b'
+  - id: databases.mysql-drop-database
+    pattern: '\bmysqladmin\s+drop\b'
     reason: MySQL drop database
     anchored: true
 
