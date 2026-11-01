@@ -18,7 +18,7 @@ from typing import Any, Dict, Iterator, List, Tuple
 import jsonschema
 import yaml
 
-from agentwire.safety.groups import bundled_rule_dirs
+from damage_control.groups import bundled_rule_dirs
 
 REPO = Path(__file__).resolve().parent.parent
 CORPUS_DIR = REPO / "corpus"
@@ -73,7 +73,7 @@ def _pinned_env(home: str) -> Iterator[None]:
 
 @functools.lru_cache(maxsize=None)
 def _base_config(ruleset: str) -> Dict[str, Any]:
-    from agentwire.safety._core import load_config
+    from damage_control.engine import load_config
 
     config = load_config(RULES_DIR, TOOLDEFS_DIR if ruleset == "full" else None)
     if not config.get("bashToolPatterns"):
@@ -108,7 +108,7 @@ def observe(case: Case) -> Dict[str, Any]:
 
 @functools.lru_cache(maxsize=None)
 def _observe(tool: str, text: str, context_json: str) -> Dict[str, Any]:
-    from agentwire.safety import _core
+    from damage_control import engine as _core
 
     ctx = json.loads(context_json)
     config = _config(ctx)

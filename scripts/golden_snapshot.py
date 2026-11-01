@@ -1,8 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.9"
-# dependencies = ["pyyaml"]
-# ///
+#!/usr/bin/env -S uv run python
 """Golden snapshot oracle for the damage-control engine and its five hooks (#1209 M0).
 
 Records ``(input, context) -> decision, rule_id`` for:
@@ -11,8 +7,8 @@ Records ``(input, context) -> decision, rule_id`` for:
   * every engine input harvested from the safety tests (``corpus/golden/harvested.json``),
   * representative audit-log row shapes (the real ``audit_logger`` writers),
 
-through the in-process engine (``agentwire.safety._core``) AND through the five
-real hook entrypoints run as subprocesses with recorded payloads. Every later
+through the in-process engine (``damage_control.engine``) AND through the real hook
+entry (``python -I -m damage_control.hook <kind>``) run as subprocesses with recorded payloads. Every later
 milestone must reproduce ``corpus/golden/snapshot.json`` byte-identically; a
 deliberate behaviour change lands as an explicit snapshot diff in its own PR.
 
@@ -35,6 +31,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import difflib
+import functools
 import json
 import os
 import subprocess
@@ -49,9 +46,9 @@ CASES_DIR = CORPUS_DIR / "cases"
 GOLDEN_DIR = CORPUS_DIR / "golden"
 SNAPSHOT = GOLDEN_DIR / "snapshot.json"
 HARVESTED = GOLDEN_DIR / "harvested.json"
-HOOKS_DIR = REPO / "agentwire" / "hooks" / "damage-control"
-RULES_DIR = [HOOKS_DIR / "rules", HOOKS_DIR / "agentwire-rules"]
-TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
+PACKAGE_SRC = REPO / "packages" / "damage-control-dev" / "src"
+RULES_DIR = [PACKAGE_SRC / "damage_control" / "rules", REPO / "agentwire" / "safety" / "rules"]
+TOOLDEFS_DIR = PACKAGE_SRC / "damage_control" / "tooldefs"
 
 # Fixed environment. FAKE_HOME is deliberately NOT under /tmp: core.yaml allowlists
 # /tmp, which outranks zeroAccessPaths and would silently flip every ``~`` secret
@@ -61,13 +58,7 @@ FAKE_CWD = "/golden/home/project"
 
 SCHEMA_VERSION = 1
 LAYERS = ("engine", "hooks", "audit")
-HOOK_FOR_TOOL = {
-    "Bash": "bash-tool-damage-control.py",
-    "Edit": "edit-tool-damage-control.py",
-    "Write": "write-tool-damage-control.py",
-    "Read": "read-tool-damage-control.py",
-    "mcp": "mcp-tool-damage-control.py",
-}
+HOOK_FOR_TOOL = {"Bash": "bash", "Edit": "edit", "Write": "write", "Read": "read", "mcp": "mcp"}
 # check_mcp_tool is never reached by the harvested tests (they drive the hook), so the
 # recorder carries its own representative tool names: ask-tier teardown, ungated
 # messaging, a write-shaped unknown name, a read-shaped unknown name, a non-mcp name.
@@ -118,7 +109,7 @@ _depth = [0]
 
 
 def _install_harvest_wrappers() -> None:
-    import agentwire.safety._core as core
+    import damage_control.engine as core
 
     for name in _seen:
         original = getattr(core, name)
@@ -251,7 +242,8 @@ def pinned_env(home: str = FAKE_HOME) -> Iterator[None]:
 
 
 def _engine_config(kill_switch: bool) -> Dict[str, Any]:
-    from agentwire.safety._core import load_config
+    import agentwire.safety  # noqa: F401  (judge by AgentWire's profile, as the hooks do)
+    from damage_control.engine import load_config
 
     config = load_config(RULES_DIR, TOOLDEFS_DIR)
     if not config.get("bashToolPatterns"):
@@ -261,7 +253,7 @@ def _engine_config(kill_switch: bool) -> Dict[str, Any]:
 
 
 def engine_decision(tool: str, text: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    from agentwire.safety import _core
+    from damage_control import engine as _core
 
     if tool == "Bash":
         r = _core.check_command(text, config, cwd=FAKE_CWD)
@@ -294,7 +286,7 @@ def casefold_as(variant: str) -> Iterator[None]:
     machine compute both platforms' verdicts; ``record_engine`` then proves the emulation
     against the host's REAL behaviour, so a lie fails loudly instead of being committed.
     """
-    from agentwire.safety import _core
+    from damage_control import engine as _core
 
     original = _core._casefolds_paths
     if variant == "darwin":
@@ -357,9 +349,20 @@ def hook_payload(tool: str, text: str, permission_mode: str) -> Dict[str, Any]:
     return dict(base, tool_name=text, tool_input={})
 
 
+@functools.lru_cache(maxsize=None)
+def profile_manifest() -> Path:
+    """AgentWire's profile as a hook loads it: a JSON file named on the command line."""
+    from agentwire.safety import host_profile
+    from damage_control.profile import dump_profile
+
+    path = Path(tempfile.mkdtemp(prefix="golden-profile-")) / "damagecontrol-profile.json"
+    path.write_text(dump_profile(host_profile.build_profile()))
+    return path
+
+
 def run_hook(tool: str, text: str, home: str, mode: str, unattended: bool) -> Dict[str, Any]:
     """Run one hook as a subprocess against a private AGENTWIRE_DIR; return decision + audit row."""
-    hook = HOOKS_DIR / HOOK_FOR_TOOL[tool if tool in HOOK_FOR_TOOL else "mcp"]
+    kind = HOOK_FOR_TOOL[tool if tool in HOOK_FOR_TOOL else "mcp"]
     with tempfile.TemporaryDirectory(prefix="golden-hook-") as aw, tempfile.TemporaryDirectory(prefix="golden-cwd-") as cwd:
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": home, "PWD": FAKE_CWD,
                "AGENTWIRE_DIR": aw, "LANG": "C.UTF-8", "PYTHONHASHSEED": "0"}
@@ -367,7 +370,8 @@ def run_hook(tool: str, text: str, home: str, mode: str, unattended: bool) -> Di
             env["AGENTWIRE_UNATTENDED"] = "1"
         payload = hook_payload(tool, text, HOOK_PERMISSION_MODES[mode])
         proc = subprocess.run(
-            [sys.executable, str(hook)], input=json.dumps(payload), capture_output=True,
+            [sys.executable, "-I", "-m", "damage_control.hook", kind, "--profile", str(profile_manifest())],
+            input=json.dumps(payload), capture_output=True,
             text=True, env=env, cwd=cwd, timeout=120,
         )
         verdict = "allow"
@@ -454,11 +458,7 @@ _AUDIT_SHAPES: List[Tuple[str, Dict[str, Any]]] = [
 
 
 def record_audit() -> Dict[str, Any]:
-    sys.path.insert(0, str(HOOKS_DIR))
-    try:
-        import audit_logger
-    finally:
-        sys.path.remove(str(HOOKS_DIR))
+    from damage_control import audit as audit_logger
     out: Dict[str, Any] = {}
     with pinned_env():
         for index, (writer, kwargs) in enumerate(_AUDIT_SHAPES):

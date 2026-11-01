@@ -1,0 +1,11 @@
+{
+ "mcpToolPolicies": [
+  {
+   "match": "(write|edit|delete|remove|move|rename|create|append|patch|mkdir|rmdir|copy|upload|chmod|prune|kill|purge)",
+   "id": "mcp.writeish-name",
+   "tier": "allow",
+   "mutates": true,
+   "reason": "write-shaped MCP tool name — protected control-plane path arguments are refused"
+  }
+ ]
+}

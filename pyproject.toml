@@ -24,6 +24,9 @@ classifiers = [
     "Topic :: Software Development :: User Interfaces",
 ]
 dependencies = [
+    # The damage-control engine (#1209 M4): a workspace member under packages/, so one
+    # `uv sync` / `uv tool install .` installs both. Hooks run `python -I -m damage_control.hook`.
+    "damage-control-dev",
     "aiohttp>=3.13.4",  # >=3.13.4 clears CVE-2026-34515 + CVE-2026-34513 (portal-facing)
     "aiohttp-jinja2>=1.6",
     "jinja2>=3.1.0",
@@ -137,16 +140,19 @@ include = [
     "agentwire/commands/*.md",
     # Hooks and auxiliary scripts/configs
     "agentwire/hooks/**/*.py",
-    "agentwire/hooks/**/*.yaml",
     "agentwire/hooks/**/*.sh",
+    # AgentWire's damage-control rules layer (YAML source + the JSON a hook reads)
+    "agentwire/safety/rules/*.json",
+    "agentwire/safety/rules/*.yaml",
     # Top-level docs to ship in wheel
     "LICENSE",
     "README.md",
 ]
 artifacts = [
     "agentwire/hooks/**/*.py",
-    "agentwire/hooks/**/*.yaml",
     "agentwire/hooks/**/*.sh",
+    "agentwire/safety/rules/*.json",
+    "agentwire/safety/rules/*.yaml",
 ]
 exclude = [
     # Never-served source art kept in-repo for regen only. The portal serves
@@ -183,6 +189,13 @@ exclude = [
 
 [tool.hatch.version]
 path = "agentwire/__init__.py"
+
+# damage-control-dev lives in this repo until it gets its own (#1209 M7/M8).
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+damage-control-dev = { workspace = true }
 
 [tool.hatch.build.targets.sdist]
 exclude = [
@@ -271,11 +284,6 @@ skips = ["B101", "B404", "B602", "B603", "B607", "B501"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-# Generated files: the damage-control hooks inline `agentwire/safety/_core.py`
-# verbatim between BEGIN/END markers (regen via
-# scripts/regen_damage_control_hooks.py). Linting the inlined copy fights the
-# generator — `_core.py` itself is the linted source of truth.
-extend-exclude = ["agentwire/hooks/damage-control/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]

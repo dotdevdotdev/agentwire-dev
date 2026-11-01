@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agentwire.safety._core import DEFAULT_UNATTENDED_ALLOW, load_config, parse_unattended_allow
+from damage_control.engine import DEFAULT_UNATTENDED_ALLOW, load_config, parse_unattended_allow
 from agentwire.safety.lint import unpinned_rules
 from agentwire.safety_commands import get_damage_control_source
 

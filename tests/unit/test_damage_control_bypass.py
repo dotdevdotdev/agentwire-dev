@@ -22,8 +22,8 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.safety._core import check_command, load_config
-from agentwire.safety.groups import bundled_rule_dirs
+from damage_control.engine import check_command, load_config
+from damage_control.groups import bundled_rule_dirs
 
 # This corpus asserts on ``~``-form secret paths (``cat ~/.ssh/id_rsa``), so it
 # needs ``$HOME`` to look like a real home. The #893 redirect points HOME at a
@@ -301,7 +301,7 @@ ZERO_ACCESS_READS = [
 
 
 def test_zero_access_reads_are_blocked_and_normal_reads_are_not(cfg):
-    from agentwire.safety._core import check_read_path
+    from damage_control.engine import check_read_path
 
     leaked = [p for p in ZERO_ACCESS_READS if check_read_path(p, cfg)[0] is not True]
     assert not leaked, leaked
@@ -311,7 +311,7 @@ def test_zero_access_reads_are_blocked_and_normal_reads_are_not(cfg):
 def test_secrets_stay_blocked_wherever_home_is(cfg, monkeypatch):
     """#1121: a HOME under /tmp or the macOS temp tree sits inside the bundled
     /tmp allowance, which must never re-permit a secret under it."""
-    from agentwire.safety._core import check_read_path
+    from damage_control.engine import check_read_path
 
     leaked = []
     for home in ("/Users/x", "/tmp/x", "/var/folders/zz/T/x"):
@@ -341,7 +341,7 @@ def test_every_content_reading_tool_is_policed():
 
 
 def test_missing_parser_fails_closed(monkeypatch):
-    import agentwire.safety._core as core
+    import damage_control.engine as core
 
     monkeypatch.setattr(core, "yaml", None)
     merged = core.load_config(RULES_DIR)

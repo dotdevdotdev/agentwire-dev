@@ -9,6 +9,12 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
+[manifest]
+members = [
+    "agentwire-dev",
+    "damage-control-dev",
+]
+
 [[package]]
 name = "agentwire-dev"
 source = { editable = "." }
@@ -17,6 +23,7 @@ dependencies = [
     { name = "aiohttp-jinja2" },
     { name = "av" },
     { name = "certifi" },
+    { name = "damage-control-dev" },
     { name = "fastapi" },
     { name = "jinja2" },
     { name = "kokoro-onnx", marker = "python_full_version < '3.14'" },
@@ -69,6 +76,7 @@ requires-dist = [
     { name = "av", specifier = ">=12.0.0" },
     { name = "certifi", specifier = ">=2026.10.23" },
     { name = "chatterbox-tts", marker = "python_full_version >= '3.13' and extra == 'tts'", specifier = ">=0.1.6" },
+    { name = "damage-control-dev", editable = "packages/damage-control-dev" },
     { name = "fastapi", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'stt'", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'tts'", specifier = ">=0.104.0" },
@@ -1069,6 +1077,16 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/e9/71acb421ede17acd9e0945aa09499cd0d50fdc67a2776ab94e6551ed2c9b/ctranslate2-4.6.2-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:4748510be4f582e7da5691976e1cccc8de4a680e5e4a61eb016d7457e8130633", size = 37961658, upload-time = "2025-12-05T06:41:02.059Z" },
     { url = "https://files.pythonhosted.org/packages/a1/97/0c9154ab6791867f51f1646ebc7376288f8556665de06ba1a9443a3db88c/ctranslate2-4.6.2-cp314-cp314t-win_amd64.whl", hash = "sha256:988830d6af1c439f641b4084f4b5d466747768baa685a49e46a3a99ccebc8975", size = 18866287, upload-time = "2025-12-05T06:41:04.851Z" },
 ]
+
+[[package]]
+name = "damage-control-dev"
+source = { editable = "packages/damage-control-dev" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pyyaml", specifier = ">=6.0" }]
 
 [[package]]
 name = "decorator"

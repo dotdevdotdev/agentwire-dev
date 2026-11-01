@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from agentwire import safety_commands, safety_packs_cli
-from agentwire.safety import packs
-from agentwire.safety._core import check_protected_bash_command
-from agentwire.safety.groups import DEFAULT_PACKS, REGISTRY, bundled_files
+from damage_control import packs
+from damage_control.engine import check_protected_bash_command
+from damage_control.groups import DEFAULT_PACKS, REGISTRY, bundled_files
 
 PKG = Path(safety_commands.__file__).parent
 

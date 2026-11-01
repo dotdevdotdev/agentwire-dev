@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.safety import _core
-from agentwire.safety.profile import GENERIC, GroupSpec, McpCommandTemplate
+from damage_control import engine as _core
+from damage_control.profile import GENERIC, GroupSpec, McpCommandTemplate
 
 REPO = Path(__file__).resolve().parent.parent.parent
 HOOKS_DIR = REPO / "agentwire" / "hooks" / "damage-control"

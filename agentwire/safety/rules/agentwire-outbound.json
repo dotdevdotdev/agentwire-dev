@@ -1,0 +1,18 @@
+{
+ "bashToolPatterns": [
+  {
+   "pattern": "\\bagentwire\\s+email\\b",
+   "reason": "agentwire email (sends an external email via Resend)",
+   "ask": true,
+   "id": "outbound.agentwire-email",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bagentwire\\s+quo\\b",
+   "reason": "agentwire quo (sends an external SMS via Quo/OpenPhone)",
+   "ask": true,
+   "id": "outbound.agentwire-quo",
+   "anchored": true
+  }
+ ]
+}

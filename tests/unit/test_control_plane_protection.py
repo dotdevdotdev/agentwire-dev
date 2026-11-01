@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from agentwire.safety._core import (
+from damage_control.engine import (
     check_command,
     check_path,
     is_protected_control_plane,

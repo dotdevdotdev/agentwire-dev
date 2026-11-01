@@ -6,8 +6,9 @@ heal migrates it by recording every pack that already has files installed as
 enabled, so upgrading changes no decision. Once the key exists it is
 authoritative, even when empty.
 
-The hooks never read this state. They load whatever is installed, so "pack off"
-is "its files are not installed" — one mechanism, no rule-loading/hook skew.
+The hook reads the same keys at run time (``engine.load_safety_config``) and skips the
+bundled files of whatever is off (``groups.skipped_stems``): the bundle is immutable, so
+"pack off" is "not loaded", never "not installed". An absent ``packs:`` key loads every pack.
 """
 
 from __future__ import annotations
@@ -16,12 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from agentwire.safety.groups import DEFAULT_PACKS, REGISTRY, Entry
-
-try:
-    import yaml
-except ImportError:  # pragma: no cover - yaml is a hard dependency of the CLI
-    yaml = None
+from damage_control.groups import Entry, default_packs, registry
 
 PACKS_KEY = "packs"
 GROUPS_KEY = "disabled_groups"
@@ -35,6 +31,8 @@ def read_state(path: Path) -> Dict[str, Any]:
     (everything on, nothing removed) and is never migrated over or written to,
     so a typo can neither switch protections off nor get overwritten.
     """
+    import yaml
+
     data: Any = {}
     broken = ""
     try:
@@ -107,26 +105,11 @@ def entry_active(entry: Entry, state: Dict[str, Any]) -> bool:
     return entry.kernel or entry.name not in state[GROUPS_KEY]
 
 
-def wanted_files(section: str, state: Dict[str, Any]) -> Set[str]:
-    """File names of ``section`` ("rules"/"tooldefs") that should be installed."""
-    return {
-        f for e in REGISTRY.values() if entry_active(e, state)
-        for f in e.files(section)
-    }
-
-
-def unwanted_files(section: str, state: Dict[str, Any]) -> Set[str]:
-    return {
-        f for e in REGISTRY.values() if not entry_active(e, state)
-        for f in e.files(section)
-    }
-
-
 def migrate_packs(state: Dict[str, Any], installed: Dict[str, Set[str]]) -> List[str]:
     """Packs to record as enabled for a pre-packs install, or ``[]``.
 
     Only while ``state["packs"]`` is None. A fresh machine starts with every pack
-    off except the host's defaults (``DEFAULT_PACKS``). On an
+    off except the host's defaults (``default_packs()``). On an
     existing machine (something is already installed)
     machine EVERY pack is enabled, not just those with files present: before
     packs, heal reinstalled any missing bundled file, so a partial install
@@ -136,18 +119,17 @@ def migrate_packs(state: Dict[str, Any], installed: Dict[str, Set[str]]) -> List
     if state[PACKS_KEY] is not None or state.get("broken"):
         return []
     if not any(installed.get(section) for section in ("rules", "tooldefs")):
-        return sorted(DEFAULT_PACKS)
-    return sorted(e.name for e in REGISTRY.values() if e.kind == "pack")
+        return sorted(default_packs())
+    return sorted(e.name for e in registry().values() if e.kind == "pack")
 
 
-def effective_state(path: Path, rules_dir: Path, tooldefs_dir: Path) -> Dict[str, Any]:
-    """Read-only view of the state: an undecided (pre-packs) file reads as what
-    the next heal will record, so no reader sees a pack as off while its files
-    are still live."""
+def effective_state(path: Path) -> Dict[str, Any]:
+    """The state the hook acts on: an undecided policy (no ``packs:`` key) loads every pack.
+
+    Read-only. ``heal`` is what records a decision; until it does, readers must not show a pack
+    as off while the hook is enforcing it.
+    """
     state = read_state(path)
     if state[PACKS_KEY] is None and not state["broken"]:
-        state[PACKS_KEY] = migrate_packs(state, {
-            "rules": {p.name for p in rules_dir.glob("*.yaml")},
-            "tooldefs": {p.name for p in tooldefs_dir.glob("*.yaml")},
-        })
+        state[PACKS_KEY] = sorted(e.name for e in registry().values() if e.kind == "pack")
     return state

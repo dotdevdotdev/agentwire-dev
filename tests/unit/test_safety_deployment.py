@@ -27,7 +27,7 @@ import pytest
 
 from agentwire import safety_commands
 from agentwire.safety import provenance as prov
-from agentwire.safety._core import load_config
+from damage_control.engine import load_config
 
 BUNDLED_RULES = Path(safety_commands.__file__).parent / "hooks" / "damage-control" / "rules"
 BUNDLED_TOOLDEFS = Path(safety_commands.__file__).parent / "tooldefs"
@@ -36,8 +36,8 @@ RUNNING_PKG = Path(safety_commands.__file__).parent
 
 def _heal_with_cloud_hosting(all_packs=False):
     """Heal, then enable the cloud-hosting pack (or every pack): the tests use its file as the vehicle."""
-    from agentwire.safety import packs
-    from agentwire.safety.groups import REGISTRY
+    from damage_control import packs
+    from damage_control.groups import REGISTRY
     safety_commands.heal_damage_control(quiet=True)
     on = [n for n, e in REGISTRY.items() if e.kind == "pack"] if all_packs else ["cloud-hosting"]
     packs.write_state(safety_commands.DAMAGECONTROL_FILE, packs=on)
@@ -352,7 +352,7 @@ class TestInstalledPathBehaviour:
         # ssh twins (net -7 rules)
         assert len(live["bashToolPatterns"]) >= 248, "live corpus is suspiciously small"
         before_decision = __import__(
-            "agentwire.safety._core", fromlist=["check_command"]
+            "damage_control.engine", fromlist=["check_command"]
         ).check_command(NETLIFY_CMD, live)
         assert before_decision["decision"] != "block", before_decision
 

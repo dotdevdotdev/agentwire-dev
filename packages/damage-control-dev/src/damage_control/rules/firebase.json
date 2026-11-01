@@ -1,0 +1,34 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "firebase.firebase-projects-delete-deletes-entire-project",
+   "pattern": "\\bfirebase\\s+projects:delete\\b",
+   "reason": "firebase projects:delete (deletes entire project)",
+   "anchored": true
+  },
+  {
+   "id": "firebase.firebase-firestore-delete-all-collections-wipes-all-data",
+   "pattern": "\\bfirebase\\s+firestore:delete\\s+.*--all-collections",
+   "reason": "firebase firestore:delete --all-collections (wipes all data)",
+   "anchored": true
+  },
+  {
+   "id": "firebase.firebase-database-remove-wipes-realtime-db",
+   "pattern": "\\bfirebase\\s+database:remove\\b",
+   "reason": "firebase database:remove (wipes Realtime DB)",
+   "anchored": true
+  },
+  {
+   "id": "firebase.firebase-hosting-disable",
+   "pattern": "\\bfirebase\\s+hosting:disable\\b",
+   "reason": "firebase hosting:disable",
+   "anchored": true
+  },
+  {
+   "id": "firebase.firebase-functions-delete",
+   "pattern": "\\bfirebase\\s+functions:delete\\b",
+   "reason": "firebase functions:delete",
+   "anchored": true
+  }
+ ]
+}

@@ -1,0 +1,101 @@
+{
+ "name": "kubectl",
+ "binary": "kubectl",
+ "purpose": "Manage Kubernetes clusters — deploy workloads, inspect resources, manage config",
+ "docs": "https://kubernetes.io/docs/reference/kubectl/",
+ "install": "brew install kubectl",
+ "commands": [
+  {
+   "cmd": "kubectl cluster-info",
+   "access": "read",
+   "description": "Show cluster endpoint info"
+  },
+  {
+   "cmd": "kubectl get nodes",
+   "access": "read",
+   "description": "List cluster nodes"
+  },
+  {
+   "cmd": "kubectl config get-contexts",
+   "access": "read",
+   "description": "List available kubeconfig contexts"
+  },
+  {
+   "id": "tooldef.kubectl-switch-active-cluster-context",
+   "cmd": "kubectl config use-context <context>",
+   "access": "write",
+   "description": "Switch active cluster context"
+  },
+  {
+   "cmd": "kubectl get pods [-n <namespace>]",
+   "access": "read",
+   "description": "List pods"
+  },
+  {
+   "cmd": "kubectl describe pod <pod>",
+   "access": "read",
+   "description": "Detailed pod info and events"
+  },
+  {
+   "cmd": "kubectl logs <pod> [-c <container>]",
+   "access": "read",
+   "description": "View pod logs"
+  },
+  {
+   "id": "tooldef.kubectl-execute-command-in-pod",
+   "cmd": "kubectl exec -it <pod> -- <cmd>",
+   "access": "write",
+   "description": "Execute command in pod"
+  },
+  {
+   "id": "tooldef.kubectl-create-or-update-resources-from-manifest",
+   "cmd": "kubectl apply -f <file>",
+   "access": "write",
+   "description": "Create or update resources from manifest"
+  },
+  {
+   "id": "tooldef.kubectl-rolling-restart-of-a-deployment",
+   "cmd": "kubectl rollout restart deployment/<name>",
+   "access": "write",
+   "description": "Rolling restart of a deployment"
+  },
+  {
+   "id": "tooldef.kubectl-scale-a-deployment",
+   "cmd": "kubectl scale deployment/<name> --replicas=<n>",
+   "access": "write",
+   "description": "Scale a deployment"
+  },
+  {
+   "id": "tooldef.kubectl-delete-a-pod-will-be-recreated-by-deployment",
+   "cmd": "kubectl delete pod <pod>",
+   "access": "write",
+   "description": "Delete a pod (will be recreated by deployment)"
+  },
+  {
+   "cmd": "kubectl get services [-n <namespace>]",
+   "access": "read",
+   "description": "List services"
+  },
+  {
+   "id": "tooldef.kubectl-forward-local-port-to-pod",
+   "cmd": "kubectl port-forward <pod> <local>:<remote>",
+   "access": "write",
+   "description": "Forward local port to pod"
+  },
+  {
+   "cmd": "kubectl delete namespace <ns>",
+   "access": "blocked",
+   "description": "Delete namespace and ALL its resources"
+  },
+  {
+   "cmd": "kubectl delete all --all",
+   "access": "blocked",
+   "description": "Delete all resources in current namespace"
+  },
+  {
+   "cmd": "helm uninstall <release>",
+   "access": "blocked",
+   "description": "Remove a Helm release and its resources"
+  }
+ ]
+}

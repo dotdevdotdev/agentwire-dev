@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.safety import _core as C  # noqa: N812
-from agentwire.safety.groups import bundled_rule_dirs
+from damage_control import engine as C  # noqa: N812
+from damage_control.groups import bundled_rule_dirs
 
 REPO = Path(__file__).resolve().parent.parent.parent
 BUNDLED_RULES = bundled_rule_dirs()

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.safety._core import check_command, load_config
+from damage_control.engine import check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home
 

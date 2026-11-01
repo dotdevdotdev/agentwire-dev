@@ -102,7 +102,7 @@ def test_doctor_and_hooks_install_survive_a_deleted_cwd(tmp_path):
 
 def test_engine_entry_points_do_not_raise_from_a_deleted_cwd(tmp_path):
     script = (
-        "from agentwire.safety import _core as c\n"
+        "from damage_control import engine as c\n"
         "c.safe_cwd(); c._find_project_config(); c.policy_file_parse_failures()\n"
         "print('ok')\n"
     )
@@ -115,7 +115,7 @@ def test_audit_logger_mirror_agrees_with_engine_on_a_deleted_cwd(tmp_path):
         "import importlib.util, sys\n"
         f"s = importlib.util.spec_from_file_location('al', {str(HOOKS_DIR / 'audit_logger.py')!r})\n"
         "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
-        "from agentwire.safety._core import safe_cwd\n"
+        "from damage_control.engine import safe_cwd\n"
         "assert m._safe_cwd() == safe_cwd(), (m._safe_cwd(), safe_cwd())\n"
         "print(safe_cwd())\n"
     )

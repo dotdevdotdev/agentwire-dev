@@ -10,8 +10,8 @@ blocks.
 
 import pytest
 
-from agentwire.safety._core import check_command, load_config
-from agentwire.safety.groups import bundled_rule_dirs
+from damage_control.engine import check_command, load_config
+from damage_control.groups import bundled_rule_dirs
 
 pytestmark = pytest.mark.real_agentwire_home
 

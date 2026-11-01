@@ -1,0 +1,10 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "registry.npm-unpublish-removes-package-from-registry",
+   "pattern": "\\bnpm\\s+unpublish\\b",
+   "reason": "npm unpublish (removes package from registry)",
+   "anchored": true
+  }
+ ]
+}

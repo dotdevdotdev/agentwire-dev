@@ -8,7 +8,7 @@ quoted filename, a path).
 
 import pytest
 
-from agentwire.safety._core import matches_path_in_command
+from damage_control.engine import matches_path_in_command
 
 pytestmark = pytest.mark.real_agentwire_home
 

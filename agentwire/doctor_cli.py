@@ -366,7 +366,7 @@ def _render_skill_section() -> int:
 
 def _report_delete_recursive(allowed_entries) -> int:
     """List active ``delete-recursive`` entries (informational); flag refused ones (#1152). Returns the issue count."""
-    from .safety._core import DELETE_RECURSIVE_OP
+    from damage_control.engine import DELETE_RECURSIVE_OP
 
     carrying = [e for e in allowed_entries if DELETE_RECURSIVE_OP in e["allow"]]
     refused = [e for e in carrying if e.get("dr_refused")]
@@ -380,7 +380,24 @@ def _report_delete_recursive(allowed_entries) -> int:
     return len(refused)
 
 
-def _render_damage_control_section() -> int:
+def _repair_damage_control() -> None:
+    """``doctor --fix``: re-register the hooks, rewrite the profile and break-glass, retire stale copies.
+
+    The same heal as ``agentwire hooks install`` and the same provenance guard, runnable from an
+    ordinary terminal. It can only help while ``agentwire`` itself runs; when the venv is broken
+    too, the way out is the stdlib-only break-glass script (see the dead-interpreter report).
+    """
+    from .safety_commands import heal_damage_control
+
+    print("  Repairing damage control (agentwire hooks install, damage-control part)...")
+    summary = heal_damage_control()
+    if summary["refused"]:
+        print("  [!!] Refused: run this from the canonically installed agentwire, not a checkout.")
+    elif summary["selftest_failures"]:
+        print("  [!!] The hooks failed their selftest, so the registration was NOT changed.")
+
+
+def _render_damage_control_section(fix: bool = False) -> int:
     """Print the damage-control health block. Returns the count of issues found.
 
     Covers the four #462 blind spots plus DC hook staleness: the global kill
@@ -388,12 +405,14 @@ def _render_damage_control_section() -> int:
     rules, PreToolUse matcher registration, and DC hook-script staleness.
     """
     issues = 0
+    if fix:
+        _repair_damage_control()
 
     # Kill switch — ``enabled`` in ~/.agentwire/damagecontrol.yml gates ALL
     # damage control. A silent `false` is the loudest possible failure, so flag
     # it first and hard.
     try:
-        from .safety._core import load_safety_config
+        from damage_control.engine import load_safety_config
         safety_enabled = load_safety_config().get("enabled", True)
     except Exception as e:
         print(f"  [..] Could not read safety config: {e}")
@@ -413,15 +432,12 @@ def _render_damage_control_section() -> int:
     # matcher itself (control_plane_allowlist_overlaps), never a
     # re-implementation.
     try:
-        from .safety._core import (
+        from damage_control.engine import (
             control_plane_allowlist_overlaps,
             load_allowed_paths,
         )
-        from .safety._core import (
-            load_config as load_dc_config,
-        )
-        from .safety_commands import _resolve_rules_dir, _resolve_tooldefs_dir
-        dc_cfg = load_dc_config(_resolve_rules_dir(), _resolve_tooldefs_dir())
+        from damage_control.engine import load_effective_config
+        dc_cfg = load_effective_config()
         allowed_entries = load_allowed_paths(dc_cfg)
         overlaps = control_plane_allowlist_overlaps(allowed_entries)
     except Exception as e:
@@ -464,111 +480,76 @@ def _render_damage_control_section() -> int:
         elif state == prov.BOOTSTRAP:
             print("  [..] No canonical agentwire install found (bootstrap/dev checkout)")
 
-    # DC hook-script staleness (bash/edit/write/mcp-tool + audit_logger).
-    # Direction matters and is now reportable (#936): `newer` means THIS package
-    # is behind what is deployed, so installing from here would downgrade the
-    # machine's guard — the failure that reverted #918 an hour after it shipped,
-    # under an [ok] line, because equality cannot see which way a difference runs.
-    hook_drift = safety_commands.damage_control_hook_drift()
-    by_state = {}
-    for fn, state in hook_drift.items():
-        by_state.setdefault(state, []).append(fn)
-    if set(by_state) - {"ok"}:
-        if by_state.get("missing"):
-            print(f"  [!!] DC hook scripts missing: {', '.join(sorted(by_state['missing']))}")
-        if by_state.get("older"):
-            print(
-                "  [!!] DC hook scripts OLDER than this package: "
-                f"{', '.join(sorted(by_state['older']))}"
-            )
-        if by_state.get("stale"):
-            print(
-                "  [!!] DC hook scripts differ (no version stamp to order them): "
-                f"{', '.join(sorted(by_state['stale']))}"
-            )
-        if by_state.get("newer"):
-            print(
-                "  [!!] DC hook scripts installed are NEWER than this package: "
-                f"{', '.join(sorted(by_state['newer']))}"
-            )
-            print("       This checkout is BEHIND. Installing from here would DOWNGRADE")
-            print("       the machine's security hooks for every session (#936).")
-            print("       Fix: git pull --ff-only && agentwire rebuild")
-        if set(by_state) - {"ok", "newer"}:
-            print("       Fix: agentwire safety install --yes")
+    # The hooks are `<interpreter> -I -m damage_control.hook <kind>` (#1209 M4), registered in
+    # exec form with onFailure:block. The failure that matters is no longer a stale script but
+    # a DEAD interpreter: every tool call is then refused, including the ones that repair it.
+    interp = safety_commands.interpreter_state()
+    if interp["state"] == "dead":
+        print(f"  [!!] The hooks' interpreter is DEAD: {interp['interpreter']}")
+        print("       With onFailure:block, Claude Code is refusing EVERY tool call until this is fixed.")
+        print("       From a normal terminal (not through Claude Code):")
+        print(f"         python3 {safety_commands.BREAKGLASS_DIR / 'damage-control-breakglass'} unregister   # unblock; damage control is OFF")
+        print("         uv tool install --force --reinstall agentwire-dev && agentwire hooks install")
+        issues += 1
+    elif interp["state"] == "unrecorded":
+        print("  [!!] Damage-control hooks are not installed (no install record)")
+        print("       Fix: agentwire hooks install   (or: agentwire doctor --fix)")
         issues += 1
     else:
-        print("  [ok] DC hook scripts current")
+        print(f"  [ok] Hook interpreter runs and imports damage_control ({interp['interpreter']})")
 
-    # Installed rules/tooldefs vs bundled — DIRECTIONALLY (#916). "Differ from
-    # bundled" at [..] is true and useless: it cannot tell a local tweak from an
-    # entire deploy tier sitting disabled. Drift that REMOVES a bundled
-    # protection is [!!] and names what is gone.
-    for label, drift, source_getter, live_dir in (
-        ("rules", safety_commands.rules_drift(),
-         safety_commands.get_damage_control_source, safety_commands.RULES_DIR),
-        ("tooldefs", safety_commands.tooldefs_drift(),
-         safety_commands.get_tooldefs_source, safety_commands.TOOLDEFS_DIR),
-    ):
-        missing = sorted(f for f, s in drift.items() if s == "missing")
-        outdated = sorted(f for f, s in drift.items() if s == "outdated")
-        unknown = sorted(f for f, s in drift.items() if s == "unknown")
-        if missing:
-            print(f"  [!!] Damage-control {label} NOT installed: {', '.join(missing)}")
-            print("       Fix: agentwire safety install --yes")
+    legacy_registered = safety_commands.legacy_registrations()
+    if legacy_registered:
+        print(f"  [!!] Matchers still registered with the pre-package hook scripts: {', '.join(legacy_registered)}")
+        print("       Fix: agentwire hooks install   (or: agentwire doctor --fix)")
+        issues += 1
+    legacy_files = safety_commands.legacy_hook_files()
+    if legacy_files and not legacy_registered:
+        print(f"  [..] Leftover pre-package hook scripts: {', '.join(p.name for p in legacy_files)}")
+        print("       Fix: agentwire hooks install   (removes them once the package hooks are proven)")
+
+    registration_drift = safety_commands.damage_control_registration_drift()
+    if registration_drift:
+        print(f"  [!!] Registered hooks differ from what this install writes (interpreter or arguments): "
+              f"{', '.join(registration_drift)}")
+        print("       Fix: agentwire hooks install   (or: agentwire doctor --fix)")
+        issues += 1
+
+    try:
+        from .safety import host_profile
+        from damage_control.profile import dump_profile
+        manifest = host_profile.manifest_path()
+        if not manifest.exists():
+            print(f"  [!!] Damage-control profile missing: {manifest}")
+            print("       Every hook blocks without it. Fix: agentwire hooks install")
             issues += 1
-        if outdated:
-            print(
-                f"  [!!] Damage-control {label} are OUT OF DATE (a previously shipped "
-                f"version): {', '.join(outdated)}"
-            )
-            print("       Every rule fix shipped since then is NOT in force here.")
-            print("       Fix: agentwire safety install --yes")
+        elif manifest.read_text() != dump_profile(host_profile.build_profile()):
+            print(f"  [!!] Damage-control profile differs from this install's: {manifest}")
+            print("       Fix: agentwire hooks install")
             issues += 1
-        if unknown:
-            # Matches no version we ever shipped. Never auto-healed, so say
-            # which direction it runs: drift that REMOVES a bundled protection
-            # is the dangerous half and is graded accordingly.
-            try:
-                source_dir = source_getter()
-            except FileNotFoundError:
-                source_dir = None
-            weakened: list[tuple[str, list[str]]] = []
-            extended: list[str] = []
-            for name in unknown:
-                if source_dir is None:
-                    weakened.append((name, []))
-                    continue
-                delta = safety_commands.rule_file_delta(live_dir / name, source_dir / name)
-                if delta["missing"]:
-                    weakened.append((name, delta["missing"]))
-                else:
-                    extended.append(name)
-            if weakened:
-                print(
-                    f"  [!!] Damage-control {label} unrecognized AND MISSING bundled "
-                    f"protections:"
-                )
-                for name, gone in weakened:
-                    if gone:
-                        preview = ", ".join(gone[:3]) + (" …" if len(gone) > 3 else "")
-                        print(f"       {name}: {len(gone)} not live — {preview}")
-                    else:
-                        print(f"       {name}: cannot compare (bundled source unavailable)")
-                print("       Fix: agentwire safety install --yes --force (keeps a backup)")
-                issues += 1
-            if extended:
-                print(
-                    f"  [..] Damage-control {label} with local additions only: "
-                    f"{', '.join(extended)}"
-                )
-        if not (missing or outdated or unknown):
-            print(f"  [ok] Damage-control {label} installed and match bundled")
+        else:
+            print("  [ok] Damage-control profile current")
+    except Exception as e:
+        print(f"  [..] Could not check the damage-control profile: {e}")
+
+    breakglass = safety_commands.BREAKGLASS_DIR / "damage-control-breakglass"
+    if breakglass.exists():
+        print(f"  [ok] Break-glass in place: python3 {breakglass} unregister")
+    else:
+        print("  [!!] Break-glass script missing (the way out when the venv breaks)")
+        print("       Fix: agentwire hooks install")
+        issues += 1
+
+    # Rules and tooldefs ship inside the package; what lives on the machine is the host's
+    # own overlay. A file there REPLACES the bundled one of the same name, so name each.
+    for section, stems in safety_commands.shadowed_bundled_files().items():
+        if stems:
+            print(f"  [..] Your {section} overlay replaces bundled files: {', '.join(stems)}")
 
     # Rule groups and packs (#1141): informational only, never scored — a
     # disabled pack is a choice, not drift.
     try:
-        from agentwire.safety import packs as _packs
+        from damage_control import packs as _packs
         from agentwire.safety_packs_cli import overview
         broken = _packs.read_state(safety_commands.DAMAGECONTROL_FILE)["broken"]
         if broken:
@@ -591,18 +572,6 @@ def _render_damage_control_section() -> int:
     except Exception as e:
         print(f"  [..] Could not read pack state: {e}")
 
-    # Files the bundle used to ship and no longer does. Informational: heal
-    # never deletes them, and an edited one is the user's own (#1137).
-    for section, files in safety_commands.retired_installed().items():
-        for name, kind in sorted(files.items()):
-            live_dir = safety_commands.RULES_DIR if section == "rules" else safety_commands.TOOLDEFS_DIR
-            if kind == "pristine":
-                print(f"  [..] {live_dir / name} is no longer shipped by agentwire "
-                      f"(a copy of an old release, still loaded). Keep it if you use it; "
-                      f"otherwise delete it.")
-            else:
-                print(f"  [ok] {live_dir / name}: your own file (agentwire no longer ships one by that name)")
-
     # Duplicate rule ids — the only detector for a partially-applied rule set
     # (#916). Two live rules sharing one id makes `disabled_rules` and
     # `unattended_allow` ambiguous, which is the surface #914's scoped grants
@@ -624,7 +593,7 @@ def _render_damage_control_section() -> int:
     # A rule/tooldef file that fails to parse contributes nothing — every
     # protection in it is silently absent (#1130).
     try:
-        from .safety._core import policy_file_parse_failures
+        from damage_control.engine import policy_file_parse_failures
         parse_failures = (
             safety_commands.load_patterns().get("_parse_failures") or []
         ) + policy_file_parse_failures()
@@ -1839,7 +1808,7 @@ def cmd_doctor(args) -> int:
     # PreToolUse matcher registration. The #462 incident: a global disable and
     # missing rule files were both invisible to every diagnostic.
     print("\nChecking damage control (safety)...")
-    issues_found += _render_damage_control_section()
+    issues_found += _render_damage_control_section(fix=getattr(args, "fix", False))
 
     # 4c. Local checkout vs origin/main — rebuild reinstalls whatever is checked
     # out, so a never-pulled main silently ships stale code. Today only worktree
@@ -2362,6 +2331,10 @@ def register_doctor_parser(subparsers) -> None:
     doctor_parser.add_argument(
         "-y", "--yes", action="store_true",
         help="Auto-confirm all fixes without prompting"
+    )
+    doctor_parser.add_argument(
+        "--fix", action="store_true",
+        help="Repair the damage-control install (re-register hooks, profile, break-glass) from an ordinary terminal"
     )
     doctor_parser.add_argument(
         "--voice", action="store_true",

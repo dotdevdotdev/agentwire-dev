@@ -13,7 +13,7 @@ from pathlib import Path
 import yaml
 
 from agentwire import safety_commands
-from agentwire.safety._core import (
+from damage_control.engine import (
     load_config,
     load_safety_config,
     policy_file_parse_failures,

@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from agentwire import safety_commands
-from agentwire.safety import packs
-from agentwire.safety.groups import DEFAULT_PACKS, REGISTRY, bundled_files, unclassified
+from damage_control import packs
+from damage_control.groups import DEFAULT_PACKS, REGISTRY, bundled_files, unclassified
 from tests.unit.test_safety_packs import home  # noqa: F401  (fixture)
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -42,7 +42,7 @@ def test_every_bundled_file_has_exactly_one_owner_and_the_owner_pins_still_hold(
 
 
 def test_agentwire_mcp_policies_resolve_to_their_own_ids_not_the_writeish_fallback(mcp_hook):
-    from agentwire.safety.groups import bundled_rule_dirs
+    from damage_control.groups import bundled_rule_dirs
 
     cfg = mcp_hook.load_config(bundled_rule_dirs(), PKG / "tooldefs")
     by_tool = {}
@@ -56,8 +56,8 @@ def test_agentwire_mcp_policies_resolve_to_their_own_ids_not_the_writeish_fallba
 
 
 def test_the_owner_env_allow_is_still_loaded():
-    from agentwire.safety._core import load_config
-    from agentwire.safety.groups import bundled_rule_dirs
+    from damage_control.engine import load_config
+    from damage_control.groups import bundled_rule_dirs
 
     allowed = [p["path"] for p in load_config(bundled_rule_dirs())["allowedPaths"] if isinstance(p, dict)]
     assert "~/projects/agentwire-dev/.env" in allowed and "~/.agentwire/.env" in allowed

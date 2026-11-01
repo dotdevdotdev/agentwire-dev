@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agentwire.safety.groups import bundled_rule_dirs
+from damage_control.groups import bundled_rule_dirs
 
 REPO = Path(__file__).resolve().parent.parent.parent
 RULES_DIR = bundled_rule_dirs()

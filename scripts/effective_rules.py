@@ -48,7 +48,7 @@ def canonical(merged: Dict[str, Any]) -> Dict[str, List[str]]:
 
 def load(rules_dirs: List[Path], tooldefs: Path) -> Dict[str, List[str]]:
     sys.path.insert(0, str(REPO))
-    from agentwire.safety._core import load_config
+    from damage_control.engine import load_config
 
     with tempfile.TemporaryDirectory() as tmp:
         flat = Path(tmp)

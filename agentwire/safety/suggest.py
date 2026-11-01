@@ -11,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agentwire.safety._core import _abs_path, _operand_is_literal, _parse_rm_command
+from damage_control.engine import _abs_path, _operand_is_literal, _parse_rm_command
 from agentwire.safety.audit import load_rows
 
 REGENERABLE_NAMES = (

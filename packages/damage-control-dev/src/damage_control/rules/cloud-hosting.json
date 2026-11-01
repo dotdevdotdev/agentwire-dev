@@ -1,0 +1,162 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "cloud-hosting.vercel-remove-yes-removes-deployment",
+   "pattern": "\\bvercel\\s+remove\\s+.*--yes",
+   "reason": "vercel remove --yes (removes deployment)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.vercel-projects-rm-deletes-project",
+   "pattern": "\\bvercel\\s+projects\\s+rm\\b",
+   "reason": "vercel projects rm (deletes project)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.vercel-env-rm-yes-removes-env-variables",
+   "pattern": "\\bvercel\\s+env\\s+rm\\s+.*--yes",
+   "reason": "vercel env rm --yes (removes env variables)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.netlify-sites-delete-deletes-entire-site",
+   "pattern": "\\bnetlify\\s+sites:delete\\b",
+   "reason": "netlify sites:delete (deletes entire site)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.netlify-functions-delete",
+   "pattern": "\\bnetlify\\s+functions:delete\\b",
+   "reason": "netlify functions:delete",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.wrangler-delete-deletes-worker",
+   "pattern": "\\bwrangler\\s+delete\\b",
+   "reason": "wrangler delete (deletes Worker)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.wrangler-r2-bucket-delete",
+   "pattern": "\\bwrangler\\s+r2\\s+bucket\\s+delete\\b",
+   "reason": "wrangler r2 bucket delete",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.wrangler-kv-namespace-delete",
+   "pattern": "\\bwrangler\\s+kv:namespace\\s+delete\\b",
+   "reason": "wrangler kv:namespace delete",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.wrangler-d1-delete-deletes-database",
+   "pattern": "\\bwrangler\\s+d1\\s+delete\\b",
+   "reason": "wrangler d1 delete (deletes database)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.wrangler-queues-delete",
+   "pattern": "\\bwrangler\\s+queues\\s+delete\\b",
+   "reason": "wrangler queues delete",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.heroku-apps-destroy",
+   "pattern": "\\bheroku\\s+apps:destroy\\b",
+   "reason": "heroku apps:destroy",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.heroku-pg-reset-resets-database",
+   "pattern": "\\bheroku\\s+pg:reset\\b",
+   "reason": "heroku pg:reset (resets database)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.fly-apps-destroy-fly-io",
+   "pattern": "\\bfly\\s+apps\\s+destroy\\b",
+   "reason": "fly apps destroy (Fly.io)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.fly-destroy-fly-io",
+   "pattern": "\\bfly\\s+destroy\\b",
+   "reason": "fly destroy (Fly.io)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.doctl-droplet-delete-digitalocean",
+   "pattern": "\\bdoctl\\s+compute\\s+droplet\\s+delete\\b",
+   "reason": "doctl droplet delete (DigitalOcean)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.doctl-databases-delete-digitalocean",
+   "pattern": "\\bdoctl\\s+databases\\s+delete\\b",
+   "reason": "doctl databases delete (DigitalOcean)",
+   "anchored": true
+  },
+  {
+   "id": "cloud-hosting.supabase-db-reset",
+   "pattern": "\\bsupabase\\s+db\\s+reset\\b",
+   "reason": "supabase db reset",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bvercel\\s+deploy\\b",
+   "reason": "vercel deploy (ships a deployment)",
+   "ask": true,
+   "id": "deploy.vercel",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bvercel\\s+(-[^\\s]*\\s+)*--prod\\b",
+   "reason": "vercel --prod (ships a production deployment)",
+   "ask": true,
+   "id": "deploy.vercel-prod",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bnetlify\\s+deploy\\b",
+   "reason": "netlify deploy (ships a deployment)",
+   "ask": true,
+   "id": "deploy.netlify",
+   "anchored": true
+  },
+  {
+   "pattern": "\\b(fly|flyctl)\\s+deploy\\b",
+   "reason": "fly deploy (ships a Fly.io deployment)",
+   "ask": true,
+   "id": "deploy.fly",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bwrangler\\s+(deploy|publish)\\b",
+   "reason": "wrangler deploy (ships a Cloudflare Worker)",
+   "ask": true,
+   "id": "deploy.wrangler",
+   "anchored": true
+  },
+  {
+   "pattern": "\\brailway\\s+(up|deploy)\\b",
+   "reason": "railway up (ships a Railway deployment)",
+   "ask": true,
+   "id": "deploy.railway",
+   "anchored": true
+  },
+  {
+   "pattern": "\\brender\\s+deploys?\\s+create\\b",
+   "reason": "render deploys create (ships a Render deployment)",
+   "ask": true,
+   "id": "deploy.render",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bsupabase\\s+functions\\s+deploy\\b",
+   "reason": "supabase functions deploy (ships an edge function)",
+   "ask": true,
+   "id": "deploy.supabase-functions",
+   "anchored": true
+  }
+ ]
+}

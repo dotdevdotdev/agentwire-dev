@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-import agentwire.safety._core as core
+import damage_control.engine as core
 
 pytestmark = pytest.mark.real_agentwire_home
 

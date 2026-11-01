@@ -1,0 +1,186 @@
+{
+ "name": "Google Cloud CLI",
+ "binary": "gcloud",
+ "purpose": "Manage Google Cloud Platform resources — compute, storage, databases, IAM, and more",
+ "docs": "https://cloud.google.com/sdk/gcloud/reference",
+ "install": "brew install --cask google-cloud-sdk",
+ "commands": [
+  {
+   "id": "tooldef.google-cloud-cli-authenticate-with-a-google-account",
+   "cmd": "gcloud auth login",
+   "access": "write",
+   "description": "Authenticate with a Google account"
+  },
+  {
+   "cmd": "gcloud auth list",
+   "access": "read",
+   "description": "List credentialed accounts"
+  },
+  {
+   "cmd": "gcloud config list",
+   "access": "read",
+   "description": "Show current CLI configuration"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-set-the-active-gcp-project",
+   "cmd": "gcloud config set project <project-id>",
+   "access": "write",
+   "description": "Set the active GCP project"
+  },
+  {
+   "cmd": "gcloud projects list",
+   "access": "read",
+   "description": "List all GCP projects"
+  },
+  {
+   "cmd": "gcloud projects describe <project-id>",
+   "access": "read",
+   "description": "Show project details"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-create-a-new-gcp-project",
+   "cmd": "gcloud projects create <project-id>",
+   "access": "write",
+   "description": "Create a new GCP project"
+  },
+  {
+   "cmd": "gcloud projects delete <project-id>",
+   "access": "blocked",
+   "description": "Delete an entire GCP project and all its resources (unrecoverable)"
+  },
+  {
+   "cmd": "gcloud compute instances list",
+   "access": "read",
+   "description": "List VM instances"
+  },
+  {
+   "cmd": "gcloud compute instances describe <name>",
+   "access": "read",
+   "description": "Show VM instance details"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-start-a-stopped-vm-instance",
+   "cmd": "gcloud compute instances start <name>",
+   "access": "write",
+   "description": "Start a stopped VM instance"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-stop-a-running-vm-instance",
+   "cmd": "gcloud compute instances stop <name>",
+   "access": "write",
+   "description": "Stop a running VM instance"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-create-a-new-vm-instance",
+   "cmd": "gcloud compute instances create <name>",
+   "access": "write",
+   "description": "Create a new VM instance"
+  },
+  {
+   "cmd": "gcloud compute instances delete <name>",
+   "access": "blocked",
+   "description": "Permanently delete a VM instance"
+  },
+  {
+   "cmd": "gcloud storage ls [gs://<bucket>]",
+   "access": "read",
+   "description": "List buckets or objects"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-copy-files-to-from-cloud-storage",
+   "cmd": "gcloud storage cp <src> <dst>",
+   "access": "write",
+   "description": "Copy files to/from Cloud Storage"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-delete-a-single-object",
+   "cmd": "gcloud storage rm gs://<bucket>/<object>",
+   "access": "write",
+   "description": "Delete a single object"
+  },
+  {
+   "cmd": "gcloud storage rm -r gs://<bucket>",
+   "access": "blocked",
+   "description": "Recursively delete all objects in a bucket"
+  },
+  {
+   "cmd": "gcloud sql instances list",
+   "access": "read",
+   "description": "List Cloud SQL instances"
+  },
+  {
+   "cmd": "gcloud sql instances describe <name>",
+   "access": "read",
+   "description": "Show Cloud SQL instance details"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-create-a-cloud-sql-instance",
+   "cmd": "gcloud sql instances create <name>",
+   "access": "write",
+   "description": "Create a Cloud SQL instance"
+  },
+  {
+   "cmd": "gcloud sql instances delete <name>",
+   "access": "blocked",
+   "description": "Delete a Cloud SQL instance (data loss)"
+  },
+  {
+   "cmd": "gcloud functions list",
+   "access": "read",
+   "description": "List Cloud Functions"
+  },
+  {
+   "cmd": "gcloud functions describe <name>",
+   "access": "read",
+   "description": "Show function details"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-deploy-a-cloud-function",
+   "cmd": "gcloud functions deploy <name>",
+   "access": "write",
+   "description": "Deploy a Cloud Function"
+  },
+  {
+   "cmd": "gcloud functions delete <name>",
+   "access": "blocked",
+   "description": "Delete a Cloud Function"
+  },
+  {
+   "cmd": "gcloud iam service-accounts list",
+   "access": "read",
+   "description": "List service accounts"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-create-a-service-account",
+   "cmd": "gcloud iam service-accounts create <name>",
+   "access": "write",
+   "description": "Create a service account"
+  },
+  {
+   "cmd": "gcloud iam service-accounts delete <email>",
+   "access": "blocked",
+   "description": "Delete a service account"
+  },
+  {
+   "cmd": "gcloud container clusters list",
+   "access": "read",
+   "description": "List GKE clusters"
+  },
+  {
+   "cmd": "gcloud container clusters describe <name>",
+   "access": "read",
+   "description": "Show GKE cluster details"
+  },
+  {
+   "id": "tooldef.google-cloud-cli-create-a-gke-cluster",
+   "cmd": "gcloud container clusters create <name>",
+   "access": "write",
+   "description": "Create a GKE cluster"
+  },
+  {
+   "cmd": "gcloud container clusters delete <name>",
+   "access": "blocked",
+   "description": "Delete a GKE cluster and all workloads"
+  }
+ ]
+}

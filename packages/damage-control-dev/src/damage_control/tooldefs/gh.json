@@ -1,0 +1,172 @@
+{
+ "name": "GitHub CLI",
+ "binary": "gh",
+ "purpose": "Interact with GitHub — repos, PRs, issues, releases, actions",
+ "docs": "https://cli.github.com/manual/",
+ "install": "brew install gh",
+ "commands": [
+  {
+   "cmd": "gh repo list [<owner>]",
+   "access": "read",
+   "description": "List repositories"
+  },
+  {
+   "cmd": "gh repo view [<repo>]",
+   "access": "read",
+   "description": "View repository details"
+  },
+  {
+   "id": "tooldef.github-cli-clone-a-repository",
+   "cmd": "gh repo clone <repo>",
+   "access": "write",
+   "description": "Clone a repository"
+  },
+  {
+   "id": "tooldef.github-cli-create-a-new-repository",
+   "cmd": "gh repo create [<name>]",
+   "access": "write",
+   "description": "Create a new repository"
+  },
+  {
+   "id": "tooldef.github-cli-fork-a-repository",
+   "cmd": "gh repo fork <repo>",
+   "access": "write",
+   "description": "Fork a repository"
+  },
+  {
+   "cmd": "gh repo delete <repo>",
+   "access": "blocked",
+   "description": "Permanently delete a repository"
+  },
+  {
+   "cmd": "gh pr list",
+   "access": "read",
+   "description": "List pull requests"
+  },
+  {
+   "cmd": "gh pr view [<pr>]",
+   "access": "read",
+   "description": "View PR details"
+  },
+  {
+   "cmd": "gh pr diff [<pr>]",
+   "access": "read",
+   "description": "View PR diff"
+  },
+  {
+   "cmd": "gh pr checks [<pr>]",
+   "access": "read",
+   "description": "View PR CI status"
+  },
+  {
+   "cmd": "gh pr create",
+   "access": "write",
+   "description": "Create a pull request",
+   "id": "gh.pr-create"
+  },
+  {
+   "id": "tooldef.github-cli-merge-a-pull-request",
+   "cmd": "gh pr merge [<pr>]",
+   "access": "write",
+   "description": "Merge a pull request"
+  },
+  {
+   "id": "tooldef.github-cli-close-a-pull-request",
+   "cmd": "gh pr close [<pr>]",
+   "access": "write",
+   "description": "Close a pull request"
+  },
+  {
+   "id": "tooldef.github-cli-add-a-comment-to-a-pr",
+   "cmd": "gh pr comment [<pr>] --body '<text>'",
+   "access": "write",
+   "description": "Add a comment to a PR"
+  },
+  {
+   "id": "tooldef.github-cli-approve-a-pull-request",
+   "cmd": "gh pr review [<pr>] --approve",
+   "access": "write",
+   "description": "Approve a pull request"
+  },
+  {
+   "cmd": "gh issue list",
+   "access": "read",
+   "description": "List issues"
+  },
+  {
+   "cmd": "gh issue view <issue>",
+   "access": "read",
+   "description": "View issue details"
+  },
+  {
+   "id": "tooldef.github-cli-create-an-issue",
+   "cmd": "gh issue create",
+   "access": "write",
+   "description": "Create an issue"
+  },
+  {
+   "id": "tooldef.github-cli-close-an-issue",
+   "cmd": "gh issue close <issue>",
+   "access": "write",
+   "description": "Close an issue"
+  },
+  {
+   "id": "tooldef.github-cli-comment-on-an-issue",
+   "cmd": "gh issue comment <issue> --body '<text>'",
+   "access": "write",
+   "description": "Comment on an issue"
+  },
+  {
+   "cmd": "gh release list",
+   "access": "read",
+   "description": "List releases"
+  },
+  {
+   "cmd": "gh release view <tag>",
+   "access": "read",
+   "description": "View release details"
+  },
+  {
+   "id": "tooldef.github-cli-create-a-release",
+   "cmd": "gh release create <tag>",
+   "access": "write",
+   "description": "Create a release"
+  },
+  {
+   "cmd": "gh release delete <tag>",
+   "access": "blocked",
+   "description": "Delete a release"
+  },
+  {
+   "cmd": "gh run list",
+   "access": "read",
+   "description": "List workflow runs"
+  },
+  {
+   "cmd": "gh run view <run-id>",
+   "access": "read",
+   "description": "View workflow run details"
+  },
+  {
+   "cmd": "gh run watch <run-id>",
+   "access": "read",
+   "description": "Watch a workflow run in real time"
+  },
+  {
+   "cmd": "gh workflow list",
+   "access": "read",
+   "description": "List workflows"
+  },
+  {
+   "id": "tooldef.github-cli-manually-trigger-a-workflow",
+   "cmd": "gh workflow run <workflow>",
+   "access": "write",
+   "description": "Manually trigger a workflow"
+  },
+  {
+   "cmd": "gh auth status",
+   "access": "read",
+   "description": "Show current auth state"
+  }
+ ]
+}

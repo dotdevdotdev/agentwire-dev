@@ -38,7 +38,7 @@ class SafetyRoutesMixin:
                     pass
             # Read the kill switch + disabled rules from the agent-unwritable
             # damage-control policy files (#466), not from config.yaml.
-            from ..safety._core import load_safety_config
+            from damage_control.engine import load_safety_config
             safety_cfg = load_safety_config()
             return web.json_response({
                 "enabled": safety_cfg.get("enabled", True),

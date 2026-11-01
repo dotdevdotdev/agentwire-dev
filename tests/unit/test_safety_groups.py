@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import agentwire
-from agentwire.safety import groups
+from damage_control import groups
 
 
 def test_every_bundled_file_has_exactly_one_owner():

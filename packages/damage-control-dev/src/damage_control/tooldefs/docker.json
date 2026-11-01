@@ -1,0 +1,146 @@
+{
+ "name": "Docker",
+ "binary": "docker",
+ "purpose": "Build and run containerized applications",
+ "docs": "https://docs.docker.com/reference/",
+ "install": "brew install --cask docker",
+ "commands": [
+  {
+   "cmd": "docker images [<name>]",
+   "access": "read",
+   "description": "List local images"
+  },
+  {
+   "id": "tooldef.docker-download-an-image-from-registry",
+   "cmd": "docker pull <image>",
+   "access": "write",
+   "description": "Download an image from registry"
+  },
+  {
+   "id": "tooldef.docker-build-image-from-dockerfile",
+   "cmd": "docker build -t <name> .",
+   "access": "write",
+   "description": "Build image from Dockerfile"
+  },
+  {
+   "id": "tooldef.docker-remove-a-local-image",
+   "cmd": "docker rmi <image>",
+   "access": "write",
+   "description": "Remove a local image"
+  },
+  {
+   "cmd": "docker rmi -f <image>",
+   "access": "blocked",
+   "description": "Force remove image (including running containers using it)"
+  },
+  {
+   "cmd": "docker ps [-a]",
+   "access": "read",
+   "description": "List running (or all) containers"
+  },
+  {
+   "cmd": "docker logs <container>",
+   "access": "read",
+   "description": "View container logs"
+  },
+  {
+   "cmd": "docker inspect <container>",
+   "access": "read",
+   "description": "View detailed container info"
+  },
+  {
+   "id": "tooldef.docker-create-and-start-a-container",
+   "cmd": "docker run <image>",
+   "access": "write",
+   "description": "Create and start a container"
+  },
+  {
+   "id": "tooldef.docker-start-stopped-container",
+   "cmd": "docker start <container>",
+   "access": "write",
+   "description": "Start stopped container"
+  },
+  {
+   "id": "tooldef.docker-stop-running-container",
+   "cmd": "docker stop <container>",
+   "access": "write",
+   "description": "Stop running container"
+  },
+  {
+   "id": "tooldef.docker-execute-command-in-running-container",
+   "cmd": "docker exec -it <container> <cmd>",
+   "access": "write",
+   "description": "Execute command in running container"
+  },
+  {
+   "id": "tooldef.docker-remove-a-stopped-container",
+   "cmd": "docker rm <container>",
+   "access": "write",
+   "description": "Remove a stopped container"
+  },
+  {
+   "cmd": "docker rm -f $(docker ps -aq)",
+   "access": "blocked",
+   "description": "Force remove ALL containers"
+  },
+  {
+   "cmd": "docker volume ls",
+   "access": "read",
+   "description": "List volumes"
+  },
+  {
+   "cmd": "docker volume inspect <volume>",
+   "access": "read",
+   "description": "View volume details"
+  },
+  {
+   "cmd": "docker volume rm <volume>",
+   "access": "blocked",
+   "description": "Delete a volume (data loss)"
+  },
+  {
+   "cmd": "docker volume prune",
+   "access": "blocked",
+   "description": "Delete all unused volumes (data loss)"
+  },
+  {
+   "cmd": "docker compose ps",
+   "access": "read",
+   "description": "List compose services"
+  },
+  {
+   "cmd": "docker compose logs",
+   "access": "read",
+   "description": "View compose service logs"
+  },
+  {
+   "id": "tooldef.docker-start-compose-services",
+   "cmd": "docker compose up [-d]",
+   "access": "write",
+   "description": "Start compose services"
+  },
+  {
+   "id": "tooldef.docker-stop-and-remove-compose-containers",
+   "cmd": "docker compose down",
+   "access": "write",
+   "description": "Stop and remove compose containers"
+  },
+  {
+   "id": "tooldef.docker-build-compose-service-images",
+   "cmd": "docker compose build",
+   "access": "write",
+   "description": "Build compose service images"
+  },
+  {
+   "id": "tooldef.docker-remove-stopped-containers-unused-networks-dangling-im",
+   "cmd": "docker system prune",
+   "access": "write",
+   "description": "Remove stopped containers, unused networks, dangling images"
+  },
+  {
+   "cmd": "docker system prune -a",
+   "access": "blocked",
+   "description": "Remove ALL unused images, containers, networks (including named images)"
+  }
+ ]
+}

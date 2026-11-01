@@ -1,7 +1,7 @@
 """CLI for the protected task-execution file — `agentwire tasks review|promote` (#720).
 
 `.agentwire.tasks.yml` is protected control-plane (see
-`agentwire.safety._core.PROTECTED_CONTROL_PLANE_PATHS`) — the policed agent
+`damage_control.engine.PROTECTED_CONTROL_PLANE_PATHS`) — the policed agent
 cannot write it directly via Edit/Write/Bash. The authoring flow is
 propose-and-promote, mirroring the worktree -> PR -> review -> merge model
 because task definitions ARE executable code:
@@ -49,7 +49,7 @@ import yaml
 
 from .core import _get_session_project_path, _output_json, _output_result
 from .project_config import ensure_gitignored
-from .safety._core import is_unattended
+from damage_control.engine import is_unattended
 from .tasks import PROPOSED_TASKS_FILENAME, TASKS_FILENAME, parse_task_config, validate_task
 
 # Explicit host-side opt-in for a non-interactive `promote` (e.g. the owner's

@@ -1,0 +1,37 @@
+{
+ "zeroAccessPaths": [
+  "~/.agentwire/credentials/",
+  "~/.agentwire/api-keys/",
+  "~/.agentwire/secrets/",
+  "~/.agentwire/tokens/",
+  "~/.agentwire/.env",
+  "~/.agentwire/*.key",
+  "~/.agentwire/*.pem"
+ ],
+ "noDeletePaths": [
+  "~/.agentwire/",
+  "~/.agentwire/sessions/",
+  "~/.agentwire/hooks/",
+  "~/.agentwire/settings.json",
+  ".agentwire/",
+  ".agentwire/session.json"
+ ],
+ "allowedPaths": [
+  {
+   "path": "~/.agentwire/.env",
+   "allow": [
+    "read",
+    "write",
+    "edit"
+   ]
+  },
+  {
+   "path": "~/projects/agentwire-dev/.env",
+   "allow": [
+    "read",
+    "write",
+    "edit"
+   ]
+  }
+ ]
+}

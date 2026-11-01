@@ -1,0 +1,60 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "gcp.gcloud-projects-delete-deletes-entire-project",
+   "pattern": "\\bgcloud\\s+projects\\s+delete\\b",
+   "reason": "gcloud projects delete (DELETES ENTIRE PROJECT)",
+   "anchored": true
+  },
+  {
+   "id": "gcp.gcloud-compute-instances-delete",
+   "pattern": "\\bgcloud\\s+compute\\s+instances\\s+delete\\b",
+   "reason": "gcloud compute instances delete",
+   "anchored": true
+  },
+  {
+   "id": "gcp.gcloud-sql-instances-delete",
+   "pattern": "\\bgcloud\\s+sql\\s+instances\\s+delete\\b",
+   "reason": "gcloud sql instances delete",
+   "anchored": true
+  },
+  {
+   "id": "gcp.gcloud-container-clusters-delete-gke",
+   "pattern": "\\bgcloud\\s+container\\s+clusters\\s+delete\\b",
+   "reason": "gcloud container clusters delete (GKE)",
+   "anchored": true
+  },
+  {
+   "id": "gcp.gcloud-storage-rm-r-recursive-delete",
+   "pattern": "\\bgcloud\\s+storage\\s+rm\\s+.*-r",
+   "reason": "gcloud storage rm -r (recursive delete)",
+   "anchored": true
+  },
+  {
+   "id": "gcp.gcloud-functions-delete",
+   "pattern": "\\bgcloud\\s+functions\\s+delete\\b",
+   "reason": "gcloud functions delete",
+   "anchored": true
+  },
+  {
+   "id": "gcp.gcloud-iam-service-accounts-delete",
+   "pattern": "\\bgcloud\\s+iam\\s+service-accounts\\s+delete\\b",
+   "reason": "gcloud iam service-accounts delete",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bgcloud\\s+run\\s+deploy\\b",
+   "reason": "gcloud run deploy (ships a Cloud Run service)",
+   "ask": true,
+   "id": "deploy.gcloud-run",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bgcloud\\s+app\\s+deploy\\b",
+   "reason": "gcloud app deploy (ships an App Engine version)",
+   "ask": true,
+   "id": "deploy.gcloud-app",
+   "anchored": true
+  }
+ ]
+}

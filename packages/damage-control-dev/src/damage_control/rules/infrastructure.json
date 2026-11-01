@@ -1,0 +1,69 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "infrastructure.terraform-destroy-destroys-all-infrastructure",
+   "pattern": "\\bterraform\\s+destroy\\b",
+   "reason": "terraform destroy (destroys all infrastructure)",
+   "anchored": true
+  },
+  {
+   "id": "infrastructure.pulumi-destroy-destroys-all-resources",
+   "pattern": "\\bpulumi\\s+destroy\\b",
+   "reason": "pulumi destroy (destroys all resources)",
+   "anchored": true
+  },
+  {
+   "id": "infrastructure.serverless-remove-removes-stack",
+   "pattern": "\\bserverless\\s+remove\\b",
+   "reason": "serverless remove (removes stack)",
+   "anchored": true
+  },
+  {
+   "id": "infrastructure.sls-remove-removes-stack",
+   "pattern": "\\bsls\\s+remove\\b",
+   "reason": "sls remove (removes stack)",
+   "anchored": true
+  },
+  {
+   "id": "infrastructure.sam-delete-deletes-sam-application",
+   "pattern": "\\bsam\\s+delete\\b",
+   "reason": "sam delete (deletes SAM application)",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bpulumi\\s+up\\b",
+   "reason": "pulumi up (provisions/updates infrastructure)",
+   "ask": true,
+   "id": "deploy.pulumi-up",
+   "anchored": true
+  },
+  {
+   "pattern": "\\b(serverless|sls)\\s+deploy\\b",
+   "reason": "serverless deploy (ships a Serverless Framework stack)",
+   "ask": true,
+   "id": "deploy.serverless",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bsam\\s+deploy\\b",
+   "reason": "sam deploy (ships an AWS SAM application)",
+   "ask": true,
+   "id": "deploy.sam",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bcdk\\s+deploy\\b",
+   "reason": "cdk deploy (ships an AWS CDK stack)",
+   "ask": true,
+   "id": "deploy.cdk",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bansible-playbook\\b",
+   "reason": "ansible-playbook (applies configuration to remote hosts)",
+   "ask": true,
+   "id": "deploy.ansible",
+   "anchored": true
+  }
+ ]
+}
