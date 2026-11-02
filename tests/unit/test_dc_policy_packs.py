@@ -61,13 +61,16 @@ def test_a_machine_that_decided_every_pack_enforces_the_full_ruleset(policy):
     assert ids() == {r["id"] for r in full["bashToolPatterns"]}
 
 
-def test_an_unreadable_policy_means_groups_on_packs_off_never_everything_off(policy):
+def test_an_unreadable_policy_loads_every_pack_while_an_absent_key_loads_none(policy):
+    """Absent `packs:` = undecided (defaults only); unparseable = unknowable, so fail toward protection."""
+    policy.write_text("enabled: true\n")
+    assert not sources() & PACK_SOURCES
     bad = []
     for name, text in {"yaml-error": "packs: [unclosed\n  - : :\n", "not-a-mapping": "- just\n- a list\n"}.items():
         policy.write_text(text)
-        loaded = sources()
-        if not {"core", "git"} <= loaded or loaded & PACK_SOURCES:
-            bad.append((name, sorted(loaded & PACK_SOURCES)))
+        full = engine.load_config(engine.bundled_rule_sources(), engine.bundled_tooldefs_dir())
+        if ids() != {r["id"] for r in full["bashToolPatterns"]}:
+            bad.append((name, len(ids())))
     assert not bad, bad
 
 

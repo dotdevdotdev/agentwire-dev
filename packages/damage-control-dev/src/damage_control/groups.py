@@ -70,7 +70,7 @@ def default_packs() -> Tuple[str, ...]:
 def skipped_stems(packs: Optional[List[str]], disabled_groups: List[str]) -> Tuple[FrozenSet[str], FrozenSet[str]]:
     """``(rules stems, tooldef stems)`` of the bundled files switched off by the policy.
 
-    ``packs`` None means the policy has no ``packs:`` key or could not be read (undecided): the
+    ``packs`` None means the policy has no ``packs:`` key (undecided; an unreadable policy never gets here, the loader supplies every pack): the
     default groups are on and only the HOST's default packs load (none for the generic profile),
     never "everything off" (#1209 M5, section 4.5). A machine that has decided lists its packs.
     A kernel group is never skipped.

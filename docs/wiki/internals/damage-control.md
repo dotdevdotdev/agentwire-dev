@@ -1586,7 +1586,7 @@ Damage control used to install every bundled rule and tooldef everywhere, so an 
 
 **Surfaces.** `doctor` prints enabled packs, available packs, vendor CLIs found with the pack off, and opted-out groups — `[..]`, informational, never scored. `agentwire init` lists packs and suggests those whose CLI is on `PATH`.
 
-**An unparseable policy file is read as groups-on, packs-off, and never written (#1209 M5).** `read_state` catches `yaml.YAMLError`; a broken file means every default group is on and only the host's default packs load (the hook cannot read the file, so it cannot know the packs the owner decided; "never everything off" is the floor, not "everything on"). No migration is written over it, `packs|groups enable|disable` refuse, and `doctor` reports `[!!] ... does not parse`. Before M5 the same file meant every pack on; a typo in a decided policy now drops its vendor packs until fixed, which is why `doctor` flags it.
+**An unparseable policy file fails toward protection and is never written (#1209 M5).** `read_state` catches `yaml.YAMLError`; a broken file means every group AND every pack is on (the hook cannot know which packs the owner decided, and a typo must not drop them). This differs deliberately from an *absent* `packs:` key, which is genuinely undecided and loads the default groups plus only the host's default packs (epic section 4.5 wording: a failure to read the policy never means "everything off"; here it means "everything on"). No migration is written over it, `packs|groups enable|disable` refuse, and `doctor` reports `[!!] ... does not parse`.
 
 **Disabled group vs typo.** `DEFAULT_UNATTENDED_ALLOW` ids (`git.*`, `gh.*`, `uv.*`, `outbound.*`) stop existing when their group is disabled. `doctor` and `tasks review` say "group 'git' disabled", never "names no rule / typo" (`lint.split_missing_ids`).
 
@@ -1838,7 +1838,7 @@ and entries another installer owns (a different `--profile`); it self-tests the 
 records `<config>/state/install.json` (interpreter, ruleset digest by stable id, per-scope `written_sha256` so
 `uninstall` restores the original bytes only while the file is still exactly what init wrote). `init --refresh` prints
 the ruleset diff by id; a removed rule, a lowered tier, a new allow-path or a new default grant is marked `!!`.
-agentwire's own `hooks install` is unchanged until M6.
+State lives under the profile's config dir (`~/.damage-control/state/` for the generic profile; `$DAMAGE_CONTROL_HOME/state/` when set), not XDG. agentwire's own `hooks install` is unchanged until M6.
 
 ## Troubleshooting
 

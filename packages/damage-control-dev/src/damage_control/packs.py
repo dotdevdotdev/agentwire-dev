@@ -28,8 +28,8 @@ def read_state(path: Path) -> Dict[str, Any]:
     """``{"packs": [...] | None, "disabled_groups": [...], "broken": str}``.
 
     ``packs`` None = undecided. ``broken`` is a non-empty message when the file
-    exists but does not parse: the hook reads that as groups-on, packs-off (never
-    "everything off"), and this file is never migrated over or written to,
+    exists but does not parse: the hook fails toward protection (every group and
+    pack on), and this file is never migrated over or written to,
     so a typo cannot get overwritten.
     """
     import yaml
@@ -41,9 +41,9 @@ def read_state(path: Path) -> Dict[str, Any]:
     except FileNotFoundError:
         data = {}
     except (OSError, ValueError, yaml.YAMLError) as e:
-        data, broken = {}, f"{path.name} does not parse ({type(e).__name__}); packs/groups treated as groups-on, packs-off (host defaults only)"
+        data, broken = {}, f"{path.name} does not parse ({type(e).__name__}); packs/groups treated as all on"
     if not isinstance(data, dict):
-        data, broken = {}, broken or f"{path.name} is not a mapping; packs/groups treated as groups-on, packs-off (host defaults only)"
+        data, broken = {}, broken or f"{path.name} is not a mapping; packs/groups treated as all on"
     packs = data.get(PACKS_KEY)
     groups = data.get(GROUPS_KEY)
     return {
@@ -99,10 +99,10 @@ def write_state(path: Path, packs: Optional[List[str]] = None,
 
 def entry_active(entry: Entry, state: Dict[str, Any]) -> bool:
     """Whether the entry's files belong on this machine."""
-    if entry.kind == "pack":
-        return entry.name in ((default_packs() if state.get("broken") else state[PACKS_KEY]) or [])
     if state.get("broken"):
         return True
+    if entry.kind == "pack":
+        return entry.name in (state[PACKS_KEY] or [])
     return entry.kernel or entry.name not in state[GROUPS_KEY]
 
 
