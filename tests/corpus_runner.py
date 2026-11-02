@@ -113,7 +113,7 @@ def _observe(tool: str, text: str, context_json: str) -> Dict[str, Any]:
     config = _config(ctx)
     with _pinned_env(ctx.get("home", DEFAULT_HOME)):
         if tool == "Bash":
-            r = _core.check_command(text, config)
+            r = _core.check_command(text, config, cwd=ctx.get("cwd"))
             return {"decision": r["decision"], "protected_is_true": r.get("protected") is True,
                     "protected_truthy": bool(r.get("protected")), "unverifiable": bool(r.get("unverifiable"))}
         blocked, reason = (_core.check_read_path(text, config) if tool == "Read"

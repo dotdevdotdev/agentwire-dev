@@ -19,6 +19,7 @@
       "properties": {
         "ruleset": {"enum": ["rules", "full"], "description": "rules = bundled rule YAMLs; full = rules + tooldefs (what a fresh install runs). Default full."},
         "home": {"type": "string", "pattern": "^/", "description": "$HOME while the case runs. Default /golden/home (deliberately not under /tmp)."},
+        "cwd": {"type": "string", "pattern": "^/", "description": "Bash: the payload cwd the command's relative operands resolve against. Default: none (the golden recorder uses /golden/home/project)."},
         "kill_switch": {"type": "boolean", "description": "Owner kill switch off (safety.enabled false)."},
         "allow_all_paths": {"type": "boolean", "description": "Host allowedPaths grants `*` allow-all."}
       }

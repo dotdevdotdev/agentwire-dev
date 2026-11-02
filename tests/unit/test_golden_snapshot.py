@@ -59,7 +59,7 @@ def test_snapshot_covers_every_hook_and_every_corpus_case(golden, committed):
     known = set(committed["engine"]) | set(committed["engine_by_platform"]["darwin"])
     missing = [
         (i["tool"], i["input"][:80]) for i in items
-        if golden.record_key(i["tool"], i["input"], i["home"], "default") not in known
+        if golden.record_key(i["tool"], i["input"], i["home"], "default", i["cwd"]) not in known
     ]
     hook_tools = {json.loads(k)[0] for k in committed["hooks"]} | {
         json.loads(k)[0] for k in committed["hooks_by_platform"]["darwin"]}
