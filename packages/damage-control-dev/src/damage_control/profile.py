@@ -104,8 +104,8 @@ class Profile(NamedTuple):
     # First half of the sentence telling a blocked unattended run how to get a grant;
     # ``{rule_id}`` is filled in. Empty = say nothing.
     unattended_grant_hint: str = ""
-    # argv prefix run detached when an unattended action is blocked; the engine appends
-    # ``--reason R --rule-id ID --command C``. Empty = no notification.
+    # argv run detached when an unattended action is blocked, with the event as JSON on stdin:
+    # ``{"event": "unattended_block", "reason", "rule_id", "command"}``. Empty = no notification.
     unattended_block_notifier: Tuple[str, ...] = ()
 
     # --- audit ------------------------------------------------------------

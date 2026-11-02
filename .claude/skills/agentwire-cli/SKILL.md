@@ -293,7 +293,8 @@ agentwire safety suggest-delete-recursive [--days N] [--min N] [--json]  # recur
 agentwire safety packs list|status [--json]   # vendor rule packs (aws, databases, ...): off by default
 agentwire safety packs enable|disable <name>   # HUMAN-ONLY (tty + protected); agents suggest, never run
 agentwire safety groups list|status|enable|disable <g>  # default groups; kernel can't be disabled
-agentwire safety install        # install damage control hooks
+agentwire safety install        # install damage control hooks (the package's init under agentwire's profile)
+agentwire safety migrate [--dry-run]  # HUMAN-ONLY (tty + protected): retire a pre-package install (pristine rule copies, old script registrations)
 agentwire hooks install         # install permission hook (Claude Code only)
 agentwire hooks uninstall       # remove permission hook (Claude Code only)
 agentwire hooks status          # check hook installation status

@@ -315,13 +315,13 @@ def safety_status_cmd() -> int:
     return 0
 
 
-def safety_notify_unattended_block_cmd(
-    reason: str, rule_id: str, command: str
-) -> int:
+def safety_notify_unattended_block_cmd(event_json: str) -> int:
     """CLI command: ``agentwire safety notify-unattended-block``.
 
     Invoked fire-and-forget by the damage-control hooks when an unattended
-    (scheduler) run hits an ``ask``-tier command that isn't on the allowlist.
+    (scheduler) run hits an ``ask``-tier command that isn't on the allowlist. The event arrives
+    as one JSON object on stdin (``reason``, ``rule_id``, ``command``): the profile's notifier
+    protocol (#1209 M6).
 
     This used to email the owner **per block**, immediately, with no throttle
     and no dedup: 96 emails over 14 days and accelerating, 54% of them the same
@@ -335,6 +335,14 @@ def safety_notify_unattended_block_cmd(
     make a block go unrecorded — the digest points at ``agentwire safety logs``
     precisely because that record stays complete.
     """
+    try:
+        event = json.loads(event_json)
+    except ValueError:
+        event = None
+    if not isinstance(event, dict):
+        print("notify-unattended-block: expected one JSON event object on stdin", file=sys.stderr)
+        return 1
+    reason, rule_id, command = (str(event.get(k) or "") for k in ("reason", "rule_id", "command"))
     session = os.environ.get("AGENTWIRE_SESSION_NAME") or os.environ.get(
         "AGENTWIRE_SESSION_ID", "unknown"
     )

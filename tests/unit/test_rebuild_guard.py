@@ -161,3 +161,58 @@ class TestRebuildSafety:
 
 
 
+
+
+class TestRebuildGuardsBothPackages:
+    """#1209 M6: the damage-control engine is a second distribution, so the #936 hazard is doubled."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_root(self, up_to_date_checkout, monkeypatch):
+        clone, fake_file = up_to_date_checkout
+        import agentwire.system_cli as sys_mod
+        monkeypatch.setattr(sys_mod, "__file__", str(fake_file))
+        self.clone = clone
+        self.sibling = clone / "packages" / "damage-control-dev" / "src" / "damage_control"
+
+    def _installs(self, monkeypatch):
+        real_run = subprocess.run
+        calls = []
+
+        def fake_run(cmd, *a, **k):
+            if cmd[0] == "git":
+                return real_run(cmd, *a, **k)
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return lambda: [c for c in calls if c[:3] == ["uv", "tool", "install"]]
+
+    def test_a_checkout_without_the_sibling_package_is_refused(self, monkeypatch, capsys):
+        self.sibling.rmdir()
+        installs = self._installs(monkeypatch)
+
+        rc = cmd_rebuild(_args(force=False))
+
+        assert rc == 1 and "without the damage_control package" in capsys.readouterr().err
+        assert not installs()
+
+    def test_a_sibling_that_lives_in_a_linked_worktree_is_refused_even_from_a_primary_checkout(self, tmp_path, monkeypatch, capsys):
+        worktree = tmp_path / "linked"
+        (worktree / "src" / "damage_control").mkdir(parents=True)
+        (worktree / ".git").write_text("gitdir: /elsewhere\n")  # a linked worktree
+        self.sibling.rmdir()
+        self.sibling.symlink_to(worktree / "src" / "damage_control")
+        installs = self._installs(monkeypatch)
+
+        rc = cmd_rebuild(_args(force=False))
+
+        assert rc == 1 and "damage_control package from the linked worktree" in capsys.readouterr().err
+        assert not installs()
+
+    def test_the_override_flag_covers_both_guards(self, monkeypatch):
+        self.sibling.rmdir()
+        installs = self._installs(monkeypatch)
+
+        rc = cmd_rebuild(_args(force=False, allow_foreign_source=True))
+
+        assert rc == 0 and installs()

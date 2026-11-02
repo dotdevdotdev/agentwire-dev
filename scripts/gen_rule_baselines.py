@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate ``agentwire/safety/rule_baselines.json`` — every version we ever shipped.
 
-``heal_damage_control`` may not blind-overwrite ``~/.agentwire/damage-control/``
+The pre-package ``heal`` could not blind-overwrite ``~/.agentwire/damage-control/``
 or ``~/.agentwire/tooldefs/``: those files are documented as host-editable, and
 clobbering a hand-written rule is a worse failure than shipping a stale one. But
 "install missing only" meant a rule file was written once at install and NEVER
@@ -74,9 +74,8 @@ RETIRED = {
 
 HEADER = (
     "sha256 of every version of each bundled rule/tooldef file that has ever "
-    "shipped on the main line. Used by heal_damage_control to tell a pristine "
-    "older release (safe to update) from a hand-customized file (never "
-    "touched). Regenerate with scripts/gen_rule_baselines.py (#916)."
+    "shipped on the main line. Used once, by `agentwire safety migrate`, to tell a pristine "
+    "older release (safe to delete) from a hand-customized file (kept). Regenerate with scripts/gen_rule_baselines.py (#916)."
 )
 
 

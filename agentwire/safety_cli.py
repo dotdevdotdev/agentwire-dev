@@ -7,6 +7,8 @@ share one implementation.
 
 from __future__ import annotations
 
+import sys
+
 from . import safety_commands
 
 
@@ -23,12 +25,8 @@ def cmd_safety_status(args) -> int:
 
 
 def cmd_safety_notify_unattended_block(args) -> int:
-    """CLI command: agentwire safety notify-unattended-block (hook-invoked)"""
-    return safety_commands.safety_notify_unattended_block_cmd(
-        getattr(args, "reason", "") or "",
-        getattr(args, "rule_id", "") or "",
-        getattr(args, "command", "") or "",
-    )
+    """CLI command: agentwire safety notify-unattended-block (hook-invoked; event JSON on stdin)"""
+    return safety_commands.safety_notify_unattended_block_cmd(sys.stdin.read())
 
 
 def cmd_safety_logs(args) -> int:
@@ -102,11 +100,8 @@ def register_safety_parser(subparsers) -> None:
     # safety notify-unattended-block (hook-invoked, not for humans)
     safety_notify = safety_subparsers.add_parser(
         "notify-unattended-block",
-        help="Email the owner that an unattended action was blocked (hook-internal)",
+        help="Email the owner that an unattended action was blocked (hook-internal; event JSON on stdin)",
     )
-    safety_notify.add_argument("--reason", default="", help="Why the command was blocked")
-    safety_notify.add_argument("--rule-id", dest="rule_id", default="", help="Matched rule id")
-    safety_notify.add_argument("--command", default="", help="The blocked command")
     safety_notify.set_defaults(func=cmd_safety_notify_unattended_block)
 
     # safety logs
