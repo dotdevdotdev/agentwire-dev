@@ -129,12 +129,13 @@ def test_mutations_refuse_without_a_human_and_leave_state_alone(home, monkeypatc
     assert safety_commands.DAMAGECONTROL_FILE.read_text() == before
 
 
-def test_undecided_policy_loads_every_pack(home):
-    """No `packs:` key = a machine that was never healed: every pack loads (M5 flips this default)."""
+def test_undecided_policy_loads_only_the_hosts_default_packs(home):
+    """No `packs:` key = never decided: default groups plus the host's default packs, no vendor pack (#1209 M5)."""
     safety_commands.DAMAGECONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
     safety_commands.DAMAGECONTROL_FILE.write_text("enabled: true\n")
     assert engine.load_safety_config()["packs"] is None
-    assert decisions()["aws"] != "allow" and decisions()["databases"] != "allow"
+    assert decisions()["aws"] == "allow" and decisions()["databases"] == "allow"
+    assert safety_commands.check_command_safety("tmux kill-server")["decision"] != "allow"  # AgentWire's default pack
 
 
 def test_protected_pattern_blocks_mutation_not_reads():

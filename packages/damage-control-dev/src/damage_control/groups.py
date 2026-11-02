@@ -4,7 +4,7 @@ Every bundled rules file (generic ``rules/*`` or a host layer such as AgentWire'
 every ``tooldefs/*`` belongs to exactly one entry here (entries name the authored ``.yaml``;
 the JSON a hook reads shares its stem). File names must be unique across the rules dirs.
 ``kind="group"`` entries are default-on ("os-focused"); a human may opt one out. ``kernel`` groups can never be opted out. ``kind="pack"`` entries are vendor/tool
-sets a human enables (``skipped_stems`` says what an undecided policy loads).
+sets a human enables (``skipped_stems`` says what an undecided policy loads: no packs but the host's defaults).
 
 The generic registry lives here; what the HOST adds (its own groups, its layer files
 attached to generic groups, the packs it turns on) comes from the installed profile
@@ -70,15 +70,18 @@ def default_packs() -> Tuple[str, ...]:
 def skipped_stems(packs: Optional[List[str]], disabled_groups: List[str]) -> Tuple[FrozenSet[str], FrozenSet[str]]:
     """``(rules stems, tooldef stems)`` of the bundled files switched off by the policy.
 
-    ``packs`` None means the policy file has no ``packs:`` key (undecided): every pack loads,
-    so a machine whose state was never written is protected by everything the package ships,
-    never by less. A kernel group is never skipped.
+    ``packs`` None means the policy has no ``packs:`` key or could not be read (undecided): the
+    default groups are on and only the HOST's default packs load (none for the generic profile),
+    never "everything off" (#1209 M5, section 4.5). A machine that has decided lists its packs.
+    A kernel group is never skipped.
     """
+    if packs is None:
+        packs = list(default_packs())
     rules: set = set()
     tooldefs: set = set()
     for e in entries():
         if e.kind == "pack":
-            active = packs is None or e.name in packs
+            active = e.name in packs
         else:
             active = e.kernel or e.name not in disabled_groups
         if not active:

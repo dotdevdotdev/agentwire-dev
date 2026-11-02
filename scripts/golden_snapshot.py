@@ -353,12 +353,20 @@ def hook_payload(tool: str, text: str, permission_mode: str) -> Dict[str, Any]:
 @functools.lru_cache(maxsize=None)
 def profile_manifest() -> Path:
     """AgentWire's profile as a hook loads it: a JSON file named on the command line."""
+    from damage_control.groups import registry
     from damage_control.profile import dump_profile
 
     from agentwire.safety import host_profile
 
+    # The recorder's HOME is a nonexistent directory, so there is no policy file and the install
+    # is UNDECIDED. Since #1209 M5 an undecided install loads only the host's default packs, so
+    # model the machine the snapshot has always described -- one that has decided to run EVERY
+    # pack -- by making them all the host defaults. The decided path (a ``packs:`` list in the
+    # policy) is proven equal by tests/unit/test_dc_policy_packs.py.
+    every_pack = tuple(sorted(e.name for e in registry().values() if e.kind == "pack"))
+    profile = host_profile.build_profile()._replace(default_packs=every_pack)
     path = Path(tempfile.mkdtemp(prefix="golden-profile-")) / "damagecontrol-profile.json"
-    path.write_text(dump_profile(host_profile.build_profile()))
+    path.write_text(dump_profile(profile))
     return path
 
 

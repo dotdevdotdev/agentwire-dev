@@ -8,7 +8,8 @@ authoritative, even when empty.
 
 The hook reads the same keys at run time (``engine.load_safety_config``) and skips the
 bundled files of whatever is off (``groups.skipped_stems``): the bundle is immutable, so
-"pack off" is "not loaded", never "not installed". An absent ``packs:`` key loads every pack.
+"pack off" is "not loaded", never "not installed". An absent ``packs:`` key loads only the
+host's default packs (#1209 M5).
 """
 
 from __future__ import annotations
@@ -27,9 +28,9 @@ def read_state(path: Path) -> Dict[str, Any]:
     """``{"packs": [...] | None, "disabled_groups": [...], "broken": str}``.
 
     ``packs`` None = undecided. ``broken`` is a non-empty message when the file
-    exists but does not parse: that is read as the MOST PROTECTIVE state
-    (everything on, nothing removed) and is never migrated over or written to,
-    so a typo can neither switch protections off nor get overwritten.
+    exists but does not parse: the hook reads that as groups-on, packs-off (never
+    "everything off"), and this file is never migrated over or written to,
+    so a typo cannot get overwritten.
     """
     import yaml
 
@@ -40,9 +41,9 @@ def read_state(path: Path) -> Dict[str, Any]:
     except FileNotFoundError:
         data = {}
     except (OSError, ValueError, yaml.YAMLError) as e:
-        data, broken = {}, f"{path.name} does not parse ({type(e).__name__}); packs/groups treated as all on"
+        data, broken = {}, f"{path.name} does not parse ({type(e).__name__}); packs/groups treated as groups-on, packs-off (host defaults only)"
     if not isinstance(data, dict):
-        data, broken = {}, broken or f"{path.name} is not a mapping; packs/groups treated as all on"
+        data, broken = {}, broken or f"{path.name} is not a mapping; packs/groups treated as groups-on, packs-off (host defaults only)"
     packs = data.get(PACKS_KEY)
     groups = data.get(GROUPS_KEY)
     return {
@@ -98,10 +99,10 @@ def write_state(path: Path, packs: Optional[List[str]] = None,
 
 def entry_active(entry: Entry, state: Dict[str, Any]) -> bool:
     """Whether the entry's files belong on this machine."""
+    if entry.kind == "pack":
+        return entry.name in ((default_packs() if state.get("broken") else state[PACKS_KEY]) or [])
     if state.get("broken"):
         return True
-    if entry.kind == "pack":
-        return entry.name in (state[PACKS_KEY] or [])
     return entry.kernel or entry.name not in state[GROUPS_KEY]
 
 
@@ -124,12 +125,40 @@ def migrate_packs(state: Dict[str, Any], installed: Dict[str, Set[str]]) -> List
 
 
 def effective_state(path: Path) -> Dict[str, Any]:
-    """The state the hook acts on: an undecided policy (no ``packs:`` key) loads every pack.
+    """The state the hook acts on: an undecided policy (no ``packs:`` key) loads the host's default packs.
 
-    Read-only. ``heal`` is what records a decision; until it does, readers must not show a pack
-    as off while the hook is enforcing it.
+    Read-only. ``heal`` is what records a decision; until it does, readers must show exactly
+    the packs the hook is enforcing.
     """
     state = read_state(path)
     if state[PACKS_KEY] is None and not state["broken"]:
-        state[PACKS_KEY] = sorted(e.name for e in registry().values() if e.kind == "pack")
+        state[PACKS_KEY] = sorted(default_packs())
     return state
+
+
+def read_flag(path: Path, key: str) -> Optional[bool]:
+    """A top-level ``key: true|false`` in the policy file, or None. Plain-text read: no PyYAML needed."""
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    m = re.search(rf"^{re.escape(key)}\s*:\s*(true|false)\s*(?:#.*)?$", text, re.MULTILINE | re.IGNORECASE)
+    return None if m is None else m.group(1).lower() == "true"
+
+
+def write_flag(path: Path, key: str, value: bool) -> None:
+    """Set a top-level boolean in the policy file, preserving every other line. Atomic."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        lines = []
+    rendered = f"{key}: {'true' if value else 'false'}"
+    pattern = re.compile(rf"^{re.escape(key)}\s*:")
+    if any(pattern.match(line) for line in lines):
+        lines = [rendered if pattern.match(line) else line for line in lines]
+    else:
+        lines.append(rendered)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n")
+    tmp.replace(path)

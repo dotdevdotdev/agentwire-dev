@@ -1701,7 +1701,8 @@ def resolve_sources(safety: Optional[Dict[str, Any]] = None) -> RuleSources:
     The bundle is immutable and always the base: the host's overlay replaces a bundled file
     of the same name or adds its own, and never drops the rest. Groups and packs the policy
     switched off are skipped here, at load time, not by removing files; an absent ``packs:``
-    key means undecided and loads every pack (see :func:`damage_control.groups.skipped_stems`).
+    key (or an unreadable policy) means undecided and loads only the host's default packs
+    (see :func:`damage_control.groups.skipped_stems`).
     """
     from damage_control import groups
 
@@ -2939,8 +2940,8 @@ def load_safety_config(
         "enabled": enabled,
         "disabled_rules": sorted(set(disabled_rules)),
         "unattended_allow": sorted(set(unattended_allow)),
-        # Pack/group state (#1141). ``packs`` None = the key is absent: undecided, which
-        # loads every bundled pack (the most protective reading; see ``enabled_rule_files``).
+        # Pack/group state (#1141). ``packs`` None = the key is absent (or the file unreadable):
+        # undecided, which loads the default groups and only the host's default packs.
         "packs": packs,
         "disabled_groups": sorted(set(disabled_groups)),
     }
