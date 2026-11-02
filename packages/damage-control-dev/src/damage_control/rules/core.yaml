@@ -255,6 +255,11 @@ zeroAccessPaths:
   - "~/.pypirc"
   - "~/.git-credentials"
   - ".git-credentials"
+  - "~/.config/gh/hosts.yml"
+  - "~/.cargo/credentials.toml"
+  - "~/.cargo/credentials"
+  - "~/.gem/credentials"
+  - "~/.terraform.d/credentials.tfrc.json"
 
   # ---------------------------------------------------------------------------
   # DATABASE DUMPS (may contain production data)
@@ -292,6 +297,21 @@ readOnlyPaths:
   - ~/.zshrc
   - ~/.profile
   - ~/.bash_profile
+  - ~/.bash_login
+  - ~/.bash_logout
+  - ~/.zshenv
+  - ~/.zprofile
+  - ~/.zlogin
+  - ~/.zlogout
+
+  # ---------------------------------------------------------------------------
+  # GIT CONFIG AND HOOKS (#1255) - keys such as core.fsmonitor, core.pager and
+  # alias.x=!... run programs, and a hook runs on the next git operation
+  # ---------------------------------------------------------------------------
+  - ~/.gitconfig
+  - ~/.config/git/
+  - .git/config
+  - .git/hooks/
 
   # ---------------------------------------------------------------------------
   # LOCK FILES - Never manually edit, use package managers

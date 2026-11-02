@@ -1340,7 +1340,7 @@ x 2-7 operations.
 
 | id | pattern names | class today | decision |
 |----|---------------|-------------|----------|
-| `agentwire.recursive-forced-rm-of-the-agentwire-directory-itself-destro` | `.agentwire` with a `~`/`$HOME`/`/Users/x` prefix | text; the same target is already `noDeletePaths` (`~/.agentwire/`) and the verb is already `core.rm-with-*-flag` | **covered**. Kept as the operation-specific reason; its path text is not load-bearing — the class and the flag rules block every spelling (pinned by the corpus class `path-spelling`) |
+| `agentwire.recursive-forced-rm-of-the-agentwire-directory-itself-destro` | `.agentwire` with a `~`/`$HOME`/`/Users/x` prefix | text; the same target is already `noDeletePaths` (`~/.agentwire/`) and the verb is already `core.rm-with-*-flag` | **covered**. Kept as the operation-specific reason; its path text is not load-bearing — the class and the flag rules block every spelling (pinned by `tests/unit/test_path_spelling.py` through the real hook) |
 | `core.dd-writing-to-device` | `of=/dev/` | text | **keep** — `/dev/null` and `/dev/stdout` are legitimate write targets, so `/dev/` cannot be a class; the hazard is the `dd` verb |
 | `core.find-exec-chmod-777-world-writable` | `chmod` | text | keep — command shape (a mode, not a path) |
 | `core.filesystem-format-command` | `mkfs.` | text | keep — command shape |
@@ -1366,7 +1366,7 @@ control plane"), `benign_path_patterns` (carve-outs such as `.claude/projects/*/
 | `control-plane.yaml` / `agentwire-control-plane.yaml` | | 3 / 3 | | | already class (plus the code-level protected check) |
 | `agentwire-core.yaml` | 7 | | 6 | 2 | already class |
 
-The sweep found that the class *mechanism* had three spelling holes, all closed in the engine:
+The sweep found that the class *mechanism* had four spelling holes, all closed in the engine:
 
 - **`$HOME` / `${HOME}` / brace forms in the read-only and no-delete ladders.** The zero-access
   scan canonicalized the command and expanded braces; the ladders read the raw text, so
@@ -1378,6 +1378,10 @@ The sweep found that the class *mechanism* had three spelling holes, all closed 
   the directory name, so `rm hooks/x` run from `<repo>/.git`, or `cat <file>` run from
   `<repo>/.terraform`, named a guarded path without any spelling the text could see.
   The cwd resolver's guarded-path test now treats a bare `dir/` entry as a path component.
+- **A bare entry spelled absolutely.** The ladder's `{path}` regex for a bare name (`.git/hooks/`,
+  `node_modules/`, `CLAUDE.md`) matched only text that *began* with that name, so
+  `echo x > /repo/node_modules/x` was allowed while `echo x > node_modules/x` was blocked. A bare
+  name is a path component and now takes an optional directory prefix, as globs always did.
 - **Variants judged without the payload cwd.** A resolved variant was decided with no cwd, so the
   cwd-dependent policies (`delete-recursive` coverage, recoverable-file `rm`) disagreed between
   the relative and the absolute spelling of the same operation.
@@ -1399,8 +1403,11 @@ directory is allowed by `allowedPaths`; that inconsistency is not a spelling gap
 scope here).
 
 Counts: 15 path-mentioning text rules examined → 0 migrated (the only rule that names a path
-is already shadowed by a class), 1 covered, 14 kept as command shapes; 3 engine spelling holes
-closed; 13 class entries added.
+is already shadowed by a class), 1 covered, 14 kept as command shapes; 4 engine spelling holes
+closed; 15 class entries added (10 read-only, 5 zero-access).
+Decision flips versus the golden snapshot: none in verdict; two rule ids change (`rm .claude/notes.txt` and
+`rm notes.txt` from `~/.claude` are now blocked by `core.no-delete-path` instead of the bypassable
+`core.rm-file-deletion-…`, because the resolved variant is judged with the payload cwd).
 
 ## Closed, fail-closed, user-owned (#1065)
 
