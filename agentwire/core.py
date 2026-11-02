@@ -1545,17 +1545,22 @@ def format_relative_time(timestamp_ms: int) -> str:
 
 # === Cross-group shared helpers (Phase 0.5 sweep, #495) ===
 
-def _default_portal_url() -> str:
-    """Default portal URL — scheme mirrors the typed config's logic: https
-    only when server.ssl cert/key are configured AND exist on disk."""
-    ssl_cfg = load_config().get("server", {}).get("ssl", {})
+def _portal_scheme(config: dict) -> str:
+    """Portal scheme — mirrors the typed config's logic: https only when
+    server.ssl cert/key are configured AND exist on disk."""
+    ssl_cfg = config.get("server", {}).get("ssl", {})
     cert, key = ssl_cfg.get("cert"), ssl_cfg.get("key")
     enabled = bool(
         cert and key
         and Path(os.path.expanduser(cert)).exists()
         and Path(os.path.expanduser(key)).exists()
     )
-    return f"{'https' if enabled else 'http'}://localhost:8765"
+    return "https" if enabled else "http"
+
+
+def _default_portal_url() -> str:
+    """Default portal URL (loopback) for this machine's own CLI calls."""
+    return f"{_portal_scheme(load_config())}://localhost:8765"
 
 
 def _run_remote(machine_id: str, command: str) -> subprocess.CompletedProcess:

@@ -18,6 +18,24 @@ Access your AgentWire portal from anywhere using Cloudflare Tunnel with Zero Tru
 > a known follow-up from the #420 doc pass, not yet done. Substitute your own
 > domain throughout.
 
+## LAN Access (no tunnel)
+
+Set `server.host: 0.0.0.0` (or a specific interface address) in `~/.agentwire/config.yaml`,
+restart the portal, then run `agentwire portal pair` on the host. The printed URL and QR
+**follow the bind**:
+
+| Bind / config | URL printed |
+|---|---|
+| `127.0.0.1` / `localhost` (default) | `localhost:<port>` |
+| `0.0.0.0` | the host's `<name>.local` mDNS name if it resolves back to this machine, else the primary outbound IPv4 |
+| a specific address | that address |
+| explicit `portal.url` | that URL, always |
+
+Scheme follows SSL state (`https` when `server.ssl` cert/key exist) and the port is
+`server.port`. `pair` states which address it chose and lists any other non-loopback IPv4
+addresses; pick one with `agentwire portal pair --url https://<addr>:8765`. `--json` emits
+the code, chosen URL, source and alternatives.
+
 ## Overview
 
 This guide covers:
