@@ -17,7 +17,8 @@ def _spawn_warning(argv, *, caller_cwd, target):
     caller = "orch"
     created_by = args.created_by
     if created_by is None:
-        created_by = core.resolve_default_created_by(caller, Path(target))
+        created_by = core.resolve_default_created_by(
+            caller, Path(target), delegated=bool(args.prompt))
     return core.unparented_delegation_warning(
         "proj-child", caller, created_by, args.prompt)
 
@@ -34,7 +35,8 @@ class TestSpawnWarning:
     def test_warning_matrix(self, caller_in_repo_a):
         base = ["worktree", "child", "-p", "x"]
         cases = {
-            "cross-project + prompt": (base + ["--prompt", "do it"], "/b", True),
+            # auto-parented to the caller (#1261), so nothing to warn about
+            "cross-project + prompt": (base + ["--prompt", "do it"], "/b", False),
             "same-project + prompt": (base + ["--prompt", "do it"], "/a/x", False),
             "cross-project, no prompt": (base, "/b", False),
             "cross-project + prompt + --created-by": (
@@ -47,8 +49,6 @@ class TestSpawnWarning:
             w = _spawn_warning(argv, caller_cwd="/a", target=target)
             if bool(w) != expect:
                 bad[label] = w
-            if expect:
-                assert "--created-by orch" in w and "proj-child" in w
         assert not bad, bad
 
 

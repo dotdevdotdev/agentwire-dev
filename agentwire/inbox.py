@@ -726,6 +726,23 @@ def resolve_targets(to: str, sender: "str | None") -> list[str]:
     return [_validate_session(to)]
 
 
+def unknown_target_error(to: str) -> "str | None":
+    """Why ``to`` can't receive a message, or None when it's a KNOWN session.
+
+    Known = live in tmux OR recorded in ``~/.agentwire/sessions/`` — so a busy
+    or restarting session still defers instead of failing (#1261). A name that
+    is neither is a typo or a repo-vs-session mixup, and enqueueing it only
+    moves the failure to a dead-letter hours later. ``@all`` and role words
+    are judged by ``resolve_targets`` and pass here.
+    """
+    if to == BROADCAST_TOKEN or to in ROLE_WORDS:
+        return None
+    from .core import unknown_session_error
+
+    return unknown_session_error(
+        to, live_sessions(), require_live=False, what="message target")
+
+
 def enqueue(
     to: str, text: str, kind: str = "note", sender: "str | None" = None, ref: str = ""
 ) -> list[Message]:

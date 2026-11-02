@@ -557,6 +557,9 @@ def cmd_info(args) -> int:
             "pane_count": pane_count,
             "panes": panes,
             "is_remote": False,
+            # Who this session reports to (its recorded creator), so a worker
+            # never has to guess a parent name; None for a standalone root.
+            "parent": load_session_metadata(session).get("created_by") or None,
         }
 
     if json_mode:

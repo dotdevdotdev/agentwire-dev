@@ -127,6 +127,9 @@ def cmd_notify_parent(args) -> int:
         # typed discriminator the cohort ledger keys on — sentinel text is
         # defeated by any child that happens to write the same words.
         kind = "idle" if getattr(args, 'on_idle', False) else "done"
+        unknown = inbox.unknown_target_error(target_session)
+        if unknown:
+            return _output_result(False, json_mode, unknown)
         try:
             msgs = inbox.enqueue(
                 to=target_session, text=text, kind=kind,

@@ -42,7 +42,15 @@ class TestSendGoneWarning:
     the sender in both text and JSON output. It still queues (the target may be
     about to be created) — the warning is the send-time existence signal."""
 
-    def test_warns_in_text(self, isolate, monkeypatch, capsys):
+    def test_warns_in_text(self, isolate, monkeypatch, capsys, tmp_path):
+        # A KNOWN-but-not-live target (recorded session) still queues + warns;
+        # a name nobody ever recorded is refused outright (#1261).
+        from agentwire import core
+
+        monkeypatch.setattr(core, "CONFIG_DIR", tmp_path / "cfg")
+        rec = tmp_path / "cfg" / "sessions" / "ghost"
+        rec.mkdir(parents=True)
+        (rec / "metadata.json").write_text("{}")
         monkeypatch.setattr(inbox, "live_sessions", lambda: {"alive"})
         rc = msg_cli.cmd_msg_send(_ns(to="ghost", kind="done", text=["hi"]))
         assert rc == 0
