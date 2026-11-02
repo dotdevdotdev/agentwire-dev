@@ -1,8 +1,9 @@
-"""AgentWire's side of damage control: its profile, rules layer, CLI helpers and doctor checks.
+"""AgentWire's side of damage control: its rules layer, CLI helpers and doctor checks.
 
-Importing anything under ``agentwire.safety`` makes this process judge by AgentWire's profile.
+Importing anything under ``agentwire.safety`` makes this process judge by AgentWire's profile
+(``agentwire.safety_ext``).
 """
 
-from agentwire.safety import host_profile
+from agentwire import safety_ext
 
-host_profile.activate()
+safety_ext.activate()

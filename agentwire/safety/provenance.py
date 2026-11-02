@@ -52,12 +52,20 @@ Two things this deliberately does NOT key on, both measured rather than assumed:
 
 from __future__ import annotations
 
+import importlib
 import os
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 # Distribution names this package has shipped under, most likely first.
 _DIST_NAMES = ("agentwire-dev", "agentwire")
+
+# The two packages agentwire deploys machine-globally (#1209 M6): the host, and the
+# damage-control engine its hooks run (``python -I -m damage_control.hook``). The engine is a
+# separate distribution inside the same tool venv, so a worktree copy of EITHER one is the
+# #936 hazard — and with the dependency inverted, guarding only ``agentwire`` leaves the
+# package that actually executes on every tool call unguarded.
+PACKAGES = ("agentwire", "damage_control")
 
 CANONICAL = "canonical"
 BOOTSTRAP = "bootstrap"
@@ -68,21 +76,23 @@ FOREIGN = "foreign"
 REFUSING_STATES = (FOREIGN, WORKTREE)
 
 
-def running_package_dir() -> Path:
-    """Directory of the ``agentwire`` package this process imported."""
-    return Path(__file__).resolve().parent.parent
+def running_package_dir(package: str = "agentwire") -> Path:
+    """Directory of the ``package`` this process imported."""
+    if package == "agentwire":
+        return Path(__file__).resolve().parent.parent
+    return Path(importlib.import_module(package).__file__).resolve().parent
 
 
-def _package_under_venv(venv: Path) -> Optional[Path]:
-    """``<venv>/lib/python*/site-packages/agentwire`` if it exists."""
-    for candidate in sorted(venv.glob("lib/python*/site-packages/agentwire")):
+def _package_under_venv(venv: Path, package: str = "agentwire") -> Optional[Path]:
+    """``<venv>/lib/python*/site-packages/<package>`` if it exists."""
+    for candidate in sorted(venv.glob(f"lib/python*/site-packages/{package}")):
         if candidate.is_dir():
             return candidate.resolve()
     return None
 
 
-def canonical_package_dir() -> Optional[Path]:
-    """The installed tool's ``agentwire`` package dir, or None if not installed.
+def canonical_package_dir(package: str = "agentwire") -> Optional[Path]:
+    """The installed tool's ``package`` dir (``agentwire`` or ``damage_control``), or None if not installed.
 
     Resolved from the install LAYOUT rather than from ``PATH``: ``uv run`` and
     friends put an ephemeral venv's ``agentwire`` first on ``PATH``, so a
@@ -104,20 +114,20 @@ def canonical_package_dir() -> Optional[Path]:
     # uv tool install (the documented install path).
     tool_root = Path(os.environ.get("UV_TOOL_DIR") or home / ".local" / "share" / "uv" / "tools")
     for dist in _DIST_NAMES:
-        pkg = _package_under_venv(tool_root / dist)
+        pkg = _package_under_venv(tool_root / dist, package)
         if pkg:
             return pkg
 
     # pipx.
     for dist in _DIST_NAMES:
-        pkg = _package_under_venv(home / ".local" / "pipx" / "venvs" / dist)
+        pkg = _package_under_venv(home / ".local" / "pipx" / "venvs" / dist, package)
         if pkg:
             return pkg
 
     # Any other venv reachable through the console script on ~/.local/bin.
     console = home / ".local" / "bin" / "agentwire"
     if console.exists():
-        pkg = _package_under_venv(console.resolve().parent.parent)
+        pkg = _package_under_venv(console.resolve().parent.parent, package)
         if pkg:
             return pkg
 
@@ -135,8 +145,8 @@ def is_worktree_checkout(repo_root: Path) -> bool:
 
 
 def in_git_worktree(package_dir: Path) -> bool:
-    """True when the *package* lives inside a linked git worktree."""
-    return is_worktree_checkout(package_dir.parent)
+    """True when the *package* lives inside a linked git worktree (any depth: ``packages/x/src/pkg`` too)."""
+    return _enclosing_worktree(package_dir) is not None
 
 
 def rebuild_refusal_lines(repo_root: Path) -> List[str]:
@@ -171,10 +181,36 @@ def rebuild_refusal_lines(repo_root: Path) -> List[str]:
     ]
 
 
-def install_provenance() -> Tuple[str, Optional[Path], Path]:
+def rebuild_package_refusal_lines(repo_root: Path) -> List[str]:
+    """Refusal when either package ``rebuild`` would install is not wholly inside a primary checkout.
+
+    ``rebuild`` installs agentwire AND its damage-control sibling from one checkout. The
+    worktree check above covers the checkout; this covers the packages themselves — a missing
+    sibling would install an agentwire whose hooks cannot start (``onFailure: block`` then
+    refuses every tool call), and one that resolves into a linked worktree would make that
+    worktree canonical for the engine alone.
+    """
+    sources = {
+        "agentwire": repo_root / "agentwire",
+        "damage_control": repo_root / "packages" / "damage-control-dev" / "src" / "damage_control",
+    }
+    for package, path in sources.items():
+        if not path.is_dir():
+            return [f"REFUSED: rebuild would install without the {package} package.",
+                    f"  expected : {path}",
+                    "  An install missing it registers hooks that cannot start."]
+        worktree = _enclosing_worktree(path.resolve())
+        if worktree is not None:
+            return [f"REFUSED: rebuild would install the {package} package from the linked worktree {worktree}.",
+                    "  The worktree would BECOME canonical for that package (#936, doubled by #1209).",
+                    "  Fix: rebuild from the primary checkout, or pass --allow-foreign-source."]
+    return []
+
+
+def install_provenance(package: str = "agentwire") -> Tuple[str, Optional[Path], Path]:
     """``(state, canonical_pkg_or_None, running_pkg)`` — see the module docstring."""
-    running = running_package_dir()
-    canonical = canonical_package_dir()
+    running = running_package_dir(package)
+    canonical = canonical_package_dir(package)
     if canonical is None:
         # No install to defer to. That is a legitimate bootstrap — unless the
         # source is a task branch, which is never a thing to install a machine
@@ -183,6 +219,16 @@ def install_provenance() -> Tuple[str, Optional[Path], Path]:
     if canonical == running:
         return CANONICAL, canonical, running
     return FOREIGN, canonical, running
+
+
+def all_provenance() -> List[Tuple[str, str, Optional[Path], Path]]:
+    """``(package, state, canonical, running)`` for every package agentwire deploys."""
+    return [(pkg, *install_provenance(pkg)) for pkg in PACKAGES]
+
+
+def refusing_provenance() -> List[Tuple[str, str, Optional[Path], Path]]:
+    """The entries of :func:`all_provenance` in a refusing state: a machine-global write needs NONE."""
+    return [row for row in all_provenance() if row[1] in REFUSING_STATES]
 
 
 def refusal_lines(canonical: Optional[Path], running: Path, what: str) -> List[str]:

@@ -59,6 +59,13 @@ def cmd_safety_install(args) -> int:
     )
 
 
+def cmd_safety_migrate(args) -> int:
+    """CLI command: agentwire safety migrate"""
+    from .safety_migrate import cmd_safety_migrate as run
+
+    return run(args)
+
+
 def cmd_safety_tooldefs_list(args) -> int:
     """CLI command: agentwire safety tooldefs list"""
     return safety_commands.safety_tooldefs_list_cmd()
@@ -151,18 +158,15 @@ def register_safety_parser(subparsers) -> None:
 
     # safety install
     safety_install = safety_subparsers.add_parser(
-        "install", help="Install/heal damage control hooks, rules, and matchers"
+        "install", help="Register the damage-control package hooks with AgentWire's profile"
     )
     safety_install.add_argument(
         "-y", "--yes", action="store_true",
-        help="Non-interactive, drift-aware heal (install missing + update stale "
-             "owned hooks + bring previously-shipped rules forward; never "
-             "clobbers a hand-edited rule)",
+        help="Non-interactive: register the hooks (after proving them) without asking",
     )
     safety_install.add_argument(
         "--force", action="store_true",
-        help="Overwrite content otherwise held back: downgrade a newer installed "
-             "hook, and replace hand-edited rules (a .local-<ts>.bak is kept)",
+        help="Override the downgrade refusal (this package is older than the recorded install)",
     )
     safety_install.add_argument(
         "--allow-foreign-source", action="store_true",
@@ -171,6 +175,18 @@ def register_safety_parser(subparsers) -> None:
              "silently downgraded this machine's security hooks (#936)",
     )
     safety_install.set_defaults(func=cmd_safety_install)
+
+    # safety migrate
+    safety_migrate = safety_subparsers.add_parser(
+        "migrate",
+        help="Bring a pre-package damage-control install onto the package (human-only, one-shot)",
+    )
+    safety_migrate.add_argument("--dry-run", action="store_true", help="Show what would change; write nothing")
+    safety_migrate.add_argument(
+        "--allow-foreign-source", action="store_true",
+        help="Let a checkout that is NOT the installed tool write machine-global files (#936)",
+    )
+    safety_migrate.set_defaults(func=cmd_safety_migrate)
 
     # safety packs / groups (#1141)
     from .safety_packs_cli import register_packs_parsers

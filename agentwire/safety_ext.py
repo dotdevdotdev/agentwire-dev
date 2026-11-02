@@ -1,20 +1,25 @@
-"""AgentWire's damage-control profile: everything the generic engine is told about AgentWire.
+"""AgentWire's whole damage-control surface: the extension points of the ``damage_control`` package.
 
-``build_profile()`` is the whole surface (#1209 M3, section 4.2), as plain data. A hook never
-imports it: ``agentwire hooks install`` writes it to the protected manifest
-(``manifest_path()``) and the hook's command line names that file. In-process callers (the
-CLI, the portal, the tests) call ``activate()`` to judge by the same profile. In #1209 M6 this
-file becomes ``agentwire/safety_ext.py``.
+``build_profile()`` is the profile (#1209 M3, section 4.2), as plain data: protected paths and
+commands, unattended grants, the notifier argv, MCP command templates, the audit field, the rules
+layer. A hook never imports it: ``install()`` writes it to the protected manifest
+(``manifest_path()``) and the hook's command line names that file. In-process callers (the CLI,
+the portal, the tests) call ``activate()`` to judge by the same profile.
+
+Everything else agentwire does about damage control is a call through the package's own API
+(``damage_control.install``, ``.packs``, ``.cli``); ``install()`` here is the only installer.
 """
 
+import json
 from pathlib import Path
+from typing import Any, Callable, Dict, NamedTuple
 
 from damage_control import engine
-from damage_control.profile import GroupSpec, McpCommandTemplate, Profile, dump_profile
+from damage_control.profile import AuditSpec, GroupSpec, McpCommandTemplate, Profile, dump_profile
 
 # AgentWire's rule layer (JSON built from the YAML beside it). An absolute path: the hook
 # reads it through the manifest, and a manifest is only valid for the install that wrote it.
-RULES_DIR = Path(__file__).resolve().parent / "rules"
+RULES_DIR = Path(__file__).resolve().parent / "safety" / "rules"
 
 
 def build_profile() -> Profile:
@@ -68,6 +73,11 @@ def build_profile() -> Profile:
                 "agentwire safety packs/groups enable|disable changes damage-control "
                 "policy — host-only, run it from your own terminal (not through an agent).",
             ),
+            (
+                r'\bagentwire\s+safety\s+migrate\b(?!.*--dry-run)',
+                "agentwire safety migrate rewrites damage-control registrations and rule files — "
+                "host-only, run it from your own terminal (not through an agent).",
+            ),
         ),
         unattended_env="AGENTWIRE_UNATTENDED",
         unattended_allow_env="AGENTWIRE_UNATTENDED_ALLOW",
@@ -115,6 +125,11 @@ def build_profile() -> Profile:
             "tooldef.uv-run-a-script-in-project-environment",
             "tooldef.uv-run-a-command-in-project-environment",
         ),
+        audit=AuditSpec(
+            session_env="AGENTWIRE_SESSION_ID",
+            agent_env="AGENTWIRE_AGENT_ID",
+            sessions_dir="sessions",
+        ),
         extra_rules_dirs=(str(RULES_DIR),),
         # Outbound MCP tools and the shell command they run under the hood. Keep in
         # lockstep with ``email_send`` / ``quo_send`` in ``agentwire/mcp_server.py`` and
@@ -159,3 +174,77 @@ def write_manifest() -> Path:
 def activate() -> None:
     """Judge by AgentWire's profile in this process."""
     engine.install_profile(build_profile())
+
+
+class InstallOutcome(NamedTuple):
+    code: int
+    changed: bool
+    refused: bool
+
+
+def install(
+    force: bool = False,
+    allow_foreign: bool = False,
+    dry_run: bool = False,
+    refresh: bool = False,
+    fail_open: bool = False,
+    log: Callable[[str], None] = print,
+) -> InstallOutcome:
+    """Register the package hooks with AgentWire's profile: provenance, manifest, then the package's ``init``.
+
+    **Provenance (#936, both packages).** Machine-global files are written only from the
+    canonically installed tool. Either package running from a worktree or a foreign checkout
+    refuses outright: a worktree's venv is deleted with the worktree, and ``onFailure: block``
+    would then refuse every tool call.
+
+    The package's ``init`` proves the registered command runs (self-test) before it switches
+    anything, writes the settings file in one atomic edit, and records the install; a refusal
+    there leaves the existing registration alone (#1219/#1220).
+    """
+    from damage_control import install as dc_install
+    from damage_control.harness_config import ConfigError
+
+    from agentwire.safety import provenance as prov
+
+    refusing = prov.refusing_provenance()
+    if refusing and not allow_foreign:
+        for package, _, canonical, running in refusing:
+            for line in prov.refusal_lines(canonical, running, f"damage-control hooks ({package})"):
+                log(line)
+        return InstallOutcome(1, False, True)
+
+    # A bootstrap (fresh machine, no canonical install anywhere) is a legitimate source; the
+    # package's own dev-source guard exists for installers that have no provenance of their own.
+    all_bootstrap = all(row[1] == prov.BOOTSTRAP for row in prov.all_provenance())
+    settings = Path.home() / ".claude" / "settings.json"
+    before = settings.read_bytes() if settings.exists() else None
+    manifest = write_manifest()
+    try:
+        code = dc_install.init(
+            profile=str(manifest), force=force, dry_run=dry_run, refresh=refresh, fail_open=fail_open,
+            allow_dev_source=allow_foreign or all_bootstrap, log=log,
+        )
+    except (dc_install.InstallError, ConfigError) as e:
+        log(f"REFUSED: {e}")
+        return InstallOutcome(1, False, False)
+    after = settings.read_bytes() if settings.exists() else None
+    return InstallOutcome(code, before != after, False)
+
+
+def status(deep: bool = False) -> Dict[str, Any]:
+    """The package's ``status --json`` (``doctor --json`` when ``deep``) under AgentWire's profile.
+
+    ``{ok, version, profile, findings}``. Deep adds the self-test and a live Claude Code check.
+    """
+    import contextlib
+    import io
+
+    from damage_control import cli
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cli.main(["doctor" if deep else "status", "--json", "--profile", str(manifest_path())])
+    if not out.getvalue():
+        raise RuntimeError(f"damage-control status unavailable: profile {manifest_path()} is missing or unreadable "
+                           "(run `agentwire hooks install`)")
+    return json.loads(out.getvalue())

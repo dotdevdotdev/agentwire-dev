@@ -12,7 +12,7 @@ PATH EXECUTES:
   same name by design (it is the host's overlay), so retiring stale copies is what keeps a
   fix reaching the machine. A deployment claim must name the path that EXECUTES: the end-to-end
   case drives the registered hook command as a subprocess and reads the rule id out of the
-  audit row it wrote, not ``heal_damage_control`` returning a happy summary.
+  audit row it wrote, not ``migrate`` returning a happy summary.
 """
 
 import hashlib
@@ -22,12 +22,11 @@ import sys
 from pathlib import Path
 
 import pytest
-from damage_control import engine, packs
+from damage_control import engine, install, packs
 
-from agentwire import safety_commands
-from agentwire.safety import host_profile
+from agentwire import safety_commands, safety_ext, safety_migrate
 from agentwire.safety import provenance as prov
-from tests.unit.test_safety_heal import fake_env  # noqa: F401  (fixture)
+from tests.unit.test_safety_install import fake_env  # noqa: F401  (fixture)
 
 
 def sha256(b: bytes) -> str:
@@ -50,22 +49,21 @@ def machine(fake_env):  # noqa: F811
 
 
 class TestProvenance:
-    def test_foreign_heal_refuses_and_writes_nothing(self, machine, monkeypatch, tmp_path, capsys):
+    def test_foreign_install_refuses_and_writes_nothing(self, machine, monkeypatch, tmp_path):
         other = tmp_path / "installed" / "agentwire"
         other.mkdir(parents=True)
-        monkeypatch.setattr(prov, "canonical_package_dir", lambda: other.resolve())
+        monkeypatch.setattr(prov, "canonical_package_dir", lambda package="agentwire": other.resolve())
+        lines = []
 
-        summary = safety_commands.heal_damage_control()
-        out = capsys.readouterr().out
+        outcome = safety_ext.install(log=lines.append)
 
-        assert summary["refused"] is True
-        assert summary["provenance"] == prov.FOREIGN
-        assert "REFUSED" in out
+        assert outcome.refused is True
+        assert any("REFUSED" in line for line in lines)
         # Nothing at all was written: no registration, no interpreter record, no profile, no break-glass.
         assert not (machine / ".claude").exists()
-        assert not safety_commands.INSTALL_RECORD.exists()
-        assert not safety_commands.BREAKGLASS_DIR.exists()
-        assert not host_profile.manifest_path().exists()
+        assert not install.record_path().exists()
+        assert not install.breakglass_path().exists()
+        assert not safety_ext.manifest_path().exists()
         assert not safety_commands.RULES_DIR.exists()
 
     def test_hooks_install_refuses_from_foreign_package(self, machine, monkeypatch, tmp_path):
@@ -74,7 +72,7 @@ class TestProvenance:
 
         other = tmp_path / "installed" / "agentwire"
         other.mkdir(parents=True)
-        monkeypatch.setattr(prov, "canonical_package_dir", lambda: other.resolve())
+        monkeypatch.setattr(prov, "canonical_package_dir", lambda package="agentwire": other.resolve())
 
         results = hooks_cli.install_hooks()
         assert results
@@ -97,7 +95,7 @@ def baselines(monkeypatch, tmp_path):
     """A writable shipped-hash manifest for tests to register 'old releases' in."""
     path = tmp_path / "rule_baselines.json"
     path.write_text(json.dumps({"rules": {}, "tooldefs": {}}))
-    monkeypatch.setattr(safety_commands, "_BASELINES_PATH", path)
+    monkeypatch.setattr(safety_migrate, "BASELINES_PATH", path)
 
     def register(section: str, name: str, content: bytes):
         current = json.loads(path.read_text())
@@ -114,9 +112,9 @@ class TestShippedBaselineManifest:
         A bundled file whose current hash is absent from the manifest looks hand-edited to the
         version after it, so a stale copy of it would be kept as 'yours' forever.
         """
-        manifest = safety_commands.load_rule_baselines()
+        manifest = safety_migrate.load_baselines()
         missing = []
-        for section, dirs in (("rules", (BUNDLED_RULES, host_profile.RULES_DIR)), ("tooldefs", (BUNDLED_TOOLDEFS,))):
+        for section, dirs in (("rules", (BUNDLED_RULES, safety_ext.RULES_DIR)), ("tooldefs", (BUNDLED_TOOLDEFS,))):
             for srcdir in dirs:
                 for src in sorted(srcdir.glob("*.yaml")):
                     if sha256(src.read_bytes()) not in manifest[section].get(src.name, []):
@@ -138,9 +136,9 @@ class TestRetiringStaleCopies:
         target.write_text(OLD_RELEASE)
         baselines("rules", "core.yaml", OLD_RELEASE.encode())
 
-        summary = safety_commands.heal_damage_control(quiet=True)
+        assert safety_migrate.migrate(log=lambda *_: None) == 0
 
-        assert "core.yaml" in summary["rules_retired"] and not target.exists()
+        assert not target.exists()
 
     def test_mutation_unregistered_content_is_kept_and_reported(self, machine, baselines):
         """Must-fail control: the SAME bytes, minus the baseline registration.
@@ -152,11 +150,10 @@ class TestRetiringStaleCopies:
         target.write_text(OLD_RELEASE)  # deliberately NOT registered as a shipped baseline
         baselines("rules", "core.yaml", b"# some other release\n")  # the NAME is known; these bytes are not
 
-        summary = safety_commands.heal_damage_control(quiet=True)
+        assert safety_migrate.classify()["rules"] == {"pristine": [], "edited": ["core.yaml"]}
+        assert safety_migrate.migrate(log=lambda *_: None) == 0
 
-        assert "core.yaml" in summary["rules_kept_edited"]
         assert target.read_text() == OLD_RELEASE
-        assert safety_commands.shadowed_bundled_files()["rules"] == ["core"]
 
 
 # ===========================================================================
@@ -168,13 +165,13 @@ class TestDoctorNamesShadowing:
     def test_an_edited_overlay_that_replaces_a_bundled_file_is_named(self, machine, capsys):
         from agentwire.doctor_cli import _render_damage_control_section
 
-        safety_commands.heal_damage_control(quiet=True)
+        safety_ext.install(log=lambda *_: None)
         (safety_commands.RULES_DIR).mkdir(parents=True, exist_ok=True)
         (safety_commands.RULES_DIR / "cloud-hosting.yaml").write_text(OLD_RELEASE)
 
         _render_damage_control_section()
         out = capsys.readouterr().out
-        assert "overlay replaces bundled files: cloud-hosting" in out
+        assert "overlay replaces bundled files: cloud-hosting.yaml" in out
 
 
 # ===========================================================================
@@ -188,7 +185,7 @@ NETLIFY_RULE_ID = "cloud-hosting.netlify-sites-delete-deletes-entire-site"
 
 
 def _run_registered_hook(home: Path, command: str):
-    """Run the hook exactly as heal registered it: the recorded interpreter and arguments."""
+    """Run the hook exactly as install registered it: the recorded interpreter and arguments."""
     pre = json.loads((home / ".claude" / "settings.json").read_text())["hooks"]["PreToolUse"]
     (hook,) = [h for e in pre if e["matcher"] == "Bash" for h in e["hooks"]]
     env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "AGENTWIRE_DIR": str(home / ".agentwire")}
@@ -215,11 +212,11 @@ class TestRegisteredPathBehaviour:
         1. the machine carries a previously shipped cloud-hosting.yaml missing the netlify guard,
         2. the registered hook does NOT block it (verified against the FULL live rule set, so a
            negative proves it looked),
-        3. heal,
+        3. migrate,
         4. the SAME registered command now blocks, by the expected rule id, read out of the audit
            row that hook itself wrote.
         """
-        safety_commands.heal_damage_control(quiet=True)
+        safety_ext.install(log=lambda *_: None)
         packs.write_state(safety_commands.DAMAGECONTROL_FILE, packs=["cloud-hosting"])
 
         bundled = (BUNDLED_RULES / "cloud-hosting.yaml").read_text()
@@ -237,8 +234,8 @@ class TestRegisteredPathBehaviour:
         assert before.returncode == 0, before.stderr
         assert "SECURITY: Blocked" not in before.stderr
 
-        summary = safety_commands.heal_damage_control(quiet=True)
-        assert "cloud-hosting.yaml" in summary["rules_retired"]
+        assert safety_migrate.migrate(log=lambda *_: None) == 0
+        assert not target.exists()
 
         after = _run_registered_hook(machine, NETLIFY_CMD)
         assert after.returncode == 2, (after.returncode, after.stdout, after.stderr)
@@ -246,7 +243,6 @@ class TestRegisteredPathBehaviour:
         assert NETLIFY_RULE_ID in _audit_rule_ids(machine)
 
     def test_registered_command_runs_under_the_recorded_interpreter(self, machine):
-        safety_commands.heal_damage_control(quiet=True)
-        record = json.loads(safety_commands.INSTALL_RECORD.read_text())
-        assert record["interpreter"] == sys.executable
-        assert safety_commands.interpreter_state()["state"] == "ok"
+        safety_ext.install(log=lambda *_: None)
+        assert install.load_record()["interpreter"] == sys.executable
+        assert install.interpreter_runs(sys.executable)

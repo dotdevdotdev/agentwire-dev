@@ -12,8 +12,8 @@ from damage_control import engine, packs
 from damage_control.engine import check_protected_bash_command
 from damage_control.groups import default_packs, registry
 
-from agentwire import safety_commands, safety_packs_cli
-from tests.unit.test_safety_heal import fake_env  # noqa: F401  (fixture)
+from agentwire import safety_commands, safety_ext, safety_migrate, safety_packs_cli
+from tests.unit.test_safety_install import fake_env  # noqa: F401  (fixture)
 
 # One destructive command per pack: with the pack's files installed each is
 # not "allow"; without them it is.
@@ -31,7 +31,7 @@ DEFAULT_PROTECTED = ["gh repo delete o/r", "npm unpublish left-pad"]
 
 @pytest.fixture
 def home(fake_env, monkeypatch):  # noqa: F811
-    """An isolated ~/.agentwire that heal treats as canonical, with a human at the terminal."""
+    """An isolated ~/.agentwire that install treats as canonical, with a human at the terminal."""
     monkeypatch.setattr("agentwire.tasks_cli._host_context_ok", lambda: True)
     return fake_env
 
@@ -59,8 +59,8 @@ def install_old_layout():
 
 
 def test_fresh_install_enables_the_default_packs_and_nothing_else(home):
-    safety_commands.heal_damage_control(quiet=True)
-    assert packs.read_state(safety_commands.DAMAGECONTROL_FILE)["packs"] == sorted(default_packs())
+    safety_ext.install(log=lambda *_: None)
+    assert packs.effective_state(safety_commands.DAMAGECONTROL_FILE)["packs"] == sorted(default_packs())
     assert overlay("rules") == set() and overlay("tooldefs") == set()  # state lives in the policy file, not on disk
     assert set(decisions().values()) == {"allow"}
     weak = [c for c in DEFAULT_PROTECTED
@@ -72,16 +72,17 @@ def test_upgrade_of_a_pre_package_install_changes_no_decision(home):
     install_old_layout()
     before = decisions()
     assert set(before.values()) != {"allow"}, "probes must bite with the pack files present"
-    summary = safety_commands.heal_damage_control(quiet=True)
+    plan = safety_migrate.classify()
+    assert plan["rules"]["pristine"] and not plan["rules"]["edited"] and not plan["tooldefs"]["edited"]
+    assert safety_migrate.migrate(log=lambda *_: None) == 0
     assert decisions() == before
     state = packs.read_state(safety_commands.DAMAGECONTROL_FILE)
     assert set(state["packs"]) == {n for n, e in registry().items() if e.kind == "pack"}
-    assert summary["rules_retired"] and not summary["rules_kept_edited"]
     assert overlay("rules") == set() and overlay("tooldefs") == set(), "pristine copies must not shadow the bundle"
 
 
 def test_enable_and_disable_take_effect_on_the_next_call_and_write_no_rule_file(home):
-    safety_commands.heal_damage_control(quiet=True)
+    safety_ext.install(log=lambda *_: None)
     assert decisions()["aws"] == "allow"
     assert safety_packs_cli.cmd_packs_enable(SimpleNamespace(name="aws")) == 0
     assert decisions()["aws"] != "allow"
@@ -92,17 +93,17 @@ def test_enable_and_disable_take_effect_on_the_next_call_and_write_no_rule_file(
 
 def test_a_hand_edited_file_of_a_disabled_pack_still_loads(home):
     """Disabling a pack switches off the BUNDLED file; a file the human wrote is theirs and stays on."""
-    safety_commands.heal_damage_control(quiet=True)
+    safety_ext.install(log=lambda *_: None)
     safety_commands.RULES_DIR.mkdir(parents=True, exist_ok=True)
     (safety_commands.RULES_DIR / "aws.yaml").write_text(
         "bashToolPatterns:\n  - id: mine.aws-bucket-removal\n    pattern: '\\baws\\s+s3\\s+rb\\b'\n"
         "    reason: my own aws rule\n")
     assert decisions()["aws"] == "block"
-    assert safety_commands.heal_damage_control(quiet=True)["rules_kept_edited"] == ["aws.yaml"]
+    assert safety_migrate.classify()["rules"]["edited"] == ["aws.yaml"]
 
 
 def test_group_opt_out_and_kernel_refusal(home):
-    safety_commands.heal_damage_control(quiet=True)
+    safety_ext.install(log=lambda *_: None)
     probe = "agentwire email --to someone@example.com"
     default = safety_commands.check_command_safety(probe)["decision"]
     assert default != "allow", "the outbound group must bite by default"
@@ -117,16 +118,16 @@ def test_group_opt_out_and_kernel_refusal(home):
 
 
 def test_mutations_refuse_without_a_human_and_leave_state_alone(home, monkeypatch):
-    safety_commands.heal_damage_control(quiet=True)
+    safety_ext.install(log=lambda *_: None)
     monkeypatch.setattr("agentwire.tasks_cli._host_context_ok", lambda: False)
-    before = safety_commands.DAMAGECONTROL_FILE.read_text()
+    before = safety_commands.DAMAGECONTROL_FILE.exists()
     codes = [
         safety_packs_cli.cmd_packs_enable(SimpleNamespace(name="aws")),
         safety_packs_cli.cmd_packs_disable(SimpleNamespace(name="aws")),
         safety_packs_cli.cmd_groups_disable(SimpleNamespace(name="outbound")),
     ]
     assert codes == [1, 1, 1]
-    assert safety_commands.DAMAGECONTROL_FILE.read_text() == before
+    assert safety_commands.DAMAGECONTROL_FILE.exists() == before, "a refused mutation must not create the policy file"
 
 
 def test_undecided_policy_loads_only_the_hosts_default_packs(home):

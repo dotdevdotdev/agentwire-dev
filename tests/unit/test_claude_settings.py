@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentwire import claude_settings, hooks_cli, safety_commands
+from agentwire import claude_settings, hooks_cli
 from agentwire.claude_settings import SettingsError, edit_claude_settings
 
 
@@ -29,7 +29,6 @@ def test_unparseable_settings_are_refused_byte_identical_by_every_writer(setting
     writers = {
         "register_hook": lambda: hooks_cli.register_hook_in_settings("Notification", "idle-handler.sh"),
         "unregister_hook": lambda: hooks_cli.unregister_hook_from_settings("Notification", "idle-handler.sh"),
-        "register_damage_control": safety_commands.register_damage_control_in_settings,
     }
     bad = {}
     for name, write in writers.items():

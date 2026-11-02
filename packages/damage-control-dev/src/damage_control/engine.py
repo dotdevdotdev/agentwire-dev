@@ -26,6 +26,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
+from damage_control import audit
 from damage_control.profile import GENERIC
 
 
@@ -119,6 +120,7 @@ def install_profile(profile: Any) -> None:
     global PROFILE, PROTECTED_CONTROL_PLANE_PATHS, PROTECTED_COMMAND_PATTERNS
     global DEFAULT_UNATTENDED_ALLOW, _CANONICAL_HOME, _CONTROL_PLANE_WORDS, _BENIGN_PATH_RE
     PROFILE = profile
+    audit.configure(profile)
     PROTECTED_CONTROL_PLANE_PATHS = [
         f"{profile.config_dir}/{POLICY_FILE_NAME}",  # global kill switch + rule knobs
         f"{profile.config_dir}/{PROFILE_FILE_NAME}",  # the profile the hooks load: protected data, not code

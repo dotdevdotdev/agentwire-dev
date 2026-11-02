@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-AgentWire Damage Control Audit Logger
-======================================
+Damage Control Audit Logger
+===========================
 Logs all security decisions (blocked, asked, allowed) to JSONL files for analysis.
 
-Storage: ~/.agentwire/logs/damage-control/YYYY-MM-DD.jsonl
+Storage: <config home>/<profile.audit.log_dir>/YYYY-MM-DD.jsonl (the config home and the
+host's attribution env vars come from the profile: ``configure(profile)``).
 Format: One JSON object per line (JSONL)
 
 Fields:
 - timestamp: ISO 8601 timestamp
-- session_id: AgentWire session name (env override → tmux pane → #871 metadata)
+- session_id: host session name (profile env override → tmux pane → host session records)
 - conversation_id: Claude conversation UUID (from the hook stdin payload)
 - agent_id: Agent identifier (if in parallel execution)
 - tool: Tool name (Bash, Edit, Write)
@@ -26,6 +27,31 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# The profile's audit field plus the config home it resolves against. ``configure`` is
+# called by ``engine.install_profile``; until then the generic defaults apply.
+_AUDIT_LOG_DIR = "logs/damage-control"
+_SESSION_ENV = ""
+_AGENT_ENV = ""
+_SESSIONS_DIR = ""
+_CONFIG_DIR = "~/.damage-control"
+_CONFIG_DIR_ENV = "DAMAGE_CONTROL_HOME"
+
+
+def configure(profile) -> None:
+    """Point attribution and storage at ``profile`` (its config home and ``audit`` field)."""
+    global _AUDIT_LOG_DIR, _SESSION_ENV, _AGENT_ENV, _SESSIONS_DIR, _CONFIG_DIR, _CONFIG_DIR_ENV
+    _AUDIT_LOG_DIR = profile.audit.log_dir
+    _SESSION_ENV = profile.audit.session_env
+    _AGENT_ENV = profile.audit.agent_env
+    _SESSIONS_DIR = profile.audit.sessions_dir
+    _CONFIG_DIR = profile.config_dir
+    _CONFIG_DIR_ENV = profile.config_dir_env
+
+
+def _config_home() -> Path:
+    default = os.path.expanduser(_CONFIG_DIR)
+    return Path(os.environ.get(_CONFIG_DIR_ENV, default) if _CONFIG_DIR_ENV else default)
 
 
 def _safe_cwd() -> str:
@@ -45,16 +71,14 @@ def _safe_cwd() -> str:
 # The hook's parsed stdin payload. Each damage-control hook assigns this right
 # after ``json.load(sys.stdin)`` so every log_* call in that process carries
 # attribution without threading a kwarg through every call site. Claude Code
-# puts the conversation UUID in the payload's ``session_id`` field — the same
-# id agentwire mints and records per #871 — so this is the recorded identity,
-# not a scrape.
+# puts the conversation UUID in the payload's ``session_id`` field — the
+# harness's recorded identity, not a scrape.
 HOOK_INPUT: dict = {}
 
 
 def get_log_dir() -> Path:
     """Get or create the audit log directory."""
-    agentwire_dir = os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire"))
-    log_dir = Path(agentwire_dir) / "logs" / "damage-control"
+    log_dir = _config_home() / _AUDIT_LOG_DIR
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 
@@ -70,7 +94,7 @@ def _conversation_id() -> Optional[str]:
     """Claude's conversation UUID for this hook invocation, or None.
 
     Comes from the hook stdin payload (``session_id`` there is the
-    conversation id agentwire mints per #871).
+    conversation id).
     """
     cid = HOOK_INPUT.get("session_id") if isinstance(HOOK_INPUT, dict) else None
     return cid if isinstance(cid, str) and cid else None
@@ -86,8 +110,7 @@ def _tmux_session_name() -> Optional[str]:
     """The tmux session this hook process runs inside, or None.
 
     The hook inherits ``TMUX``/``TMUX_PANE`` from the pane's shell, so asking
-    tmux for ``#S`` names the agentwire session directly (session names ARE
-    tmux session names). Never raises; a couple-second timeout bounds the
+    tmux for ``#S`` names the session directly. Never raises; a couple-second timeout bounds the
     worst case.
     """
     if not os.environ.get("TMUX"):
@@ -106,26 +129,23 @@ def _tmux_session_name() -> Optional[str]:
     return name or None
 
 
-def _sessions_dir() -> Path:
-    """Mirror of ``core.sessions_dir()`` — the SSOT root for #871 records.
-
-    This hook is a standalone PEP 723 script (uv isolated env) and cannot
-    import ``agentwire.core``, so the join is mirrored here; the structural
-    SSOT test exempts exactly this line.
-    """
-    agentwire_dir = os.environ.get("AGENTWIRE_DIR", os.path.expanduser("~/.agentwire"))
-    return Path(agentwire_dir) / "sessions"
+def _sessions_dir() -> Optional[Path]:
+    """The host's session-record root (``profile.audit.sessions_dir``), or None if it keeps none."""
+    return _config_home() / _SESSIONS_DIR if _SESSIONS_DIR else None
 
 
 def _session_from_metadata(conversation_id: str) -> Optional[str]:
-    """Resolve a session name by scanning #871's recorded launch metadata.
+    """Resolve a session name by scanning the host's recorded launch metadata.
 
-    ``~/.agentwire/sessions/<name>/metadata.json`` carries the
+    ``<sessions dir>/<name>/metadata.json`` carries the
     ``conversation_ids`` chain; the entry containing this conversation id names
     the session. Best-effort — corrupt/missing records are skipped.
     """
+    root = _sessions_dir()
+    if root is None:
+        return None
     try:
-        entries = list(_sessions_dir().iterdir())
+        entries = list(root.iterdir())
     except OSError:
         return None
     for entry in entries:
@@ -145,7 +165,7 @@ def _session_from_metadata(conversation_id: str) -> Optional[str]:
 def get_session_context() -> dict:
     """Session attribution for an audit row (#940 prerequisite).
 
-    ``session_id`` is the agentwire session NAME; ``conversation_id`` is the
+    ``session_id`` is the host's session NAME; ``conversation_id`` is the
     Claude conversation UUID from the hook payload. Resolution order for the
     name: explicit env override → tmux (the pane the hook runs in) → #871
     metadata scan by conversation id → ``"unknown"``.
@@ -155,7 +175,7 @@ def get_session_context() -> dict:
     the pre-#940 row shape ("unknown").
     """
     conversation_id = None
-    session = os.environ.get("AGENTWIRE_SESSION_ID") or None
+    session = (os.environ.get(_SESSION_ENV) if _SESSION_ENV else None) or None
     try:
         conversation_id = _conversation_id()
         if not session:
@@ -167,7 +187,7 @@ def get_session_context() -> dict:
     return {
         "session_id": session or "unknown",
         "conversation_id": conversation_id,
-        "agent_id": os.environ.get("AGENTWIRE_AGENT_ID", "main"),
+        "agent_id": os.environ.get(_AGENT_ENV, "main") if _AGENT_ENV else "main",
     }
 
 

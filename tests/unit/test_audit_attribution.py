@@ -21,7 +21,9 @@ import pytest
 @pytest.fixture()
 def audit_logger(monkeypatch, tmp_path):
     from damage_control import audit as mod
+    from agentwire.safety_ext import build_profile
 
+    mod.configure(build_profile())
     monkeypatch.setenv("AGENTWIRE_DIR", str(tmp_path))
     monkeypatch.delenv("AGENTWIRE_SESSION_ID", raising=False)
     monkeypatch.delenv("TMUX", raising=False)

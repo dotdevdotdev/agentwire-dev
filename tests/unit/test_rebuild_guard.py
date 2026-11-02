@@ -14,6 +14,11 @@ import pytest
 from agentwire.system_cli import cmd_rebuild
 
 
+def _lay_out_packages(clone: Path) -> None:
+    """The two packages a source checkout carries (rebuild refuses one that lacks either)."""
+    (clone / "packages" / "damage-control-dev" / "src" / "damage_control").mkdir(parents=True, exist_ok=True)
+
+
 def _git(repo: Path, *args: str) -> str:
     env = {
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
@@ -61,6 +66,7 @@ class TestRebuildGuard:
         fake_file = clone / "agentwire" / "system_cli.py"
         fake_file.parent.mkdir(parents=True, exist_ok=True)
         fake_file.write_text("")
+        _lay_out_packages(clone)
         monkeypatch.setattr(sys_mod, "__file__", str(fake_file))
         self.clone = clone
 
@@ -115,6 +121,7 @@ def up_to_date_checkout(tmp_path):
     fake_file = clone / "agentwire" / "system_cli.py"
     fake_file.parent.mkdir(parents=True, exist_ok=True)
     fake_file.write_text("")
+    _lay_out_packages(clone)
     return clone, fake_file
 
 

@@ -209,9 +209,9 @@ def test_groups_registry_comes_from_the_profile():
 
 
 def test_the_profile_manifest_round_trips_and_rejects_what_it_does_not_know(tmp_path):
-    from agentwire.safety import host_profile
+    from agentwire import safety_ext
 
-    original = host_profile.build_profile()
+    original = safety_ext.build_profile()
     path = tmp_path / "profile.json"
     path.write_text(dump_profile(original))
     assert load_profile(path) == original
@@ -232,11 +232,11 @@ def test_the_profile_manifest_round_trips_and_rejects_what_it_does_not_know(tmp_
 def test_the_files_the_new_install_adds_to_the_control_plane_are_protected():
     """The break-glass script and the interpreter record are control plane: an agent that can rewrite
     either can defeat the way out, or point doctor at a fake interpreter."""
-    from agentwire.safety import host_profile
+    from agentwire import safety_ext
 
     home = str(Path.home())
     unprotected = [p for p in ("bin/damage-control-breakglass", "damagecontrol-install.json",
                                "damagecontrol-profile.json", "damage-control/mine.json")
                    if not _core.is_protected_control_plane(f"{home}/.agentwire/{p}")]
     assert not unprotected, unprotected
-    assert host_profile.manifest_path().name == _core.PROFILE_FILE_NAME
+    assert safety_ext.manifest_path().name == _core.PROFILE_FILE_NAME

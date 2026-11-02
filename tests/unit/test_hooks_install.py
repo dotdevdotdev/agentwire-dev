@@ -77,8 +77,13 @@ class TestInstallHooks:
         monkeypatch.delenv("UV_TOOL_DIR", raising=False)
         from agentwire.safety import provenance as _prov
         pkg = tmp_path / "pkg"
-        monkeypatch.setattr(_prov, "canonical_package_dir", lambda: pkg.resolve())
-        monkeypatch.setattr(_prov, "running_package_dir", lambda: pkg.resolve())
+        real_running = _prov.running_package_dir
+
+        def running(package="agentwire"):
+            return pkg.resolve() if package == "agentwire" else real_running(package)
+
+        monkeypatch.setattr(_prov, "canonical_package_dir", running)
+        monkeypatch.setattr(_prov, "running_package_dir", running)
 
         hooks_src = pkg / "hooks"
         hooks_src.mkdir(parents=True)
