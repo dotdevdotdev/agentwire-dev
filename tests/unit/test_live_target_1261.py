@@ -9,6 +9,7 @@ from agentwire import core, inbox, msg_cli, pane_manager, services, session_cli
 from agentwire.__main__ import build_parser
 from agentwire.notify_cli import cmd_notify_parent
 
+
 def _all(capsys):
     o = capsys.readouterr()
     return o.out + o.err
