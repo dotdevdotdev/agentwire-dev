@@ -42,15 +42,15 @@ UV_CACHE_CLEAN_TIMEOUT = 20.0
 
 
 def _clean_uv_cache_for_agentwire() -> None:
-    """Drop only agentwire-dev's and damage-control-dev's entries from the uv cache.
+    """Drop only agentwire-dev's entry from the uv cache.
 
     The uv cache (~/.cache/uv) is shared by every uv tool and project on the
     machine — never rmtree it wholesale. `uv cache clean <package>` evicts just
     that package's wheels/sdists so the next install rebuilds from source.
-    damage-control-dev is the workspace sibling the hooks run from, so a stale
-    cached wheel of it would ship old rules just as a stale agentwire wheel would.
+    damage-control-dev is a published, versioned wheel resolved from PyPI (#1209 M8),
+    so there is no stale local build of it to evict.
     """
-    for package in ("agentwire-dev", "damage-control-dev"):
+    for package in ("agentwire-dev",):
         try:
             result = subprocess.run(
                 ["uv", "cache", "clean", package],
@@ -570,9 +570,8 @@ def cmd_rebuild(args) -> int:
             print(f"  {line}" if line else "", file=sys.stderr)
         return 1
 
-    # ...and the same question for each package it installs (#1209 M6): the damage-control
-    # engine is a second distribution, so a missing or worktree-resident sibling is the
-    # #936 hazard on the package that actually runs on every tool call.
+    # ...and the same question for the package it installs: one that resolves into a linked
+    # worktree (a symlinked package dir) is the #936 hazard from a primary-looking checkout.
     package_refusal = prov.rebuild_package_refusal_lines(project_root)
     if package_refusal and not getattr(args, "allow_foreign_source", False):
         for line in package_refusal:

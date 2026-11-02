@@ -25,8 +25,8 @@ AGENTWIRE_MCP_TOOLS = (
 
 
 def test_effective_rule_set_is_identical_to_the_pre_split_golden():
-    """Sorted ids + patterns + tool policies + path lists, diffed against the set recorded
-    BEFORE the split (scripts/effective_rules.py --ref <pre-split> --write)."""
+    """Sorted ids + patterns + tool policies + path lists of the INSTALLED engine's rules merged with
+    AgentWire's layer, diffed against the committed golden (re-record: scripts/effective_rules.py --write)."""
     out = subprocess.run(
         [sys.executable, str(REPO / "scripts" / "effective_rules.py"), "--check"],
         capture_output=True, text=True,

@@ -93,8 +93,9 @@ jobs:
         with:
           python-version: "3.9"
 
+      # The published engine, at the range agentwire declares (never a checkout copy, #1209 M8).
       - name: Install the damage_control package and test dependencies
-        run: python -m pip install pytest ./packages/damage-control-dev
+        run: python -m pip install pytest "$(grep -o 'damage-control-dev>=[^"]*' pyproject.toml)"
 
       # --noconftest: tests/conftest.py imports agentwire's full dependency set.
       - name: Run hook tests on the declared floor
@@ -106,4 +107,3 @@ jobs:
           tests/unit/test_hook_python_floor.py
           tests/unit/test_hook_fail_closed.py
           tests/unit/test_hook_fail_closed_matrix.py
-          tests/unit/test_engine_standalone.py

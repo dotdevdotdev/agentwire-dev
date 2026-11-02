@@ -1,7 +1,0 @@
-{
- "readOnlyPaths": [
-  "*.damagecontrol.yml",
-  "~/.claude/settings.json",
-  "~/.claude/hooks/*"
- ]
-}

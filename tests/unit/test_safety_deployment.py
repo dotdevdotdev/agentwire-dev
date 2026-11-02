@@ -113,12 +113,13 @@ class TestShippedBaselineManifest:
         version after it, so a stale copy of it would be kept as 'yours' forever.
         """
         manifest = safety_migrate.load_baselines()
-        missing = []
-        for section, dirs in (("rules", (BUNDLED_RULES, safety_ext.RULES_DIR)), ("tooldefs", (BUNDLED_TOOLDEFS,))):
-            for srcdir in dirs:
-                for src in sorted(srcdir.glob("*.yaml")):
-                    if sha256(src.read_bytes()) not in manifest[section].get(src.name, []):
-                        missing.append(f"{section}/{src.name}")
+        # Only AgentWire's own rules layer: the engine's files ship from the damage-control-dev
+        # wheel and their manifest entries are frozen (#1209 M8), so they are not checked here.
+        missing = [
+            f"rules/{src.name}"
+            for src in sorted(safety_ext.RULES_DIR.glob("*.yaml"))
+            if sha256(src.read_bytes()) not in manifest["rules"].get(src.name, [])
+        ]
         assert not missing, f"not in rule_baselines.json (run: uv run python scripts/gen_rule_baselines.py): {missing}"
 
 

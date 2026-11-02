@@ -44,34 +44,22 @@ Decision: Block (exit 2) | Allow (exit 0) | Ask (JSON response)
 
 ### File Structure
 
-Damage control is its own package, a uv-workspace member the `agentwire` distribution depends on
-(#1209 M4). Claude Code's `settings.json` runs it in exec form —
+The engine is **not in this repo**: it is the published PyPI package `damage-control-dev`
+(source, rule authoring, extending/profile seam, threat model and coverage docs all live at
+<https://github.com/dotdevdotdev/damage-control-dev>, #1209 M8). `agentwire` pins it
+(`damage-control-dev>=floor,<ceiling`) and is a *profile* of it. This page keeps only what is
+AgentWire-specific: the profile, the rules layer in `agentwire/safety/rules/`, the control plane and
+unattended policy, and heal/provenance. Claude Code's `settings.json` runs the engine in exec form —
 `<recorded interpreter> -I -m damage_control.hook <kind> --profile ~/.agentwire/damagecontrol-profile.json`
 (`kind` = bash, edit, write, read, mcp). There are no hook scripts to install or regenerate.
 
 ```
-packages/damage-control-dev/src/damage_control/
-├── hook.py                           # bootstrap wrapper: os+sys only, any import failure -> exit 2
-├── adapter.py                        # payload -> ToolCall, Verdict -> exit code / ask envelope
-├── policy.py                         # Guard.decide: the decision ladder
-├── engine.py                         # rules, ladders, loading, kernel
-├── profile.py                        # Profile (host data) + JSON manifest dump/load
-├── groups.py / packs.py              # groups and packs, read at RUNTIME from the policy file
-├── audit.py                          # audit logging
-├── tooldefs/                         # tool command catalogues (*.yaml source, *.json read)
-└── rules/                            # Pattern files (categorized; *.yaml source, *.json read)
-    ├── core.yaml                     # rm, chmod, system-level dangers
-    ├── core.yaml                     # rm, chmod, system-level dangers
-    ├── git.yaml                      # force push, reset --hard
-    ├── databases.yaml                # DROP, TRUNCATE, migrations, raw DML
-    ├── containers.yaml               # docker prune/push, kubectl delete
-    ├── cloud-hosting.yaml, aws.yaml, gcp.yaml, firebase.yaml  # incl. deploys
-    ├── infrastructure.yaml, remote.yaml
-    ├── control-plane.yaml            # protected agentwire-owned paths (readOnlyPaths)
-    ├── outbound.yaml                 # email/SMS send verbs (ask)
-    ├── publish.yaml                  # package-registry publish (ask)
-    ├── agentwire.yaml                # tmux/session protections
-    └── gws.yaml                      # Google Workspace CLI
+<site-packages>/damage_control/        # the INSTALLED engine (damage-control-dev); module/rule layout: see its docs
+agentwire/safety/rules/               # AgentWire's own rules layer (*.yaml source, *.json read; scripts/build_rules_json.py)
+├── agentwire-core.yaml, agentwire-control-plane.yaml, agentwire-mcp-tools.yaml
+├── agentwire-outbound.yaml           # email/SMS send verbs
+└── agentwire.yaml                    # tmux/session protections
+agentwire/safety_ext.py               # the profile: build_profile / install / status / activate
 
 ~/.agentwire/
 ├── damage-control/                   # OPTIONAL user override — same shape as rules/
@@ -134,7 +122,7 @@ preset; it can never expand its own freedom by editing a file.** The one
 override is the user's `allowedPaths` allowlist — a human, host-side opt-in (the
 agent can't add to it without editing a protected file, which is itself blocked).
 The mechanism is `check_protected_command` / `check_protected_path` in
-`packages/damage-control-dev/src/damage_control/engine.py`, which run **before** `detect_escape_hatch` and the kill switch.
+`damage_control/engine.py` (in the damage-control-dev package), which run **before** `detect_escape_hatch` and the kill switch.
 
 #### Flagless and indirect writers (#1095)
 
@@ -142,7 +130,7 @@ The generic ladder names writers that carry a write *token* (`>`, `tee`, `cp`,
 `rm`, `sed -i`). A writer whose only link to the file is an operand, or whose
 path arrives indirectly, is classified by the **operation on the operand**,
 whatever the spelling (`PROTECTED_WRITER_PATTERNS`, `INTERPRETER_WRITE_PATTERNS`
-in `packages/damage-control-dev/src/damage_control/engine.py`; applied only to the protected tier, never to user
+in `damage_control/engine.py`; applied only to the protected tier, never to user
 `readOnlyPaths`):
 
 - **Operand writers:** `ln`/`link` (path as the *target*; as the source it is a
@@ -502,7 +490,7 @@ that explicit gated list is open by default).
 defense-in-depth (#721 review found three bypasses of the original
 Bash-pattern-only block; all three are closed):
 
-1. **`PROTECTED_COMMAND_PATTERNS`** (`packages/damage-control-dev/src/damage_control/engine.py`) blocks the command
+1. **`PROTECTED_COMMAND_PATTERNS`** (`damage_control/engine.py`) blocks the command
    text at the SAME tier as the protected-control-plane path check —
    escape-hatch- and kill-switch-EXEMPT, evaluated before
    `detect_escape_hatch`. Unlike an ordinary `bashToolPatterns` rule, `# allow:`
@@ -542,7 +530,7 @@ defense-in-depth on top of the split, not implemented here.
 
 ## Moved: rule authoring
 
-Rule authoring (patterns, anchoring, global options, tooldefs, groups and packs) moved to [`packages/damage-control-dev/docs/rule-authoring.md`](../../../packages/damage-control-dev/docs/rule-authoring.md).
+Rule authoring (patterns, anchoring, global options, tooldefs, groups and packs) lives in the [damage-control-dev rule-authoring guide](https://github.com/dotdevdotdev/damage-control-dev/blob/main/docs/rule-authoring.md); an engine rule change is made there, released, and the floor raised here.
 
 ## Unattended (no-human-present) guardrail
 
@@ -596,7 +584,7 @@ unattended gate is inert too (enable safety for scheduled projects to engage it)
 |-------|-------|-------|
 | 1. per-task `unattended_allow` | `.agentwire.tasks.yml` | The pressure-relief valve: widen (or narrow) for one task instead of loosening the global default |
 | 2. `unattended_allow` | `~/.agentwire/damagecontrol.yml` / project `.damagecontrol.yml` | Global / per-project |
-| 3. `DEFAULT_UNATTENDED_ALLOW` | `packages/damage-control-dev/src/damage_control/engine.py` | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create`, `outbound.agentwire-email` — work + open a PR + notify the owner by email |
+| 3. `DEFAULT_UNATTENDED_ALLOW` | `damage_control/engine.py` (engine package) | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create`, `outbound.agentwire-email` — work + open a PR + notify the owner by email |
 
 **Precedence, not union (#914).** The most specific layer that *names* a rule id
 defines that rule's grant outright. A union would make a scoped entry
@@ -1439,7 +1427,7 @@ the person who owns the machine.
 
 ## Moved: extending
 
-The seam (Profile, `Guard.decide`, adapter) and the runtime package moved to [`packages/damage-control-dev/docs/extending.md`](../../../packages/damage-control-dev/docs/extending.md). AgentWire's side of it is `agentwire/safety_ext.py`.
+The seam (Profile, `Guard.decide`, adapter) and the runtime package are documented in the [damage-control-dev extending guide](https://github.com/dotdevdotdev/damage-control-dev/blob/main/docs/extending.md). AgentWire's side of it is `agentwire/safety_ext.py`.
 
 ## Troubleshooting
 
@@ -1467,7 +1455,7 @@ agentwire safety check "your command here"
 # Shows which pattern matched
 ```
 
-**Adjust the pattern** — copy the relevant rules file from `packages/damage-control-dev/src/damage_control/rules/` into `~/.agentwire/damage-control/` and edit there (it then replaces the bundled file of that name):
+**Adjust the pattern** — copy the relevant rules file from the installed engine (`python -c "import damage_control.engine as e; print(e.bundled_rules_dir())"`) into `~/.agentwire/damage-control/` and edit there (it then replaces the bundled file of that name):
 ```yaml
 # Before (too broad)
 - pattern: '\brm\b'
@@ -1557,7 +1545,7 @@ Each tool call adds <100ms overhead for pattern checking:
 
 ## Moved: threat model
 
-The security model (what it protects against, what it does not, the residuals) moved to [`packages/damage-control-dev/docs/threat-model.md`](../../../packages/damage-control-dev/docs/threat-model.md).
+The security model (what it protects against, what it does not, the residuals) lives in the [damage-control-dev threat model](https://github.com/dotdevdotdev/damage-control-dev/blob/main/docs/threat-model.md).
 
 ## FAQ
 
@@ -1567,7 +1555,7 @@ The security model (what it protects against, what it does not, the residuals) m
 
 ### Q: Can I customize patterns per session?
 
-**A**: Not yet. Patterns are global — bundled `packages/damage-control-dev/src/damage_control/rules/` plus an optional overlay at `~/.agentwire/damage-control/`. Per-session overrides are a future enhancement.
+**A**: Not yet. Patterns are global — the engine's bundled rules plus AgentWire's layer, plus an optional overlay at `~/.agentwire/damage-control/`. Per-session overrides are a future enhancement.
 
 ### Q: What if I need to run a blocked command?
 
@@ -1607,7 +1595,7 @@ Remember: when this directory exists, the bundled rules are **replaced**. Copy t
 ## Related Documentation
 
 - `agentwire safety` — CLI surface for testing commands and viewing audit logs (`agentwire safety check ...`, `agentwire safety logs`).
-- `packages/damage-control-dev/src/damage_control/rules/` and `agentwire/safety/rules/` — bundled pattern source-of-truth.
+- `agentwire/safety/rules/` — AgentWire's rules layer; the generic rules ship in the `damage-control-dev` wheel (`damage_control/rules/`).
 
 
 ## AgentWire's extension surface (#1209 M6)
@@ -1620,16 +1608,17 @@ the package's `init`), `status()` (the package's `status --json` / `doctor --jso
 `damage_control.packs`, `doctor` renders the package's findings (version and profile included) and adds only
 AgentWire's own checks, and the break-glass script is the package's.
 
-- **Two-package provenance.** `rebuild` and `install` refuse a worktree or foreign source for EITHER package
-  (`agentwire/safety/provenance.py`: `PACKAGES`, `all_provenance`, `rebuild_package_refusal_lines`). The engine is the
-  package that runs on every tool call; guarding only `agentwire` left it open.
+- **Two-package provenance.** `install` refuses a worktree or foreign source for EITHER package
+  (`agentwire/safety/provenance.py`: `PACKAGES`, `all_provenance`). The engine is the package that runs on every tool
+  call; guarding only `agentwire` left it open. `rebuild` builds only `agentwire` from the checkout (the engine comes
+  from PyPI, #1209 M8), so `rebuild_package_refusal_lines` guards just that one package dir.
 - **`agentwire safety migrate`** (human-only, in `PROTECTED_COMMAND_PATTERNS`, `--dry-run` reads only): classifies an old
   install with `rule_baselines.json` (pristine copies deleted, edited ones kept and named), records the pack decision the
   old files implied, installs the package hooks, and only then removes the pre-package script registrations and files.
 - **Notifier protocol.** The block notifier receives the event as JSON on stdin; the profile supplies only the argv.
 - **Tests.** One integration test per extension point (`tests/unit/test_extension_points.py`) drives the real hook under
-  AgentWire's manifest and the generic one; `tests/unit/test_engine_standalone.py` is the AST proof the package imports
-  nothing from `agentwire`, with no exemptions.
+  AgentWire's manifest and the generic one. That the engine imports nothing from `agentwire` is the engine repo's
+  concern (its package is a separate project, #1209 M8).
 - **Differential.** The in-tree engine no longer exists (it moved in M4), so the old-versus-new differential is the
   golden snapshot: `uv run python scripts/golden_snapshot.py check` replays every recorded payload through the real
   `python -I -m damage_control.hook` entry and must reproduce the M0 recording, recorded from the old in-tree hooks,

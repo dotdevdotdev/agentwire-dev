@@ -11,17 +11,19 @@ import ast
 import re
 import shutil
 import subprocess
+from importlib import metadata
 from pathlib import Path
 
+import damage_control
 import pytest
 
-PACKAGE = Path(__file__).resolve().parents[2] / "packages" / "damage-control-dev"
-MODULES = sorted((PACKAGE / "src" / "damage_control").glob("*.py"))
+DIST = "damage-control-dev"  # the INSTALLED engine (#1209 M8): its own metadata, not a repo path
+MODULES = sorted(Path(damage_control.__file__).resolve().parent.glob("*.py"))
 FLOOR = (3, 9)
 
 
-def _declared_floor(source: str) -> tuple:
-    m = re.search(r'requires-python = ">=(\d+)\.(\d+)"', source)
+def _declared_floor(requires_python: str) -> tuple:
+    m = re.search(r">=(\d+)\.(\d+)", requires_python)
     return (int(m.group(1)), int(m.group(2)))
 
 
@@ -38,7 +40,7 @@ def _annotations(tree):
 def test_package_declares_the_floor_and_ships_the_hook_modules():
     names = {m.name for m in MODULES}
     assert {"hook.py", "adapter.py", "engine.py", "policy.py", "profile.py", "audit.py"} <= names
-    assert _declared_floor((PACKAGE / "pyproject.toml").read_text()) == FLOOR
+    assert _declared_floor(metadata.metadata(DIST)["Requires-Python"]) == FLOOR
 
 
 def test_modules_parse_on_the_floor_grammar_and_defer_pep604_annotations():
@@ -74,7 +76,7 @@ def test_every_hook_kind_runs_under_the_floor_interpreter():
     for kind in ("bash", "edit", "write", "read", "mcp"):
         proc = subprocess.run(
             [uv, "run", "--no-project", "--python", f"{FLOOR[0]}.{FLOOR[1]}", "--with", "pyyaml",
-             "--with", str(PACKAGE), "python", "-I", "-m", "damage_control.hook", kind],
+             "--with", f"{DIST}=={metadata.version(DIST)}", "python", "-I", "-m", "damage_control.hook", kind],
             input="{}", capture_output=True, text=True, timeout=300,
         )
         if proc.returncode not in (0, 2) or "Traceback" in proc.stderr:

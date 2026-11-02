@@ -14,11 +14,6 @@ import pytest
 from agentwire.system_cli import cmd_rebuild
 
 
-def _lay_out_packages(clone: Path) -> None:
-    """The two packages a source checkout carries (rebuild refuses one that lacks either)."""
-    (clone / "packages" / "damage-control-dev" / "src" / "damage_control").mkdir(parents=True, exist_ok=True)
-
-
 def _git(repo: Path, *args: str) -> str:
     env = {
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
@@ -66,7 +61,6 @@ class TestRebuildGuard:
         fake_file = clone / "agentwire" / "system_cli.py"
         fake_file.parent.mkdir(parents=True, exist_ok=True)
         fake_file.write_text("")
-        _lay_out_packages(clone)
         monkeypatch.setattr(sys_mod, "__file__", str(fake_file))
         self.clone = clone
 
@@ -121,7 +115,6 @@ def up_to_date_checkout(tmp_path):
     fake_file = clone / "agentwire" / "system_cli.py"
     fake_file.parent.mkdir(parents=True, exist_ok=True)
     fake_file.write_text("")
-    _lay_out_packages(clone)
     return clone, fake_file
 
 
@@ -161,18 +154,15 @@ class TestRebuildSafety:
 
 
 
-
-
-class TestRebuildGuardsBothPackages:
-    """#1209 M6: the damage-control engine is a second distribution, so the #936 hazard is doubled."""
+class TestRebuildGuardsThePackage:
+    """#936: an agentwire package dir that resolves into a linked worktree must not be installed machine-wide."""
 
     @pytest.fixture(autouse=True)
     def _patch_root(self, up_to_date_checkout, monkeypatch):
         clone, fake_file = up_to_date_checkout
         import agentwire.system_cli as sys_mod
         monkeypatch.setattr(sys_mod, "__file__", str(fake_file))
-        self.clone = clone
-        self.sibling = clone / "packages" / "damage-control-dev" / "src" / "damage_control"
+        self.pkg = clone / "agentwire"
 
     def _installs(self, monkeypatch):
         real_run = subprocess.run
@@ -187,30 +177,29 @@ class TestRebuildGuardsBothPackages:
         monkeypatch.setattr(subprocess, "run", fake_run)
         return lambda: [c for c in calls if c[:3] == ["uv", "tool", "install"]]
 
-    def test_a_checkout_without_the_sibling_package_is_refused(self, monkeypatch, capsys):
-        self.sibling.rmdir()
-        installs = self._installs(monkeypatch)
-
-        rc = cmd_rebuild(_args(force=False))
-
-        assert rc == 1 and "without the damage_control package" in capsys.readouterr().err
-        assert not installs()
-
-    def test_a_sibling_that_lives_in_a_linked_worktree_is_refused_even_from_a_primary_checkout(self, tmp_path, monkeypatch, capsys):
+    def test_a_package_that_lives_in_a_linked_worktree_is_refused_even_from_a_primary_checkout(
+        self, tmp_path, monkeypatch, capsys
+    ):
         worktree = tmp_path / "linked"
-        (worktree / "src" / "damage_control").mkdir(parents=True)
+        (worktree / "agentwire").mkdir(parents=True)
         (worktree / ".git").write_text("gitdir: /elsewhere\n")  # a linked worktree
-        self.sibling.rmdir()
-        self.sibling.symlink_to(worktree / "src" / "damage_control")
+        (self.pkg / "system_cli.py").unlink()
+        self.pkg.rmdir()
+        self.pkg.symlink_to(worktree / "agentwire")
         installs = self._installs(monkeypatch)
 
         rc = cmd_rebuild(_args(force=False))
 
-        assert rc == 1 and "damage_control package from the linked worktree" in capsys.readouterr().err
+        assert rc == 1 and "agentwire package from the linked worktree" in capsys.readouterr().err
         assert not installs()
 
-    def test_the_override_flag_covers_both_guards(self, monkeypatch):
-        self.sibling.rmdir()
+    def test_the_override_flag_lets_it_through(self, tmp_path, monkeypatch):
+        worktree = tmp_path / "linked"
+        (worktree / "agentwire").mkdir(parents=True)
+        (worktree / ".git").write_text("gitdir: /elsewhere\n")
+        (self.pkg / "system_cli.py").unlink()
+        self.pkg.rmdir()
+        self.pkg.symlink_to(worktree / "agentwire")
         installs = self._installs(monkeypatch)
 
         rc = cmd_rebuild(_args(force=False, allow_foreign_source=True))

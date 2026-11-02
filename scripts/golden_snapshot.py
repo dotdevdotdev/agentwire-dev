@@ -40,15 +40,18 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from damage_control.engine import bundled_rules_dir, bundled_tooldefs_dir
+
 REPO = Path(__file__).resolve().parent.parent
 CORPUS_DIR = REPO / "corpus"
 CASES_DIR = CORPUS_DIR / "cases"
 GOLDEN_DIR = CORPUS_DIR / "golden"
 SNAPSHOT = GOLDEN_DIR / "snapshot.json"
 HARVESTED = GOLDEN_DIR / "harvested.json"
-PACKAGE_SRC = REPO / "packages" / "damage-control-dev" / "src"
-RULES_DIR = [PACKAGE_SRC / "damage_control" / "rules", REPO / "agentwire" / "safety" / "rules"]
-TOOLDEFS_DIR = PACKAGE_SRC / "damage_control" / "tooldefs"
+# The engine is the INSTALLED damage-control-dev (never a repo path), so the snapshot
+# records what this checkout actually ships against.
+RULES_DIR = [bundled_rules_dir(), REPO / "agentwire" / "safety" / "rules"]
+TOOLDEFS_DIR = bundled_tooldefs_dir()
 
 # Fixed environment. FAKE_HOME is deliberately NOT under /tmp: core.yaml allowlists
 # /tmp, which outranks zeroAccessPaths and would silently flip every ``~`` secret

@@ -24,10 +24,11 @@ classifiers = [
     "Topic :: Software Development :: User Interfaces",
 ]
 dependencies = [
-    # The damage-control engine (#1209), published on PyPI as damage-control-dev. A checkout
-    # builds it from the workspace member under packages/ (see [tool.uv.sources]); a wheel
-    # resolves this range from PyPI. tests/unit/test_damage_control_pin.py keeps the two
-    # in step. Hooks run `python -I -m damage_control.hook`.
+    # The damage-control engine (#1209): the ONLY source is the published damage-control-dev
+    # (github.com/dotdevdotdev/damage-control-dev); checkouts and wheels both resolve it from
+    # PyPI. Engine changes land there, release there, then raise this floor.
+    # tests/unit/test_damage_control_pin.py checks the range and the installed engine.
+    # Hooks run `python -I -m damage_control.hook`.
     "damage-control-dev>=0.1.3,<0.2",
     "aiohttp>=3.13.4",  # >=3.13.4 clears CVE-2026-34515 + CVE-2026-34513 (portal-facing)
     "aiohttp-jinja2>=1.6",
@@ -192,13 +193,6 @@ exclude = [
 
 [tool.hatch.version]
 path = "agentwire/__init__.py"
-
-# Checkout builds use the workspace copy of damage-control-dev; published wheels use PyPI.
-[tool.uv.workspace]
-members = ["packages/*"]
-
-[tool.uv.sources]
-damage-control-dev = { workspace = true }
 
 [tool.hatch.build.targets.sdist]
 exclude = [
