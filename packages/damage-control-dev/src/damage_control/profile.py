@@ -12,13 +12,14 @@ that ``install_profile`` (in ``_core.py``) puts first and a profile cannot remov
 reorder: the control-plane and protected-command checks run before the kill switch and
 nothing a profile supplies can loosen them.
 
-Standard library only, no imports from this package: it is inlined into the hooks next to
-``_core.py`` (``scripts/regen_damage_control_hooks.py``) and must work in either place.
-Plain ``NamedTuple``s, not dataclasses: a dataclass resolves its annotations through
-``sys.modules[cls.__module__]``, which a hook loaded by path (the tests, ``runpy``) lacks.
+A profile reaches a hook as DATA: the host's installer writes it with ``dump_profile`` to a
+protected file and the hook's command line names it (``--profile``), so the hook never imports
+the host. Standard library only; plain ``NamedTuple``s rather than dataclasses.
 """
 
-from typing import NamedTuple, Tuple
+import json
+from pathlib import Path
+from typing import Any, Dict, NamedTuple, Tuple
 
 
 class GroupSpec(NamedTuple):
@@ -94,7 +95,7 @@ class Profile(NamedTuple):
     unattended_block_notifier: Tuple[str, ...] = ()
 
     # --- extra rules ------------------------------------------------------
-    # Directories (relative to the bundled hook dir) merged after the generic rules.
+    # Absolute directories of rule files (JSON, or YAML a human wrote) merged after the generic rules.
     extra_rules_dirs: Tuple[str, ...] = ()
 
     # --- MCP --------------------------------------------------------------
@@ -119,4 +120,40 @@ class Profile(NamedTuple):
 
 GENERIC = Profile()
 
-__all__ = ["GENERIC", "GroupSpec", "McpCommandTemplate", "Profile"]
+
+class ProfileError(ValueError):
+    """A profile manifest that cannot be read as a profile. Never answered with the generic one."""
+
+
+def dump_profile(profile: Profile) -> str:
+    """``profile`` as the JSON a hook loads (tuples become lists; fields keep their names)."""
+    return json.dumps(profile._asdict(), indent=1, ensure_ascii=False) + "\n"
+
+
+def _tuple(value: Any) -> Any:
+    """A JSON list as the tuple the profile's fields are, recursively."""
+    return tuple(_tuple(v) for v in value) if isinstance(value, list) else value
+
+
+def load_profile(path: Path) -> Profile:
+    """Read a manifest written by :func:`dump_profile`. Raises :class:`ProfileError` on anything off."""
+    try:
+        raw = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as e:
+        raise ProfileError(f"cannot read profile {path}: {e}") from e
+    if not isinstance(raw, dict):
+        raise ProfileError(f"profile {path} is not a JSON object")
+    unknown = sorted(set(raw) - set(Profile._fields))
+    if unknown:
+        raise ProfileError(f"profile {path} has unknown fields: {unknown}")
+    fields: Dict[str, Any] = {k: _tuple(v) for k, v in raw.items()}
+    fields["groups"] = tuple(GroupSpec(*g) for g in fields.get("groups", ()))
+    fields["mcp_command_templates"] = tuple(
+        McpCommandTemplate(*t) for t in fields.get("mcp_command_templates", ()))
+    try:
+        return Profile(**fields)
+    except TypeError as e:
+        raise ProfileError(f"profile {path} is malformed: {e}") from e
+
+
+__all__ = ["GENERIC", "GroupSpec", "McpCommandTemplate", "Profile", "ProfileError", "dump_profile", "load_profile"]

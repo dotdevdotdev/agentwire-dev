@@ -1,8 +1,6 @@
 """#1219: damage-control hooks register fail-closed (onFailure:block), gated on a passing selftest."""
 
 import json
-import os
-import stat
 import subprocess
 from pathlib import Path
 
@@ -14,7 +12,7 @@ from tests.unit.test_safety_heal import fake_env  # noqa: F401  (fixture)
 
 def _owned(home):
     pre = json.loads((home / ".claude" / "settings.json").read_text())["hooks"]["PreToolUse"]
-    return {e["matcher"]: e["hooks"][0] for e in pre if e["hooks"][0]["command"].startswith("~/.agentwire/")}
+    return {e["matcher"]: e["hooks"][0] for e in pre if sc._is_ours(e["hooks"][0])}
 
 
 def test_every_registered_matcher_fails_closed_and_upgrade_repairs_old_installs(fake_env):  # noqa: F811
@@ -46,13 +44,14 @@ def test_not_fail_closed_never_adds_onfailure(fake_env):  # noqa: F811
     assert {h.get("onFailure") for h in _owned(fake_env).values()} == {None}
 
 
-def test_heal_registers_without_block_when_the_selftest_fails(fake_env, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(sc, "damage_control_selftest", lambda: ["bash-tool-damage-control.py: exit 1, expected 0"])
+def test_heal_switches_nothing_when_the_selftest_fails(fake_env, monkeypatch):  # noqa: F811
+    """A block on top of a broken install bricks the session, so an unproven hook is never registered."""
+    monkeypatch.setattr(sc, "damage_control_selftest", lambda interpreter=None: ["bash: exit 1, expected 0"])
     summary = sc.heal_damage_control(quiet=True)
-    assert summary["selftest_failures"]
-    assert {h.get("onFailure") for h in _owned(fake_env).values()} == {None}
+    assert summary["selftest_failures"] and summary["matchers_added"] == 0
+    assert not (fake_env / ".claude" / "settings.json").exists()
 
-    monkeypatch.setattr(sc, "damage_control_selftest", lambda: [])
+    monkeypatch.setattr(sc, "damage_control_selftest", lambda interpreter=None: [])
     sc.heal_damage_control(quiet=True)
     assert {h.get("onFailure") for h in _owned(fake_env).values()} == {"block"}
 
@@ -85,48 +84,40 @@ def test_claude_version_probe_parses_real_output(monkeypatch):
     assert sc.claude_code_version() is None
 
 
+# A stand-in interpreter: ``<script> -I -m damage_control.hook <kind> --profile <manifest>``, so $4 is the kind.
 _GOOD = """#!/bin/sh
 payload=$(cat)
-case "$payload" in *"rm -rf"*) [ "$(basename "$0")" = bash-tool-damage-control.py ] && exit 2;; esac
+case "$payload" in *"rm -rf"*) [ "$4" = bash ] && exit 2;; esac
 exit 0
 """
 
 
-def _fake_hooks(dir_: Path, overrides=None, mode=0o755):
+def _interpreter(dir_: Path, body: str = _GOOD, mode: int = 0o755) -> str:
     dir_.mkdir(parents=True, exist_ok=True)
-    for name in set(sc.DAMAGE_CONTROL_MATCHERS.values()):
-        f = dir_ / name
-        f.write_text((overrides or {}).get(name, _GOOD))
-        f.chmod(mode)
+    f = dir_ / "python-standin"
+    f.write_text(body)
+    f.chmod(mode)
+    return str(f)
 
 
 @pytest.mark.real_hook_probe
-def test_selftest_catches_each_way_a_hook_fails_open(tmp_path, monkeypatch):
-    monkeypatch.setattr(sc, "HOOKS_DIR", tmp_path / "hooks")
-    _fake_hooks(tmp_path / "hooks")
-    assert sc.damage_control_selftest() == []
+def test_selftest_catches_each_way_a_hook_fails_open(tmp_path):
+    assert sc.damage_control_selftest(_interpreter(tmp_path)) == []
 
     cases = {
-        "missing interpreter": {"edit-tool-damage-control.py": "#!/nonexistent/interp\n"},
-        "crash": {"write-tool-damage-control.py": "#!/bin/sh\nexit 1\n"},
-        "rules not loaded (bash allows rm -rf)": {"bash-tool-damage-control.py": "#!/bin/sh\ncat >/dev/null\nexit 0\n"},
+        # label: (interpreter, a kind that must be named in a failure)
+        "missing interpreter": ("/nonexistent/interp", "bash"),
+        "crash": (_interpreter(tmp_path / "crash", '#!/bin/sh\ncat >/dev/null\n[ "$4" = write ] && exit 1\nexit 0\n'), "write"),
+        "rules not loaded (bash allows rm -rf)": (_interpreter(tmp_path / "allow", "#!/bin/sh\ncat >/dev/null\nexit 0\n"), "bash"),
+        "lost exec bit": (_interpreter(tmp_path / "noexec", mode=0o644), "read"),
     }
-    missed = []
-    for label, override in cases.items():
-        _fake_hooks(tmp_path / "hooks", override)
-        failures = sc.damage_control_selftest()
-        if not any(next(iter(override)) in f for f in failures):
-            missed.append(label)
-    # a hook that lost its exec bit (what the read hook shipped with)
-    _fake_hooks(tmp_path / "hooks")
-    (tmp_path / "hooks" / "read-tool-damage-control.py").chmod(0o644)
-    if not any("read-tool" in f for f in sc.damage_control_selftest()):
-        missed.append("lost exec bit")
+    missed = [label for label, (interp, kind) in cases.items()
+              if not any(f.startswith(kind + ":") for f in sc.damage_control_selftest(interp))]
     assert not missed, missed
 
 
-def test_every_bundled_hook_is_executable():
-    hooks_dir = Path(sc.__file__).parent / "hooks" / "damage-control"
-    not_exec = [n for n in set(sc.DAMAGE_CONTROL_MATCHERS.values())
-                if not os.stat(hooks_dir / n).st_mode & stat.S_IXUSR]
-    assert not not_exec, not_exec
+def test_every_registration_names_an_absolute_interpreter(fake_env):  # noqa: F811
+    """A bare ``python`` in a registration resolves through whatever PATH the harness has: not a guard."""
+    sc.register_damage_control_in_settings()
+    relative = {m: h["command"] for m, h in _owned(fake_env).items() if not Path(h["command"]).is_absolute()}
+    assert not relative, relative

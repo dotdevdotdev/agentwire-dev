@@ -1,0 +1,120 @@
+{
+ "bashToolPatterns": [
+  {
+   "pattern": "shutil\\.rmtree",
+   "reason": "shutil.rmtree recursive delete (equivalent to rm -rf)",
+   "id": "core.shutil-rmtree-recursive-delete-equivalent-to-rm-rf",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bperl\\b.*\\bunlink\\b",
+   "reason": "perl unlink delete (use git clean or manual cleanup)",
+   "bypassable": true,
+   "id": "core.perl-unlink-delete-use-git-clean-or-manual-cleanup",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bmongosh.*dropDatabase",
+   "reason": "MongoDB dropDatabase",
+   "id": "databases.mongodb-dropdatabase",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bmongo.*dropDatabase",
+   "reason": "MongoDB dropDatabase",
+   "id": "databases.mongodb-dropdatabase-2",
+   "anchored": false
+  },
+  {
+   "pattern": "DELETE\\s+FROM\\s+\\w+\\s*;",
+   "reason": "DELETE without WHERE clause (will delete ALL rows)",
+   "id": "databases.delete-without-where-clause-will-delete-all-rows",
+   "anchored": false
+  },
+  {
+   "pattern": "DELETE\\s+FROM\\s+\\w+\\s*$",
+   "reason": "DELETE without WHERE clause (will delete ALL rows)",
+   "id": "databases.delete-without-where-clause-will-delete-all-rows-2",
+   "anchored": false
+  },
+  {
+   "pattern": "DELETE\\s+\\*\\s+FROM",
+   "reason": "DELETE * (will delete ALL rows)",
+   "id": "databases.delete-will-delete-all-rows",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bTRUNCATE\\s+TABLE\\b",
+   "reason": "TRUNCATE TABLE (will delete ALL rows)",
+   "id": "databases.truncate-table-will-delete-all-rows",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bDROP\\s+TABLE\\b",
+   "reason": "DROP TABLE",
+   "id": "databases.drop-table",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bDROP\\s+DATABASE\\b",
+   "reason": "DROP DATABASE",
+   "id": "databases.drop-database",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bDELETE\\s+FROM\\s+\\w+\\s+WHERE\\b.*\\bid\\s*=",
+   "reason": "SQL DELETE with specific ID",
+   "ask": true,
+   "id": "databases.sql-delete-with-specific-id",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bpsql\\b.*\\b(INSERT\\s+INTO|UPDATE\\s+\\w+\\s+SET|ALTER\\s+TABLE|CREATE\\s+TABLE|GRANT\\s+|REVOKE\\s+)",
+   "reason": "psql executing a write statement (INSERT/UPDATE/ALTER/CREATE/GRANT)",
+   "ask": true,
+   "id": "db.psql-write",
+   "anchored": false
+  },
+  {
+   "pattern": "\\b(mysql|mariadb)\\b.*\\b(INSERT\\s+INTO|UPDATE\\s+\\w+\\s+SET|ALTER\\s+TABLE|CREATE\\s+TABLE|GRANT\\s+|REVOKE\\s+)",
+   "reason": "mysql executing a write statement (INSERT/UPDATE/ALTER/CREATE/GRANT)",
+   "ask": true,
+   "id": "db.mysql-write",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bmongosh?\\b.*\\.(insertOne|insertMany|updateOne|updateMany|deleteOne|deleteMany|replaceOne|bulkWrite)\\b",
+   "reason": "mongosh executing a write operation (insert/update/delete)",
+   "ask": true,
+   "id": "db.mongosh-write",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bdocker\\s+rm\\s+.*-f.*\\$\\(docker\\s+ps",
+   "reason": "docker rm -f $(docker ps) (force removes containers)",
+   "id": "containers.docker-rm-f-docker-ps-force-removes-containers",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bgit\\b[^;&|]*\\s-c\\s*(?:alias\\.[^.=\\s]+=!|(?:core\\.(?:sshcommand|fsmonitor|pager|editor|askpass|alternaterefscommand)|sequence\\.editor|gpg\\.program|diff\\.external|credential\\.helper|uploadpack\\.packobjectshook|filter\\.[^.=\\s]+\\.(?:clean|smudge|process)|difftool\\.[^.=\\s]+\\.cmd|mergetool\\.[^.=\\s]+\\.cmd|merge\\.[^.=\\s]+\\.driver|remote\\.[^.=\\s]+\\.(?:uploadpack|receivepack)|browser\\.[^.=\\s]+\\.cmd|man\\.[^.=\\s]+\\.cmd)=)",
+   "reason": "git -c sets a config key that names a program git will execute",
+   "ask": true,
+   "id": "git.config-exec-key",
+   "anchored": false
+  },
+  {
+   "pattern": "(?:^|[;&|(`]|\\$\\(|(?:\\s-c|\\bssh\\s+\\S+)\\s+['\"])\\s*(?:\\w+=\\S*\\s+|(?:sudo|doas|env|nohup|time|command|exec|timeout|gtimeout|nice|xargs|stdbuf|ionice|setsid|caffeinate|unbuffer)\\s+(?:-\\S+\\s+|\\d+[smhd]?\\s+)*)*git\\b[^;&|]*?\\sconfig\\b(?![^;&|]*\\s(?:--(?:get|unset|list|edit)|-l\\b|-e\\b))[^;&|]*?\\s(?:core\\.(?:sshcommand|fsmonitor|pager|editor|askpass|alternaterefscommand)|sequence\\.editor|gpg\\.program|diff\\.external|credential\\.helper|uploadpack\\.packobjectshook|filter\\.[^.\\s]+\\.(?:clean|smudge|process)|difftool\\.[^.\\s]+\\.cmd|mergetool\\.[^.\\s]+\\.cmd|merge\\.[^.\\s]+\\.driver|remote\\.[^.\\s]+\\.(?:uploadpack|receivepack)|browser\\.[^.\\s]+\\.cmd|man\\.[^.\\s]+\\.cmd)\\s+(?!(?:(?:vim|nvim|vi|view|nano|pico|micro|emacs|ed|ex|less|more|cat|bat|most|true|false|code|subl|mate|zed)(?:\\s+-{1,2}[A-Za-z][\\w-]*(?:=[\\w.-]+)?)*(?=(?:\\s+--(?:global|local|system|worktree|replace-all|add))*\\s*(?:$|[;&|)`]))|(['\\\"])(?:vim|nvim|vi|view|nano|pico|micro|emacs|ed|ex|less|more|cat|bat|most|true|false|code|subl|mate|zed)(?:\\s+-{1,2}[A-Za-z][\\w-]*(?:=[\\w.-]+)?)*\\1(?=(?:\\s+--(?:global|local|system|worktree|replace-all|add))*\\s*(?:$|[;&|)`]))))[^\\s\\x00]",
+   "reason": "git config sets a key that names a program git will execute",
+   "ask": true,
+   "id": "git.config-set-exec-key",
+   "anchored": false
+  },
+  {
+   "pattern": "\\bgit\\s+config\\b(?![^;&|]*\\s(?:--(?:get|unset|list|edit)|-l\\b|-e\\b))[^;&|]*?\\salias\\.[^.=\\s]+\\s+['\"]?!",
+   "reason": "git config sets a shell-command alias (alias.x = !cmd)",
+   "ask": true,
+   "id": "git.config-set-alias-bang",
+   "anchored": false
+  }
+ ]
+}

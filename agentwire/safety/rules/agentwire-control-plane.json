@@ -1,0 +1,7 @@
+{
+ "readOnlyPaths": [
+  "~/.agentwire/damagecontrol.yml",
+  "~/.agentwire/hooks/damage-control/*.py",
+  "~/.agentwire/damage-control/*.yaml"
+ ]
+}

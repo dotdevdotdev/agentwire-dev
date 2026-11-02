@@ -42,19 +42,26 @@ from typing import Dict, List
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = REPO_ROOT / "agentwire" / "safety" / "rule_baselines.json"
 
+PACKAGE = Path("packages/damage-control-dev/src/damage_control")
+
 # (manifest section, repo-relative dir)
 SECTIONS = {
+    "rules": [
+        PACKAGE / "rules",
+        Path("agentwire/safety/rules"),
+    ],
+    "tooldefs": [PACKAGE / "tooldefs"],
+}
+
+# Where these files lived before the package (#1209 M4). `git log --follow` loses a rename
+# that also edited the file, so every pre-move location is hashed explicitly: a pristine
+# older install of a moved file must still read as "outdated", not "unknown".
+LEGACY_DIRS = {
     "rules": [
         Path("agentwire/hooks/damage-control/rules"),
         Path("agentwire/hooks/damage-control/agentwire-rules"),
     ],
     "tooldefs": [Path("agentwire/tooldefs")],
-}
-
-# A file that moved between dirs keeps its pre-move history reachable by name, so a
-# pristine older install of it still reads as "outdated", not "unknown" (#1209 M2).
-MOVED_FROM = {
-    "rules": {"agentwire.yaml": ["agentwire/hooks/damage-control/rules/agentwire.yaml"]},
 }
 
 # Files removed from the bundle. Their history stays in the manifest so doctor can
@@ -112,10 +119,10 @@ def build_manifest() -> Dict[str, object]:
         for reldir in reldirs:
             for src in sorted((REPO_ROOT / reldir).glob("*.yaml")):
                 if src.name in entries:
-                    raise SystemExit(f"{section}/{src.name} exists in two source dirs (installed flat)")
+                    raise SystemExit(f"{section}/{src.name} exists in two source dirs (the overlay is flat)")
                 hashes = set(_historical_hashes(str(reldir / src.name)))
-                for old in MOVED_FROM.get(section, {}).get(src.name, []):
-                    hashes.update(_historical_hashes(old))
+                for old in LEGACY_DIRS[section]:
+                    hashes.update(_historical_hashes(str(old / src.name)))
                 # The working-tree content always counts as shipped: this script is
                 # run in the same commit that changes a rule, before that content
                 # exists in history.
@@ -123,7 +130,7 @@ def build_manifest() -> Dict[str, object]:
                 entries[src.name] = sorted(hashes)
         for name in RETIRED.get(section, []):
             if name not in entries:
-                entries[name] = _historical_hashes(str(reldirs[0] / name))
+                entries[name] = sorted({h for d in LEGACY_DIRS[section] for h in _historical_hashes(str(d / name))})
         manifest[section] = dict(sorted(entries.items()))
     return manifest
 

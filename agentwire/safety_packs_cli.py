@@ -13,29 +13,25 @@ import shutil
 import sys
 from typing import Any, Dict, List
 
+from damage_control import packs as pack_state
+from damage_control.groups import Entry, registry
+
 from . import safety_commands
-from .safety import packs as pack_state
-from .safety.groups import REGISTRY, Entry
 
 
 def _file_status(section: str, name: str) -> str:
-    live = (safety_commands.RULES_DIR if section == "rules" else safety_commands.TOOLDEFS_DIR) / name
-    if not live.exists():
-        return "absent"
-    digest = safety_commands._sha256(live)
-    shipped = safety_commands.load_rule_baselines().get(section, {}).get(name, [])
-    return "pristine" if digest in shipped else "edited"
+    """``bundled``, or ``overridden`` when the host's overlay holds a file of the same name."""
+    overlay = safety_commands.RULES_DIR if section == "rules" else safety_commands.TOOLDEFS_DIR
+    return "overridden" if any((overlay / name).with_suffix(ext).exists() for ext in (".yaml", ".json")) else "bundled"
 
 
 def overview() -> List[Dict[str, Any]]:
     """One row per registry entry: kind, whether it is on, files, suggestion."""
-    state = pack_state.effective_state(
-        safety_commands.DAMAGECONTROL_FILE, safety_commands.RULES_DIR, safety_commands.TOOLDEFS_DIR
-    )
+    state = pack_state.effective_state(safety_commands.DAMAGECONTROL_FILE)
     rows = []
-    for e in REGISTRY.values():
+    for e in registry().values():
         files = [
-            {"section": section, "file": f, "installed": _file_status(section, f)}
+            {"section": section, "file": f, "source": _file_status(section, f)}
             for section in ("rules", "tooldefs") for f in e.files(section)
         ]
         present = [b for b in e.binaries if shutil.which(b)]
@@ -66,26 +62,14 @@ def _broken_refusal(state) -> bool:
     return False
 
 
-def _heal_after_change() -> int:
-    summary = safety_commands.heal_damage_control(quiet=False)
-    if summary.get("refused"):
-        print("State recorded, but files were NOT synced: this checkout is not the "
-              "installed tool. Run `agentwire safety install --yes` from it.", file=sys.stderr)
-        return 1
-    if summary.get("settings_error"):
-        print("State recorded, but Claude settings were NOT updated: "
-              f"{summary['settings_error']}", file=sys.stderr)
-        return 1
-    return 0
-
-
 def _entry(name: str, kind: str) -> Entry | None:
-    e = REGISTRY.get(name)
+    registry_ = registry()
+    e = registry_.get(name)
     if e is None or e.kind != kind:
         other = "groups" if kind == "pack" else "packs"
         hint = f" (that is a {e.kind}; use `agentwire safety {other}`)" if e else ""
         print(f"Unknown {kind} '{name}'{hint}. Known: "
-              f"{', '.join(sorted(n for n, x in REGISTRY.items() if x.kind == kind))}",
+              f"{', '.join(sorted(n for n, x in registry_.items() if x.kind == kind))}",
               file=sys.stderr)
         return None
     return e
@@ -103,7 +87,7 @@ def _list(kind: str, as_json: bool, verbose: bool) -> int:
         print(f"  [{flag}] {r['name']}{tag} — {r['description']}{hint}")
         if verbose:
             for f in r["files"]:
-                print(f"         {f['section']}/{f['file']}: {f['installed']}")
+                print(f"         {f['section']}/{f['file']}: {f['source']}")
     return 0
 
 
@@ -133,8 +117,8 @@ def _set_pack(name: str, on: bool) -> int:
     current = set(state[pack_state.PACKS_KEY] or [])
     current = current | {name} if on else current - {name}
     pack_state.write_state(safety_commands.DAMAGECONTROL_FILE, packs=sorted(current))
-    print(f"Pack '{name}' {'enabled' if on else 'disabled'}.")
-    return _heal_after_change()
+    print(f"Pack '{name}' {'enabled' if on else 'disabled'}. Takes effect on the next tool call.")
+    return 0
 
 
 def cmd_packs_enable(args) -> int:
@@ -159,8 +143,8 @@ def _set_group(name: str, on: bool) -> int:
     current = set(state[pack_state.GROUPS_KEY])
     current = current - {name} if on else current | {name}
     pack_state.write_state(safety_commands.DAMAGECONTROL_FILE, disabled_groups=sorted(current))
-    print(f"Group '{name}' {'enabled' if on else 'disabled'}.")
-    return _heal_after_change()
+    print(f"Group '{name}' {'enabled' if on else 'disabled'}. Takes effect on the next tool call.")
+    return 0
 
 
 def cmd_groups_enable(args) -> int:

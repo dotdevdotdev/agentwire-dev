@@ -32,13 +32,15 @@ jobs:
           python-version: "3.12"
       - name: Sync dependencies
         run: uv sync --extra dev
-      - name: Hooks are in sync with _core.py
-        run: uv run --no-sync python scripts/regen_damage_control_hooks.py --check
-      - name: Run bypass + sync + control-plane corpus
+      - name: Bundled rule JSON is in sync with its YAML
+        run: >
+          uv run --no-sync python packages/damage-control-dev/tools/build_rules_json.py --check
+          packages/damage-control-dev/src/damage_control/rules packages/damage-control-dev/src/damage_control/tooldefs agentwire/safety/rules
+      - name: Run bypass + hook fail-closed + control-plane corpus
         run: >
           uv run --no-sync pytest -q
           tests/unit/test_damage_control_bypass.py
-          tests/unit/test_damage_control_sync.py
+          tests/unit/test_hook_fail_closed_matrix.py
           tests/unit/test_control_plane_protection.py
 
   bandit:
@@ -55,7 +57,7 @@ jobs:
       # asserts), and we fail only on high-severity high-confidence findings.
       # Green on the clean tree today; red only on NEW genuinely-dangerous code.
       - name: Run bandit
-        run: uvx bandit==1.9.4 -c pyproject.toml -r agentwire --severity-level high --confidence-level high
+        run: uvx bandit==1.9.4 -c pyproject.toml -r agentwire packages/damage-control-dev/src --severity-level high --confidence-level high
 
   pip-audit:
     name: pip-audit (advisory)

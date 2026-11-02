@@ -1,17 +1,19 @@
-"""Rule groups and opt-in packs: state, heal, migration, human-only gate (#1141)."""
+"""Rule groups and opt-in packs: runtime state, migration, human-only gate (#1141, #1209 M4).
+
+The hooks read ``packs:`` / ``disabled_groups:`` from the policy file on every call, so
+enabling or disabling takes effect on the next tool call and touches no file on disk.
+"""
 
 import shutil
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from damage_control import engine, packs
+from damage_control.engine import check_protected_bash_command
+from damage_control.groups import default_packs, registry
 
 from agentwire import safety_commands, safety_packs_cli
-from agentwire.safety import packs
-from agentwire.safety._core import check_protected_bash_command
-from agentwire.safety.groups import DEFAULT_PACKS, REGISTRY, bundled_files
-
-PKG = Path(safety_commands.__file__).parent
+from tests.unit.test_safety_heal import fake_env  # noqa: F401  (fixture)
 
 # One destructive command per pack: with the pack's files installed each is
 # not "allow"; without them it is.
@@ -28,114 +30,90 @@ DEFAULT_PROTECTED = ["gh repo delete o/r", "npm unpublish left-pad"]
 
 
 @pytest.fixture
-def home(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
-    from agentwire.safety import provenance as _prov
-    monkeypatch.setattr(_prov, "canonical_package_dir", lambda: PKG.resolve())
-    cfg = home / ".agentwire"
-    monkeypatch.setattr(safety_commands, "CONFIG_DIR", cfg)
-    monkeypatch.setattr(safety_commands, "HOOKS_DIR", cfg / "hooks" / "damage-control")
-    monkeypatch.setattr(safety_commands, "LOGS_DIR", cfg / "logs" / "damage-control")
-    monkeypatch.setattr(safety_commands, "RULES_DIR", cfg / "damage-control")
-    monkeypatch.setattr(safety_commands, "TOOLDEFS_DIR", cfg / "tooldefs")
-    monkeypatch.setattr(safety_commands, "DAMAGECONTROL_FILE", cfg / "damagecontrol.yml")
-    # A human at a terminal, unless a test says otherwise.
+def home(fake_env, monkeypatch):  # noqa: F811
+    """An isolated ~/.agentwire that heal treats as canonical, with a human at the terminal."""
     monkeypatch.setattr("agentwire.tasks_cli._host_context_ok", lambda: True)
-    return home
+    return fake_env
 
 
-def installed(section):
+def overlay(section):
     d = safety_commands.RULES_DIR if section == "rules" else safety_commands.TOOLDEFS_DIR
-    return {p.name for p in d.glob("*.yaml")}
+    return {p.name for p in d.glob("*.yaml")} if d.is_dir() else set()
 
 
 def decisions():
     return {k: safety_commands.check_command_safety(c)["decision"] for k, c in PROBES.items()}
 
 
-def pack_files(name):
-    e = REGISTRY[name]
-    return set(e.files("rules")), set(e.files("tooldefs"))
-
-
 def install_old_layout():
-    """What every pre-packs machine looks like: ALL bundled files, no `packs:` key."""
-    src = bundled_files(PKG)
-    for section, d, sdir in (
-        ("rules", safety_commands.RULES_DIR, safety_commands.get_damage_control_source()),
-        ("tooldefs", safety_commands.TOOLDEFS_DIR, PKG / "tooldefs"),
-    ):
-        d.mkdir(parents=True, exist_ok=True)
-        for name in src[section]:
-            shutil.copy(sdir / name, d / name)
+    """What every pre-package machine looks like: ALL bundled files copied into the overlay, no `packs:` key."""
+    sources = {
+        safety_commands.RULES_DIR: [p for d in engine.bundled_rule_sources() for p in d.glob("*.yaml")],
+        safety_commands.TOOLDEFS_DIR: list(engine.bundled_tooldefs_dir().glob("*.yaml")),
+    }
+    for target, files in sources.items():
+        target.mkdir(parents=True, exist_ok=True)
+        for path in files:
+            shutil.copy(path, target / path.name)
     safety_commands.DAMAGECONTROL_FILE.write_text("enabled: true\n")
 
 
-def test_fresh_install_has_groups_not_packs(home):
+def test_fresh_install_enables_the_default_packs_and_nothing_else(home):
     safety_commands.heal_damage_control(quiet=True)
-    wrong = []
-    for section in ("rules", "tooldefs"):
-        for e in REGISTRY.values():
-            have = set(e.files(section)) & installed(section)
-            if e.kind == "pack" and e.name not in DEFAULT_PACKS and have:
-                wrong.append(f"pack {e.name} installed {sorted(have)}")
-            if e.kind == "group" and set(e.files(section)) - installed(section):
-                wrong.append(f"group {e.name} missing files")
-    assert not wrong, wrong
-    assert packs.read_state(safety_commands.DAMAGECONTROL_FILE)["packs"] == sorted(DEFAULT_PACKS)
+    assert packs.read_state(safety_commands.DAMAGECONTROL_FILE)["packs"] == sorted(default_packs())
+    assert overlay("rules") == set() and overlay("tooldefs") == set()  # state lives in the policy file, not on disk
     assert set(decisions().values()) == {"allow"}
     weak = [c for c in DEFAULT_PROTECTED
             if safety_commands.check_command_safety(c)["decision"] != "block"]
     assert not weak, weak
 
 
-def test_upgrade_of_old_install_changes_no_decision(home):
+def test_upgrade_of_a_pre_package_install_changes_no_decision(home):
     install_old_layout()
     before = decisions()
     assert set(before.values()) != {"allow"}, "probes must bite with the pack files present"
     summary = safety_commands.heal_damage_control(quiet=True)
     assert decisions() == before
-    assert not summary["rules_removed"] and not summary["tooldefs_removed"]
     state = packs.read_state(safety_commands.DAMAGECONTROL_FILE)
-    assert set(state["packs"]) == {n for n, e in REGISTRY.items() if e.kind == "pack"}
-    for section in ("rules", "tooldefs"):
-        assert installed(section) == bundled_files(PKG)[section]
+    assert set(state["packs"]) == {n for n, e in registry().items() if e.kind == "pack"}
+    assert summary["rules_retired"] and not summary["rules_kept_edited"]
+    assert overlay("rules") == set() and overlay("tooldefs") == set(), "pristine copies must not shadow the bundle"
 
 
-def test_enable_installs_and_disable_removes_pristine(home):
+def test_enable_and_disable_take_effect_on_the_next_call_and_write_no_rule_file(home):
     safety_commands.heal_damage_control(quiet=True)
+    assert decisions()["aws"] == "allow"
     assert safety_packs_cli.cmd_packs_enable(SimpleNamespace(name="aws")) == 0
-    rules, tools = pack_files("aws")
-    assert rules <= installed("rules") and tools <= installed("tooldefs")
     assert decisions()["aws"] != "allow"
     assert safety_packs_cli.cmd_packs_disable(SimpleNamespace(name="aws")) == 0
-    assert not rules & installed("rules") and not tools & installed("tooldefs")
     assert decisions()["aws"] == "allow"
+    assert overlay("rules") == set() and overlay("tooldefs") == set()
 
 
-def test_disable_never_removes_an_edited_file(home):
+def test_a_hand_edited_file_of_a_disabled_pack_still_loads(home):
+    """Disabling a pack switches off the BUNDLED file; a file the human wrote is theirs and stays on."""
     safety_commands.heal_damage_control(quiet=True)
-    safety_packs_cli.cmd_packs_enable(SimpleNamespace(name="aws"))
-    f = safety_commands.RULES_DIR / "aws.yaml"
-    f.write_text(f.read_text() + "\n# hand edit\n")
-    safety_packs_cli.cmd_packs_disable(SimpleNamespace(name="aws"))
-    assert f.exists() and "# hand edit" in f.read_text()
+    safety_commands.RULES_DIR.mkdir(parents=True, exist_ok=True)
+    (safety_commands.RULES_DIR / "aws.yaml").write_text(
+        "bashToolPatterns:\n  - id: mine.aws-bucket-removal\n    pattern: '\\baws\\s+s3\\s+rb\\b'\n"
+        "    reason: my own aws rule\n")
+    assert decisions()["aws"] == "block"
     assert safety_commands.heal_damage_control(quiet=True)["rules_kept_edited"] == ["aws.yaml"]
 
 
 def test_group_opt_out_and_kernel_refusal(home):
     safety_commands.heal_damage_control(quiet=True)
+    probe = "agentwire email --to someone@example.com"
+    default = safety_commands.check_command_safety(probe)["decision"]
+    assert default != "allow", "the outbound group must bite by default"
     assert safety_packs_cli.cmd_groups_disable(SimpleNamespace(name="outbound")) == 0
-    assert "outbound.yaml" not in installed("rules")
+    assert safety_commands.check_command_safety(probe)["decision"] == "allow"
     assert safety_packs_cli.cmd_groups_enable(SimpleNamespace(name="outbound")) == 0
-    assert "outbound.yaml" in installed("rules")
-    refused = [n for n, e in REGISTRY.items() if e.kernel
+    assert safety_commands.check_command_safety(probe)["decision"] == default
+    refused = [n for n, e in registry().items() if e.kernel
                and safety_packs_cli.cmd_groups_disable(SimpleNamespace(name=n)) == 0]
     assert not refused, refused
-    assert {"core.yaml", "control-plane.yaml"} <= installed("rules")
+    assert safety_commands.check_command_safety("rm -rf /")["decision"] == "block"
 
 
 def test_mutations_refuse_without_a_human_and_leave_state_alone(home, monkeypatch):
@@ -151,6 +129,14 @@ def test_mutations_refuse_without_a_human_and_leave_state_alone(home, monkeypatc
     assert safety_commands.DAMAGECONTROL_FILE.read_text() == before
 
 
+def test_undecided_policy_loads_every_pack(home):
+    """No `packs:` key = a machine that was never healed: every pack loads (M5 flips this default)."""
+    safety_commands.DAMAGECONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    safety_commands.DAMAGECONTROL_FILE.write_text("enabled: true\n")
+    assert engine.load_safety_config()["packs"] is None
+    assert decisions()["aws"] != "allow" and decisions()["databases"] != "allow"
+
+
 def test_protected_pattern_blocks_mutation_not_reads():
     blocked = ["agentwire safety packs enable aws", "agentwire  safety groups disable outbound",
                "cd /x && agentwire safety packs disable aws"]
@@ -159,5 +145,3 @@ def test_protected_pattern_blocks_mutation_not_reads():
     wrong = [c for c in blocked if not check_protected_bash_command(c)[0]]
     wrong += [c for c in allowed if check_protected_bash_command(c)[0]]
     assert not wrong, wrong
-
-

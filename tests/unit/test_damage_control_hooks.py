@@ -1,6 +1,6 @@
 """The shipped damage-control hooks, driven the way Claude Code drives them.
 
-Each test runs a hook script as a subprocess — JSON on stdin, verdict read from
+Each test runs the hook (``python -I -m damage_control.hook``) as a subprocess — JSON on stdin, verdict read from
 the exit code and stdout: exit 2 = block, exit 0 + an ``ask`` JSON = confirm,
 exit 0 + no output = allow. Decision-matrix coverage over the rule set lives in
 the bypass corpus (``test_damage_control_bypass.py``); this file pins the
@@ -15,17 +15,16 @@ audit logs are redirected into the real tmp dir via AGENTWIRE_DIR.
 
 import json
 import subprocess
-import sys
 
-from tests.conftest import HOOKS_DIR
+from tests.conftest import hook_argv
 
 HERMETIC_HOME = "/home/agentwire-hermetic"
 CONTROL_PLANE = HERMETIC_HOME + "/.claude/settings.json"
-BASH = HOOKS_DIR / "bash-tool-damage-control.py"
-EDIT = HOOKS_DIR / "edit-tool-damage-control.py"
-WRITE = HOOKS_DIR / "write-tool-damage-control.py"
-READ = HOOKS_DIR / "read-tool-damage-control.py"
-MCP = HOOKS_DIR / "mcp-tool-damage-control.py"
+BASH = "bash"
+EDIT = "edit"
+WRITE = "write"
+READ = "read"
+MCP = "mcp"
 
 
 def _run(hook, payload, tmp_path, *, unattended=False, allow=None, raw=None):
@@ -39,7 +38,7 @@ def _run(hook, payload, tmp_path, *, unattended=False, allow=None, raw=None):
     if allow is not None:
         env["AGENTWIRE_UNATTENDED_ALLOW"] = allow
     return subprocess.run(
-        [sys.executable, str(hook)],
+        hook_argv(hook),
         input=raw if raw is not None else json.dumps(payload),
         capture_output=True, text=True, env=env, timeout=15,
     )

@@ -1,11 +1,10 @@
 """Rule groups and packs: which bundled rule/tooldef files belong to what (#1141).
 
-Every bundled rules file (generic ``rules/*.yaml`` or a host layer such as
-``agentwire-rules/*.yaml``) and every ``tooldefs/*.yaml`` belongs to exactly one entry
-here. The rules dirs are installed FLAT into one live dir, so a file name must be unique
-across them. ``kind="group"`` entries are default-on ("os-focused"); a human may opt one
-out. ``kernel`` groups can never be opted out. ``kind="pack"`` entries are vendor/tool
-sets that stay off until a human enables them.
+Every bundled rules file (generic ``rules/*`` or a host layer such as AgentWire's) and
+every ``tooldefs/*`` belongs to exactly one entry here (entries name the authored ``.yaml``;
+the JSON a hook reads shares its stem). File names must be unique across the rules dirs.
+``kind="group"`` entries are default-on ("os-focused"); a human may opt one out. ``kernel`` groups can never be opted out. ``kind="pack"`` entries are vendor/tool
+sets a human enables (``skipped_stems`` says what an undecided policy loads).
 
 The generic registry lives here; what the HOST adds (its own groups, its layer files
 attached to generic groups, the packs it turns on) comes from the installed profile
@@ -15,10 +14,10 @@ attached to generic groups, the packs it turns on) comes from the installed prof
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
-from agentwire.safety import _core
-from agentwire.safety.profile import GroupSpec as Entry
+from damage_control import engine
+from damage_control.profile import GroupSpec as Entry
 
 _GENERIC_ENTRIES = (
     # --- default groups -----------------------------------------------------
@@ -54,73 +53,59 @@ def _with_profile(generic: Tuple[Entry, ...], profile) -> Tuple[Entry, ...]:
     return attached + tuple(profile.groups)
 
 
-_ENTRIES = _with_profile(_GENERIC_ENTRIES, _core.PROFILE)
-
-REGISTRY: Dict[str, Entry] = {e.name: e for e in _ENTRIES}
-
-# Packs the host turns on for itself.
-DEFAULT_PACKS: Tuple[str, ...] = tuple(_core.PROFILE.default_packs)
+def entries() -> Tuple[Entry, ...]:
+    """Every group and pack of THIS process: the generic registry plus what its profile adds."""
+    return _with_profile(_GENERIC_ENTRIES, engine.PROFILE)
 
 
-def rule_source_dirs(package_dir: Path) -> list:
-    """The bundled rules directories (generic, then the profile's layers)."""
-    return _core.bundled_rule_sources(package_dir / "hooks" / "damage-control")
+def registry() -> Dict[str, Entry]:
+    return {e.name: e for e in entries()}
 
 
-_MERGED: Dict[Path, Path] = {}
+def default_packs() -> Tuple[str, ...]:
+    """Packs the host turns on for itself."""
+    return tuple(engine.PROFILE.default_packs)
 
 
-def merged_rules_dir(package_dir: Path) -> Path:
-    """One flat directory holding every bundled rules file (symlinks to the originals).
+def skipped_stems(packs: Optional[List[str]], disabled_groups: List[str]) -> Tuple[FrozenSet[str], FrozenSet[str]]:
+    """``(rules stems, tooldef stems)`` of the bundled files switched off by the policy.
 
-    The installed rules dir is flat, and ``load_config`` merges a flat dir in sorted
-    file-name order, so a consumer that wants "the bundled rules as an install would
-    have them" (heal's sync, doctor's drift, the lint fallback, tests) reads this
-    instead of knowing there are two source dirs. Cached per process; removed at exit.
+    ``packs`` None means the policy file has no ``packs:`` key (undecided): every pack loads,
+    so a machine whose state was never written is protected by everything the package ships,
+    never by less. A kernel group is never skipped.
     """
-    import atexit
-    import shutil
-    import tempfile
-
-    cached = _MERGED.get(package_dir)
-    if cached is not None and cached.is_dir():
-        return cached
-    flat = Path(tempfile.mkdtemp(prefix="agentwire-bundled-rules-"))
-    atexit.register(shutil.rmtree, flat, True)
-    for src_dir in rule_source_dirs(package_dir):
-        for src in sorted(src_dir.glob("*.yaml")):
-            link = flat / src.name
-            if link.exists() or link.is_symlink():
-                raise ValueError(f"bundled rule file name {src.name} exists in two source dirs")
-            link.symlink_to(src)
-    _MERGED[package_dir] = flat
-    return flat
+    rules: set = set()
+    tooldefs: set = set()
+    for e in entries():
+        if e.kind == "pack":
+            active = packs is None or e.name in packs
+        else:
+            active = e.kernel or e.name not in disabled_groups
+        if not active:
+            rules.update(Path(f).stem for f in e.files("rules"))
+            tooldefs.update(Path(f).stem for f in e.files("tooldefs"))
+    return frozenset(rules), frozenset(tooldefs)
 
 
-def bundled_files(package_dir: Path) -> Dict[str, set]:
-    """The ``{"rules": {...}, "tooldefs": {...}}`` file names actually bundled."""
+def bundled_files() -> Dict[str, set]:
+    """The ``{"rules": {...}, "tooldefs": {...}}`` file stems actually bundled (generic + profile layers)."""
     return {
-        "rules": {p.name for d in rule_source_dirs(package_dir) for p in d.glob("*.yaml")},
-        "tooldefs": {p.name for p in (package_dir / "tooldefs").glob("*.yaml")},
+        "rules": {p.stem for d in engine.bundled_rule_sources() for p in engine._data_files(d)},
+        "tooldefs": {p.stem for p in engine._data_files(engine.bundled_tooldefs_dir())},
     }
 
 
-def unclassified(package_dir: Path) -> Dict[str, list]:
+def unclassified() -> Dict[str, list]:
     """Bundled files owned by no entry, or by more than one, per section."""
-    bundled = bundled_files(package_dir)
+    bundled = bundled_files()
     out: Dict[str, list] = {}
     for section in ("rules", "tooldefs"):
         owners: Dict[str, list] = {}
-        for e in _ENTRIES:
+        for e in entries():
             for f in e.files(section):
-                owners.setdefault(f, []).append(e.name)
+                owners.setdefault(Path(f).stem, []).append(e.name)
         bad = [f"{f}: owned by {owners.get(f, [])}" for f in sorted(bundled[section] | set(owners))
                if f not in bundled[section] or len(owners.get(f, [])) != 1]
         if bad:
             out[section] = bad
     return out
-
-
-def bundled_rule_dirs() -> list:
-    """The bundled rules directories of THIS installed package (generic, then the profile's layers)."""
-    return rule_source_dirs(Path(__file__).resolve().parent.parent)

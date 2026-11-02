@@ -14,8 +14,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.conftest import HOOKS_DIR
-
 REPO = Path(__file__).resolve().parents[2]
 
 # argv: <PWD mode: unset|stale> <target argv...>
@@ -32,29 +30,21 @@ else:
 os.execv(argv[0], argv)
 """
 
-HOOKS = [
-    "bash-tool-damage-control.py",
-    "edit-tool-damage-control.py",
-    "write-tool-damage-control.py",
-    "read-tool-damage-control.py",
-    "mcp-tool-damage-control.py",
-]
-
 PAYLOADS = {
-    "bash-tool-damage-control.py": {"tool_name": "Bash", "tool_input": {"command": "ls"}},
-    "edit-tool-damage-control.py": {
+    "bash": {"tool_name": "Bash", "tool_input": {"command": "ls"}},
+    "edit": {
         "tool_name": "Edit",
         "tool_input": {"file_path": "/tmp/safe-cwd-probe.txt", "old_string": "a", "new_string": "b"},
     },
-    "write-tool-damage-control.py": {
+    "write": {
         "tool_name": "Write",
         "tool_input": {"file_path": "/tmp/safe-cwd-probe.txt", "content": "x"},
     },
-    "read-tool-damage-control.py": {
+    "read": {
         "tool_name": "Read",
         "tool_input": {"file_path": "/tmp/safe-cwd-probe.txt"},
     },
-    "mcp-tool-damage-control.py": {"tool_name": "mcp__agentwire__sessions_list", "tool_input": {}},
+    "mcp": {"tool_name": "mcp__agentwire__sessions_list", "tool_input": {}},
 }
 
 
@@ -73,12 +63,12 @@ def _in_dead_cwd(mode, argv, tmp_path, stdin=""):
     )
 
 
-def test_every_hook_survives_a_deleted_cwd(tmp_path):
+def test_every_hook_survives_a_deleted_cwd(tmp_path, hook_profile):
     bad = []
     for mode in ("unset", "stale"):
-        for hook in HOOKS:
+        for hook in PAYLOADS:
             r = _in_dead_cwd(
-                mode, [sys.executable, str(HOOKS_DIR / hook)], tmp_path,
+                mode, [sys.executable, "-I", "-m", "damage_control.hook", hook, "--profile", str(hook_profile)], tmp_path,
                 stdin=json.dumps(PAYLOADS[hook]),
             )
             if r.returncode != 0 or "FileNotFoundError" in r.stderr:
@@ -102,7 +92,7 @@ def test_doctor_and_hooks_install_survive_a_deleted_cwd(tmp_path):
 
 def test_engine_entry_points_do_not_raise_from_a_deleted_cwd(tmp_path):
     script = (
-        "from agentwire.safety import _core as c\n"
+        "from damage_control import engine as c\n"
         "c.safe_cwd(); c._find_project_config(); c.policy_file_parse_failures()\n"
         "print('ok')\n"
     )
@@ -110,15 +100,15 @@ def test_engine_entry_points_do_not_raise_from_a_deleted_cwd(tmp_path):
     assert r.returncode == 0 and "ok" in r.stdout, r.stderr[-400:]
 
 
-def test_audit_logger_mirror_agrees_with_engine_on_a_deleted_cwd(tmp_path):
+
+
+def test_audit_mirror_agrees_with_engine_on_a_deleted_cwd(tmp_path):
     script = (
-        "import importlib.util, sys\n"
-        f"s = importlib.util.spec_from_file_location('al', {str(HOOKS_DIR / 'audit_logger.py')!r})\n"
-        "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
-        "from agentwire.safety._core import safe_cwd\n"
-        "assert m._safe_cwd() == safe_cwd(), (m._safe_cwd(), safe_cwd())\n"
+        "from damage_control import audit\n"
+        "from damage_control.engine import safe_cwd\n"
+        "assert audit._safe_cwd() == safe_cwd(), (audit._safe_cwd(), safe_cwd())\n"
         "print(safe_cwd())\n"
     )
-    r = _in_dead_cwd("unset", [sys.executable, "-c", script], tmp_path)
+    r = _in_dead_cwd("unset", [sys.executable, "-I", "-c", script], tmp_path)
     assert r.returncode == 0, r.stderr[-400:]
     assert r.stdout.strip() == str(tmp_path / "home")

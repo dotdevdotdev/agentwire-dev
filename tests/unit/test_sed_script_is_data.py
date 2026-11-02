@@ -9,13 +9,11 @@ blocks.
 
 
 import pytest
-
-from agentwire.safety._core import check_command, load_config
-from agentwire.safety.groups import bundled_rule_dirs
+from damage_control.engine import bundled_rule_sources, check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home
 
-RULES_DIR = bundled_rule_dirs()
+RULES_DIR = bundled_rule_sources()
 
 
 @pytest.fixture(scope="module")

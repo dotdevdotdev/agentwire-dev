@@ -44,17 +44,23 @@ Decision: Block (exit 2) | Allow (exit 0) | Ask (JSON response)
 
 ### File Structure
 
-Hooks ship inside the `agentwire` package — Claude Code's `settings.json` invokes them directly via `uv run`:
+Damage control is its own package, a uv-workspace member the `agentwire` distribution depends on
+(#1209 M4). Claude Code's `settings.json` runs it in exec form —
+`<recorded interpreter> -I -m damage_control.hook <kind> --profile ~/.agentwire/damagecontrol-profile.json`
+(`kind` = bash, edit, write, read, mcp). There are no hook scripts to install or regenerate.
 
 ```
-agentwire/hooks/damage-control/       # Bundled in package
-├── bash-tool-damage-control.py       # Bash tool hook
-├── edit-tool-damage-control.py       # Edit tool hook
-├── write-tool-damage-control.py      # Write tool hook
-├── read-tool-damage-control.py       # Read/Grep/Glob hook (zeroAccessPaths enforcement)
-├── mcp-tool-damage-control.py        # Outbound MCP tool hook (email_send/quo_send)
-├── audit_logger.py                   # Audit logging framework
-└── rules/                            # Pattern files (categorized)
+packages/damage-control-dev/src/damage_control/
+├── hook.py                           # bootstrap wrapper: os+sys only, any import failure -> exit 2
+├── adapter.py                        # payload -> ToolCall, Verdict -> exit code / ask envelope
+├── policy.py                         # Guard.decide: the decision ladder
+├── engine.py                         # rules, ladders, loading, kernel
+├── profile.py                        # Profile (host data) + JSON manifest dump/load
+├── groups.py / packs.py              # groups and packs, read at RUNTIME from the policy file
+├── audit.py                          # audit logging
+├── tooldefs/                         # tool command catalogues (*.yaml source, *.json read)
+└── rules/                            # Pattern files (categorized; *.yaml source, *.json read)
+    ├── core.yaml                     # rm, chmod, system-level dangers
     ├── core.yaml                     # rm, chmod, system-level dangers
     ├── git.yaml                      # force push, reset --hard
     ├── databases.yaml                # DROP, TRUNCATE, migrations, raw DML
@@ -118,7 +124,7 @@ Any write / edit / delete / move / chmod targeting one of these paths is
 
 - `~/.agentwire/damagecontrol.yml`, any `.damagecontrol.yml`
 - `~/.claude/settings.json` (the PreToolUse hook registration)
-- `~/.agentwire/hooks/damage-control/*.py` (the hook scripts), `~/.claude/hooks/*`
+- `~/.agentwire/damagecontrol-profile.json`, `~/.agentwire/bin/damage-control-breakglass`, `~/.agentwire/damagecontrol-install.json`, `~/.claude/hooks/*`
 - `~/.agentwire/damage-control/*.yaml` (the rule files)
 - `~/.agentwire/scheduler.yaml`, `~/.agentwire/config.yaml` (gate/healthcheck commands run via the same `shell=True` confused-deputy path)
 - any `.agentwire.tasks.yml` (per-project task-execution config — see [Task-execution config split](#task-execution-config-split-agentwiretasksyml-720) below; **not** `.agentwire.yml`, which is pure declarative session config and is agent-writable)
@@ -128,7 +134,7 @@ preset; it can never expand its own freedom by editing a file.** The one
 override is the user's `allowedPaths` allowlist — a human, host-side opt-in (the
 agent can't add to it without editing a protected file, which is itself blocked).
 The mechanism is `check_protected_command` / `check_protected_path` in
-`safety/_core.py`, which run **before** `detect_escape_hatch` and the kill switch.
+`packages/damage-control-dev/src/damage_control/engine.py`, which run **before** `detect_escape_hatch` and the kill switch.
 
 #### Flagless and indirect writers (#1095)
 
@@ -136,7 +142,7 @@ The generic ladder names writers that carry a write *token* (`>`, `tee`, `cp`,
 `rm`, `sed -i`). A writer whose only link to the file is an operand, or whose
 path arrives indirectly, is classified by the **operation on the operand**,
 whatever the spelling (`PROTECTED_WRITER_PATTERNS`, `INTERPRETER_WRITE_PATTERNS`
-in `safety/_core.py`; applied only to the protected tier, never to user
+in `packages/damage-control-dev/src/damage_control/engine.py`; applied only to the protected tier, never to user
 `readOnlyPaths`):
 
 - **Operand writers:** `ln`/`link` (path as the *target*; as the source it is a
@@ -496,7 +502,7 @@ that explicit gated list is open by default).
 defense-in-depth (#721 review found three bypasses of the original
 Bash-pattern-only block; all three are closed):
 
-1. **`PROTECTED_COMMAND_PATTERNS`** (`safety/_core.py`) blocks the command
+1. **`PROTECTED_COMMAND_PATTERNS`** (`packages/damage-control-dev/src/damage_control/engine.py`) blocks the command
    text at the SAME tier as the protected-control-plane path check —
    escape-hatch- and kill-switch-EXEMPT, evaluated before
    `detect_escape_hatch`. Unlike an ordinary `bashToolPatterns` rule, `# allow:`
@@ -536,7 +542,7 @@ defense-in-depth on top of the split, not implemented here.
 
 ## Security Patterns
 
-Patterns live in **categorized YAML files** under `agentwire/hooks/damage-control/rules/` (generic, one per topic) and `agentwire/hooks/damage-control/agentwire-rules/` (the AgentWire/owner layer, #1209 M2: `~/.agentwire` paths, `mcp__agentwire__*` policies, `agentwire email|quo`, the owner `.env` allow). Both install **flat** into `~/.agentwire/damage-control/` and merge in file-name order, so `agentwire-mcp-tools.yaml` sorts ahead of the generic `mcp-tools.yaml` write-shaped fallback; file names must be unique across the two dirs. `tmux.yaml` is the opt-in generic `tmux` pack (AgentWire enables it by default; heal carries it forward on a machine whose installed `agentwire.yaml` still held the tmux rules). `scripts/effective_rules.py --check` diffs the merged rule set against `corpus/golden/effective_rules.json`. To override or extend, drop YAML files into `~/.agentwire/damage-control/` — when that directory exists with `*.yaml` files, hooks load from there instead of the bundled rules.
+Patterns live in **categorized YAML files** (committed beside their JSON, which the hook reads — `packages/damage-control-dev/tools/build_rules_json.py`) under `packages/damage-control-dev/src/damage_control/rules/` (generic, one per topic) and `agentwire/safety/rules/` (the AgentWire/owner layer, #1209 M2: `~/.agentwire` paths, `mcp__agentwire__*` policies, `agentwire email|quo`, the owner `.env` allow). Both are read from the package and merge in file-name order, so `agentwire-mcp-tools.yaml` sorts ahead of the generic `mcp-tools.yaml` write-shaped fallback; file names must be unique across the two dirs. `tmux.yaml` is the opt-in generic `tmux` pack (AgentWire enables it by default; heal carries it forward on a machine whose overlay `agentwire.yaml` still held the tmux rules). `scripts/effective_rules.py --check` diffs the merged rule set against `corpus/golden/effective_rules.json`. To override or extend, drop YAML files into `~/.agentwire/damage-control/`: a file there REPLACES the bundled file of the same name and adds to the rest (the bundle is never dropped). Needs PyYAML; without it the file is skipped with a loud load failure and the bundled rules still enforce.
 
 ### Flag position: `{ARGS}` (#1125)
 
@@ -557,7 +563,7 @@ Rule-YAML only; each ships independent of the hook scripts (plain regexes, no `{
 | `find … -exec` (or `-execdir`, `-ok`, `-okdir`) `chmod 777` | block | (unnamed) | the chmod sits in find's arguments, outside command position |
 | `git config alias.x '!cmd'` | ask | `git.config-set-alias-bang` | unanchored: the `!` is inside a masked quote |
 
-`git config core.hooksPath .githooks` asks (policy: it names a directory of programs git will run). Known price: `git config core.pager 'less -FRX'` asks once. The value is **not** re-scanned as a command in the set-form (that is `_core.py` work; the `-c` form is, via `_git_exec_config_payloads`), so the rule is a coarse bare-word test rather than a payload judgment. The `chmod` fix narrows only the non-recursive rule; `chmod -R` keeps 777-anywhere on purpose (an unreadable mode token such as `${m:-x}` must not hide a world-writable tree), so `chmod -R u+x 777` (a file named 777) still blocks.
+`git config core.hooksPath .githooks` asks (policy: it names a directory of programs git will run). Known price: `git config core.pager 'less -FRX'` asks once. The value is **not** re-scanned as a command in the set-form (that is `engine.py` work; the `-c` form is, via `_git_exec_config_payloads`), so the rule is a coarse bare-word test rather than a payload judgment. The `chmod` fix narrows only the non-recursive rule; `chmod -R` keeps 777-anywhere on purpose (an unreadable mode token such as `${m:-x}` must not hide a world-writable tree), so `chmod -R u+x 777` (a file named 777) still blocks.
 
 **Wrapper x git global options (#1133).** `timeout 5 git -C d push --force` used to allow, and so did `caffeinate git push -f` (no global option at all): the anchored-rule position walk knew only a narrow wrapper list, and the global-option stripper gave up at any token that was not a bare `sudo`/`env`/`nice`-class wrapper. `_POSITION_WRAPPERS` now includes every `_PREFIX_WRAPPERS` entry, wrappers that take a bare operand before the command (`flock FILE`, `lockf`, `chroot`, `sg GROUP`) are modelled in `_WRAPPER_OPERANDS`, and `_strip_global_options` skips a wrapper's own options/operands before the tool. Pinned by a 34-wrapper x 7-global-option x 11-destructive-op differential (decision wrapped >= decision top level). Still open (declared): wrappers that carry the command in a quoted string or have no stable operand grammar (`watch`, `script -qc`, `sg grp -c 'git …'` quoted) are judged by the shell-payload rescan, not this path. `./crontab` as a command no longer asks.
 
@@ -683,7 +689,7 @@ is the *production-targeting* one, which inverts the guard: it held for the
 default target and dropped for the named remote one.
 
 The fix is one normalizer at the shared matching seam, driven by a per-tool data
-table (`_GLOBAL_OPTION_TABLE` in `agentwire/safety/_core.py`). Rules do not need
+table (`_GLOBAL_OPTION_TABLE` in `packages/damage-control-dev/src/damage_control/engine.py`). Rules do not need
 to know about it: `global_option_normalized_haystacks()` emits an **extra**
 haystack per subcommand with the tool's global options removed, and present and
 future rules inherit the fix.
@@ -767,7 +773,7 @@ Blocks: `rm`, `unlink`, `rmdir`, `shred`, plus the three ways to the same end th
 
 ##### What the no-delete ladder judges (#1127, #1128)
 
-`noDeletePaths` (and the delete half of `readOnlyPaths`) used to pair a delete verb with a path inside ONE simple command. Four shapes got around it; each is now judged like the direct operand (`rm <path>`) by `producer_scan` / `producer_fed_hit` / `move_overwrite_hit` in `_core.py`. **Entry classes matter:** a *file* entry (`CLAUDE.md`, `README.md`, `~/.agentwire/settings.json`, `LICENSE`, …) is genuinely guarded; a *directory* entry (`~/.claude/`, `~/.agentwire/`, `~/.agentwire/sessions/`, `.git/`) also covers runtime state agents write and move routinely (cohorts, inbox, sessions). The mv/overwrite/emptying checks therefore apply to file entries, and to a directory entry only as the directory itself or an ancestor of it.
+`noDeletePaths` (and the delete half of `readOnlyPaths`) used to pair a delete verb with a path inside ONE simple command. Four shapes got around it; each is now judged like the direct operand (`rm <path>`) by `producer_scan` / `producer_fed_hit` / `move_overwrite_hit` in `engine.py`. **Entry classes matter:** a *file* entry (`CLAUDE.md`, `README.md`, `~/.agentwire/settings.json`, `LICENSE`, …) is genuinely guarded; a *directory* entry (`~/.claude/`, `~/.agentwire/`, `~/.agentwire/sessions/`, `.git/`) also covers runtime state agents write and move routinely (cohorts, inbox, sessions). The mv/overwrite/emptying checks therefore apply to file entries, and to a directory entry only as the directory itself or an ancestor of it.
 
 **Producer-fed deletes (#1128).** A delete consumer whose operands come from elsewhere: `xargs [opts] rm`, `parallel rm` / `parallel 'rm {}' ::: x`, `rm $(…)` / `` rm `…` ``, `while read f; do rm "$f"; done`, `for f in …; do rm $f; done`, `find … -exec|-execdir|-ok|-okdir rm`, and `truncate`/`dd of=` in any of those positions (also inside `ssh`/`sh -c`/`sudo`/`if`/`( )`). The words of every OTHER segment are treated as its operands:
 
@@ -783,7 +789,7 @@ Blocks: `rm`, `unlink`, `rmdir`, `shred`, plus the three ways to the same end th
 
 **Declared residual** (not closable by a text hook): the CONTENT of a list file (`cat /tmp/list | xargs rm` is judged by where the list lives, not by what it names); `rm $f` loops with non-literal operands (the generic rm rule already refuses them, scratch or not); `cd <dir> && …` is not modelled for relative roots (the hook's cwd resolves them); `rsync --delete` into a guarded directory; the emptying spellings above.
 
-Pinned by `tests/unit/test_damage_control_bypass.py`: a differential (consumer spellings × producers × targets × homes × {default, kill switch off, unattended}) against the direct-operand decision, must-allow controls (scratch pipelines, the narrowed relative producers, runtime-state moves including the real owner command), must-ask controls, and the exec-variant equivalence. Logic lives only in `_core.py` (no rule-YAML change), so a newer ruleset never needs a newer hook.
+Pinned by `tests/unit/test_damage_control_bypass.py`: a differential (consumer spellings × producers × targets × homes × {default, kill switch off, unattended}) against the direct-operand decision, must-allow controls (scratch pipelines, the narrowed relative producers, runtime-state moves including the real owner command), must-ask controls, and the exec-variant equivalence. Logic lives only in `engine.py` (no rule-YAML change), so a newer ruleset never needs a newer hook.
 
 #### 5. allowedPaths (Granular path-based allowlist)
 
@@ -816,7 +822,7 @@ The allowlist is the one knob that overrides the protected-control-plane check, 
 
 **The override cuts both ways (#938).** Because `allowedPaths` outranks control-plane protection, a *broad* entry silently turns that protection off for whatever it covers — `{path: "*/.agentwire/*", allow: all}` makes the kill switch (`~/.agentwire/damagecontrol.yml`), the rule files, and the hook scripts agent-writable, and `{path: "~/.claude/*"}` takes hook registration (`settings.json`) with it. The control plane is protected *unless your allowlist covers it*. `agentwire doctor` flags any entry whose glob overlaps a protected control-plane path, using the enforcement matcher itself, and names both sides.
 
-**A location allowance never re-permits the control plane (#1121).** "Covers it" is judged by the entry's SHAPE at a canonical home (`_core.control_plane_allowlist`, the same anchoring doctor's overlap check uses), not against the live path. Judged live, the shipped `/tmp/*` scratch entry matched `$HOME/.agentwire/damagecontrol.yml` whenever `$HOME` lived under `/tmp` (a CI image, container, sandbox), so `cd ~/.agentwire && touch damagecontrol.yml` was ALLOWED at `HOME=/tmp/x` and blocked at `/Users/x` — the verdict followed where the home sat, not what the target was. An entry now counts only if it names a protected file literally (`/repo/.damagecontrol.yml`) or its glob covers the control plane at the canonical home (`~/.agentwire/*`, `*/.agentwire/*`). Applied at both entry points (`check_protected_command`, `check_protected_path`). Pinned by a differential test (writers × spellings × HOME in `/Users`, `/home`, `/tmp`, `/private/tmp`, `/var/folders`, a symlinked home × kill switch on/off) that must give the same verdict everywhere. The same filter (`guarded_allowlist`) guards `zeroAccessPaths`, `readOnlyPaths` and `noDeletePaths` at every override site (Bash ladders, `check_path`, `check_read_path`, and the MCP path screen that calls them) (#1122). `_anchor_home` never rewrites a bare ancestor of HOME (`/tmp/*` at `HOME=/tmp`, `HOME=/`, a trailing slash): a rewrite must not change what an entry covers, so a live-HOME prefix is rewritten only when it names a literal component below HOME. Stated cost: `/tmp/*` no longer re-permits a zero-access file that sits in /tmp (`cat /tmp/foo.pem` blocks); a literal entry for it still does.
+**A location allowance never re-permits the control plane (#1121).** "Covers it" is judged by the entry's SHAPE at a canonical home (`engine.control_plane_allowlist`, the same anchoring doctor's overlap check uses), not against the live path. Judged live, the shipped `/tmp/*` scratch entry matched `$HOME/.agentwire/damagecontrol.yml` whenever `$HOME` lived under `/tmp` (a CI image, container, sandbox), so `cd ~/.agentwire && touch damagecontrol.yml` was ALLOWED at `HOME=/tmp/x` and blocked at `/Users/x` — the verdict followed where the home sat, not what the target was. An entry now counts only if it names a protected file literally (`/repo/.damagecontrol.yml`) or its glob covers the control plane at the canonical home (`~/.agentwire/*`, `*/.agentwire/*`). Applied at both entry points (`check_protected_command`, `check_protected_path`). Pinned by a differential test (writers × spellings × HOME in `/Users`, `/home`, `/tmp`, `/private/tmp`, `/var/folders`, a symlinked home × kill switch on/off) that must give the same verdict everywhere. The same filter (`guarded_allowlist`) guards `zeroAccessPaths`, `readOnlyPaths` and `noDeletePaths` at every override site (Bash ladders, `check_path`, `check_read_path`, and the MCP path screen that calls them) (#1122). `_anchor_home` never rewrites a bare ancestor of HOME (`/tmp/*` at `HOME=/tmp`, `HOME=/`, a trailing slash): a rewrite must not change what an entry covers, so a live-HOME prefix is rewritten only when it names a literal component below HOME. Stated cost: `/tmp/*` no longer re-permits a zero-access file that sits in /tmp (`cat /tmp/foo.pem` blocks); a literal entry for it still does.
 
 Per-project paths are relative to the project root and resolved to absolute paths before matching.
 
@@ -910,7 +916,7 @@ unattended gate is inert too (enable safety for scheduled projects to engage it)
 |-------|-------|-------|
 | 1. per-task `unattended_allow` | `.agentwire.tasks.yml` | The pressure-relief valve: widen (or narrow) for one task instead of loosening the global default |
 | 2. `unattended_allow` | `~/.agentwire/damagecontrol.yml` / project `.damagecontrol.yml` | Global / per-project |
-| 3. `DEFAULT_UNATTENDED_ALLOW` | `safety/_core.py` | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create`, `outbound.agentwire-email` — work + open a PR + notify the owner by email |
+| 3. `DEFAULT_UNATTENDED_ALLOW` | `packages/damage-control-dev/src/damage_control/engine.py` | Built-in: `git.add`, `git.add-u`, `git.commit`, `git.push`, `gh.pr-create`, `outbound.agentwire-email` — work + open a PR + notify the owner by email |
 
 **Precedence, not union (#914).** The most specific layer that *names* a rule id
 defines that rule's grant outright. A union would make a scoped entry
@@ -1140,9 +1146,7 @@ hook gates them:
   hook. That reuses `outbound.agentwire-email` / `outbound.agentwire-quo`
   verbatim — same rule IDs, same `unattended_allow`, same
   `agentwire safety notify-unattended-block` owner-alert on an unattended block.
-- Generated from `agentwire/safety/_core.py` via
-  `scripts/regen_damage_control_hooks.py` like the other three — never hand-edit
-  between the GENERATED markers.
+- The same package entry as the other four (`python -I -m damage_control.hook mcp`).
 
 Effect: an unattended scheduler dispatch can no longer send SMS silently (email
 is a deliberate exception — see the blanket-unattended-allow discussion above,
@@ -1400,7 +1404,7 @@ Retention is not bounded and there is no copy outside `~/.agentwire/`: a wipe of
 
 Corpus: 9 days of audit logs, 255 attended blocks (222 distinct commands; rows repeat). Reviewer / fix / probe sessions netted out by name: 83 distinct commands from real work sessions. Replaying every logged block through the bundled rules: 29 already allow on `main` (rounds 1-2), this round flips 5 more, and **no previously allowed command regressed and none became an ask**. Netted still-blocking: 61 on `main`, 58 after.
 
-- **The "no rule_id" bucket (127 of 255) was six checks, not one.** `protectedControlPlane`, `protectedCommand`, `parserUnavailable` and the three path ladders (`zeroAccessPath`, `readOnlyPath`, `noDeletePath`) built their block result with a `pattern` but no `id`. Every Bash block now carries one (`core.protected-control-plane`, `core.protected-command`, `core.parser-unavailable`, `core.zero-access-path`, `core.read-only-path`, `core.no-delete-path`), so `agentwire safety report` ranks them like any rule. Blocks are not grantable, so the ids change no permission.
+- **The "no rule_id" bucket (127 of 255) was six checks, not one.** `protectedControlPlane`, `protectedCommand` and the three path ladders (`zeroAccessPath`, `readOnlyPath`, `noDeletePath`) built their block result with a `pattern` but no `id`. Every Bash block now carries one (`core.protected-control-plane`, `core.protected-command`, `core.zero-access-path`, `core.read-only-path`, `core.no-delete-path`), so `agentwire safety report` ranks them like any rule. Blocks are not grantable, so the ids change no permission.
 - **Zero-access on stored text: tried, dropped.** Hiding a quoted `cat` / `tee` heredoc body from the zero-access check (a `.gitignore` listing the env file, a script containing `event.key`) was built twice and review kept finding a way to execute the stored text (process substitution, a later `sh`/`make`/`rake`, a startup file as destination). The sound version needs an inert-extension allow-list for the destination and an inert-command allow-list for everything after the body; replayed on the corpus it flipped 0 of the logged commands, so it was removed rather than shipped. The mention still blocks; the escape hatch covers a genuine case. A file written in one command and executed by a LATER one is outside the hook's view regardless.
 - **`rm` allowances gave up on any group.** `(npm run start >/dev/null 2>&1 &); … rm shot.tmp.mjs` left the whole compound unmodelled, so the scratch / untracked allowances never ran. A parenthesised span is now treated as a no-op only when it opens at COMMAND POSITION (start of text, after a newline, `;`, `&`, `|`, or a spaced `!`) and holds no `cd` / assignment / `export` / `rm` / `find` / `git` / interpreter word. Case-arm patterns (any command containing `case`), extglobs (`!(x)`, `@(a|b)`), array assignments, empty `()` and a paren after a word are not groups and stay as before. A group that could leak directory or variable state stays unmodelled. Known limit, same as the flat form: a deletion verb hidden inside a real group is not separately modelled.
 
@@ -1506,7 +1510,7 @@ readOnlyPaths:
   - /myapp/config/production.yaml
 ```
 
-**Heads-up:** the user-override directory **replaces** the bundled rules wholesale — copy what you need from `agentwire/hooks/damage-control/rules/` if you want to extend rather than override.
+**Heads-up:** a file in the override directory **replaces the bundled file of the same name** and every other bundled file stays on. Copy from `packages/damage-control-dev/src/damage_control/rules/` only to change a bundled file.
 
 **Pattern Tips**:
 - Declare `anchored:` on every rule — `true` for a command-prefix rule, `false`
@@ -1651,23 +1655,11 @@ would make a documented staleness override silently grant a machine-global one.
 (Distinct from the behind-main check, which says nothing about a worktree that
 is *ahead and divergent* rather than behind.)
 
-**2. Ordering — not equality.** The five generated hooks carry a stamp emitted
-by `scripts/regen_damage_control_hooks.py`:
-
-```python
-AGENTWIRE_HOOK_STAMP = {"core_sha256": "…", "generated_at": "2026-08-06T…Z"}
-```
-
-`generated_at` moves only when the inlined `_core.py` actually changes, so the
-stamp is a property of the SOURCE TREE and orders two checkouts. Drift states
-become `ok | missing | older | newer | stale`, and a `newer` installed copy is
-never overwritten without `--force`. Installs also write with a **fresh mtime**
-— `copy2` preserving the source mtime is what made the original downgrade
-invisible to any timestamp check.
-
-Ordering is **prospective**: an install that predates the stamp reports `stale`
-(differs, unorderable) rather than a direction. Direction becomes available from
-the first stamped deploy onward. Provenance is what protects the interval.
+**2. Ordering — retired (#1209 M4).** The five generated hook scripts and their
+`AGENTWIRE_HOOK_STAMP` no longer exist: the hook is the installed package, so there is
+no installed copy that can be older or newer than the source. The failure this guarded
+(a stale checkout reinstalling an older hook) is now closed by provenance alone, which also
+covers the interpreter the registration records.
 
 **3. Three-way sync — not install-missing-only.** Rules and tooldefs are
 host-editable, so a blanket overwrite is off the table. The missing leg of a
@@ -1780,29 +1772,62 @@ the person who owns the machine.
 
 The engine knows what is dangerous in general; the host adds what is dangerous around itself.
 
-- **`safety/profile.py`** — `Profile`: protected paths, control-plane words, benign-path patterns,
+- **`packages/damage-control-dev/src/damage_control/profile.py`** — `Profile`: protected paths, control-plane words, benign-path patterns,
   `home_alias`, protected commands, the unattended env names and default grant ids, extra rules
   dirs, MCP command templates, groups/packs, the grant hint and the block notifier. It only ADDS to
-  the kernel in `_core.py` (the project policy file, Claude Code's `settings.json` and hooks dir,
+  the kernel in `engine.py` (the project policy file, Claude Code's `settings.json` and hooks dir,
   the profile's own policy file), so no profile can remove or loosen a kernel entry, and the
   control-plane / protected-command checks still run before the kill switch.
-- **`safety/host_profile.py`** — AgentWire's profile (`build_profile`). `_core` installs it at import
-  (`install_profile`); the generated hooks inline it. Core ships an empty default grant list.
-- **`safety/policy.py`** — `Guard.decide(ToolCall, Context) -> Verdict`, the ladder that used to be
+- **`agentwire/safety/host_profile.py`** — AgentWire's profile (`build_profile`, `write_manifest`, `activate`). In-process agentwire code activates it on import of `agentwire.safety`; hooks load the manifest. The engine ships an empty default grant list.
+- **`packages/damage-control-dev/src/damage_control/policy.py`** — `Guard.decide(ToolCall, Context) -> Verdict`, the ladder that used to be
   copy-pasted into the five hook `main()`s. Pure: it returns the audit row, stderr lines and
   notification as data. The engine is passed in, so tests drive it with a stub engine
   (`tests/unit/test_policy_ladder.py`).
-- **`safety/adapter.py`** — payload -> `ToolCall`/`Context`, and `render(verdict)`, the one place a
+- **`packages/damage-control-dev/src/damage_control/adapter.py`** — payload -> `ToolCall`/`Context`, and `render(verdict)`, the one place a
   decision becomes an exit code. Each hook `main()` is `load config -> parse -> decide -> render`.
 - **Sources** — `load_config` takes a list of rule dirs and one or more tooldef dirs, in precedence
   order (bundled, profile layers, host override). Merging is additive; a repeated rule id across
   sources is recorded under `_duplicate_rule_ids`; an `allowedPaths` entry in an extension source that
   would re-permit the control plane is dropped with a load failure.
 
-`scripts/regen_damage_control_hooks.py` inlines `profile`, `host_profile`, `_core`, `policy` and
-`adapter` (in that order) into each hook, so those files must stay stdlib + yaml and import nothing
-from `agentwire` (`tests/unit/test_engine_standalone.py`). Use `NamedTuple`, not `@dataclass`: a hook
-loaded by path has no `sys.modules` entry for a dataclass to resolve its annotations against.
+The package modules must stay stdlib + (lazy) yaml and import nothing from `agentwire`
+(`tests/unit/test_engine_standalone.py`, which also runs on the Python 3.9 CI job). The profile reaches
+the hook as DATA: `heal` writes `agentwire/safety/host_profile.py`'s profile to the protected
+`~/.agentwire/damagecontrol-profile.json` and the registered command names it with `--profile`.
+
+## Runtime package, exec-form hooks and break-glass (#1209 M4)
+
+**Registration.** `agentwire hooks install` (→ `heal_damage_control`) writes, per matcher, one atomic
+`settings.json` edit: `{type: command, command: <absolute interpreter>, args: [-I, -m, damage_control.hook,
+<kind>, --profile, <manifest>], timeout, onFailure: block}`, replacing any pre-package script
+registration in the same write. It first runs the SAME command as a selftest (every kind exits 0 on a
+tool it does not gate; Bash blocks `rm -rf`); a failed selftest changes nothing. The interpreter it
+recorded is in `~/.agentwire/damagecontrol-install.json`, which `doctor` re-verifies.
+**The exec-form (`command` + `args`) registration shape is taken from the epic and was not exercised
+against a live Claude Code in the build session; the first deploy should confirm one real tool call.**
+
+**Fail-closed layers.** (1) `hook.py` imports only `os`/`sys`; any failure importing the engine, or a
+module that exits 0 at import, is exit 2. (2) `-I` keeps the cwd and `PYTHON*` out of `sys.path` (a planted
+`json.py` is ignored). (3) PyYAML is imported lazily and only for a human's YAML overlay. (4) Anything
+before Python runs — interpreter gone, package gone — is `onFailure: block`, which refuses every tool call.
+`tests/unit/test_hook_fail_closed_matrix.py` pins layers 1–3, each mutation-checked.
+
+**Break-glass.** When layer 4 fires, run from an ordinary terminal (not through Claude Code):
+
+```
+python3 ~/.agentwire/bin/damage-control-breakglass status       # names the dead interpreter
+python3 ~/.agentwire/bin/damage-control-breakglass unregister   # removes ONLY our hook entries (backup: settings.json.breakglass.bak)
+uv tool install --force --reinstall agentwire-dev && agentwire hooks install   # or: agentwire doctor --fix
+```
+
+`unregister` leaves damage control OFF until the re-register. The script is stdlib-only and lives
+outside the venv; it refuses an unparseable settings file. `tests/unit/test_breakglass.py` builds a real
+venv, registers against it, deletes it and drives the script with another interpreter.
+
+**Rules.** Authored as YAML, committed beside generated JSON (`build_rules_json.py`; drift fails
+`test_rules_json_in_sync.py`). The hook reads JSON. Packs and groups are read from `damagecontrol.yml` on
+every call, so `packs enable|disable` needs no heal; an absent `packs:` key means undecided and loads every
+pack (M5 revisits that default).
 
 ## Troubleshooting
 
@@ -1830,7 +1855,7 @@ agentwire safety check "your command here"
 # Shows which pattern matched
 ```
 
-**Adjust the pattern** — copy the relevant rules file from `agentwire/hooks/damage-control/rules/` into `~/.agentwire/damage-control/` and edit there:
+**Adjust the pattern** — copy the relevant rules file from `packages/damage-control-dev/src/damage_control/rules/` into `~/.agentwire/damage-control/` and edit there (it then replaces the bundled file of that name):
 ```yaml
 # Before (too broad)
 - pattern: '\brm\b'
@@ -2295,7 +2320,7 @@ Damage Control is ONE layer:
 
 ### Q: Can I customize patterns per session?
 
-**A**: Not yet. Patterns are global — bundled `agentwire/hooks/damage-control/rules/*.yaml` plus an optional override at `~/.agentwire/damage-control/`. Per-session overrides are a future enhancement.
+**A**: Not yet. Patterns are global — bundled `packages/damage-control-dev/src/damage_control/rules/` plus an optional overlay at `~/.agentwire/damage-control/`. Per-session overrides are a future enhancement.
 
 ### Q: What if I need to run a blocked command?
 
@@ -2335,4 +2360,4 @@ Remember: when this directory exists, the bundled rules are **replaced**. Copy t
 ## Related Documentation
 
 - `agentwire safety` — CLI surface for testing commands and viewing audit logs (`agentwire safety check ...`, `agentwire safety logs`).
-- `agentwire/hooks/damage-control/rules/` — bundled pattern source-of-truth.
+- `packages/damage-control-dev/src/damage_control/rules/` and `agentwire/safety/rules/` — bundled pattern source-of-truth.

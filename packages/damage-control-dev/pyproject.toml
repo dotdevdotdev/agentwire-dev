@@ -1,0 +1,37 @@
+[project]
+name = "damage-control-dev"
+dynamic = ["version"]
+description = "Damage control for AI coding agents: a PreToolUse guard that blocks or asks before destructive commands and protected-path writes (Claude Code)."
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "dotdev", email = "dev@dotdev.dev" }]
+keywords = ["ai", "agent", "claude-code", "safety", "hooks"]
+classifiers = [
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+]
+# PyYAML is read ONLY for user-authored YAML (the policy file, rule/tooldef overlays); the
+# bundled rules ship as JSON, so a hook with no PyYAML still enforces every bundled rule.
+dependencies = ["pyyaml>=6.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/damage_control/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/damage_control"]
+include = [
+    "src/damage_control/**/*.py",
+    "src/damage_control/rules/*.json",
+    "src/damage_control/rules/*.yaml",
+    "src/damage_control/tooldefs/*.json",
+    "src/damage_control/tooldefs/*.yaml",
+]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/damage_control", "tools", "pyproject.toml"]

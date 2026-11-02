@@ -1,0 +1,77 @@
+{
+ "name": "npm",
+ "binary": "npm",
+ "purpose": "Node.js package manager — install dependencies, run scripts, publish packages",
+ "docs": "https://docs.npmjs.com/cli/",
+ "install": "bundled with Node.js",
+ "commands": [
+  {
+   "cmd": "npm list [--depth=0]",
+   "access": "read",
+   "description": "List installed packages"
+  },
+  {
+   "cmd": "npm outdated",
+   "access": "read",
+   "description": "Check for outdated packages"
+  },
+  {
+   "cmd": "npm audit",
+   "access": "read",
+   "description": "Check for security vulnerabilities"
+  },
+  {
+   "id": "tooldef.npm-run-a-package-json-script",
+   "cmd": "npm run <script>",
+   "access": "write",
+   "description": "Run a package.json script"
+  },
+  {
+   "id": "tooldef.npm-install-all-dependencies-from-package-json",
+   "cmd": "npm install",
+   "access": "write",
+   "description": "Install all dependencies from package.json"
+  },
+  {
+   "id": "tooldef.npm-install-a-package",
+   "cmd": "npm install <package>",
+   "access": "write",
+   "description": "Install a package"
+  },
+  {
+   "id": "tooldef.npm-install-a-dev-dependency",
+   "cmd": "npm install -D <package>",
+   "access": "write",
+   "description": "Install a dev dependency"
+  },
+  {
+   "id": "tooldef.npm-remove-a-package",
+   "cmd": "npm uninstall <package>",
+   "access": "write",
+   "description": "Remove a package"
+  },
+  {
+   "id": "tooldef.npm-update-packages-to-latest-allowed-versions",
+   "cmd": "npm update [<package>]",
+   "access": "write",
+   "description": "Update packages to latest allowed versions"
+  },
+  {
+   "id": "tooldef.npm-clean-install-from-package-lock-json-faster-deterministi",
+   "cmd": "npm ci",
+   "access": "write",
+   "description": "Clean install from package-lock.json (faster, deterministic)"
+  },
+  {
+   "id": "tooldef.npm-publish-package-to-npm-registry",
+   "cmd": "npm publish",
+   "access": "write",
+   "description": "Publish package to npm registry"
+  },
+  {
+   "cmd": "npm unpublish <package>",
+   "access": "blocked",
+   "description": "Remove package from registry (irreversible after 72h, affects downstream users)"
+  }
+ ]
+}

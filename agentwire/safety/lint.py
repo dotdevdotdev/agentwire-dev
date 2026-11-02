@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from ._core import (
+from damage_control.engine import (
     check_command,
     load_config,
     parse_unattended_allow,
@@ -68,17 +68,18 @@ class PostureReport:
 def disabled_group_of(rule_id: str) -> Optional[str]:
     """The opted-out default group whose files mint ``rule_id`` (ids are
     ``<file-stem>.<slug>``), or None."""
-    from ..safety_commands import DAMAGECONTROL_FILE, RULES_DIR, TOOLDEFS_DIR
-    from . import packs
-    from .groups import REGISTRY
+    from damage_control import packs
+    from damage_control.groups import registry
 
-    state = packs.effective_state(DAMAGECONTROL_FILE, RULES_DIR, TOOLDEFS_DIR)
+    from ..safety_commands import DAMAGECONTROL_FILE
+
+    state = packs.effective_state(DAMAGECONTROL_FILE)
     # Rule ids (and ids pinned in a tooldef, e.g. ``gh.pr-create``) are
     # ``<file-stem>.<slug>``; unpinned tooldef ids are
     # ``tooldef.<tooldef-file-stem>-<slug>``, so the owner is read off the stem
     # that prefixes the slug, not off the first dotted segment.
     head, _, rest = rule_id.partition(".")
-    for e in REGISTRY.values():
+    for e in registry().values():
         if packs.entry_active(e, state):
             continue
         if head == "tooldef":
@@ -202,7 +203,7 @@ def lint_task_posture(
         merged.update(task_grants)   # the task layer is the most specific
         grants = merged
 
-    from ._core import unattended_grant_allows
+    from damage_control.engine import unattended_grant_allows
 
     for where, command, exact in _task_commands(task):
         result = check_command(command, config)
@@ -232,7 +233,7 @@ def unattended_defaults_missing(config: dict) -> list[str]:
     A non-empty result means the built-in grants are silently inert on this
     install — the tooldef drift behind #914's motivating failure (#916).
     """
-    from ._core import DEFAULT_UNATTENDED_ALLOW
+    from damage_control.engine import DEFAULT_UNATTENDED_ALLOW
 
     known = {
         p.get("id")
@@ -244,7 +245,7 @@ def unattended_defaults_missing(config: dict) -> list[str]:
     return sorted(rid for rid in defaults if rid not in known)
 
 
-def unpinned_rules(rules_dir: Path, tooldefs_dir: Optional[Path] = None) -> list[str]:
+def unpinned_rules(rules_dirs: Any, tooldefs_dir: Optional[Path] = None) -> list[str]:
     """Rules that carry no explicit ``id:`` (#1209 M1), as ``file: reason`` lines.
 
     A derived id comes from the ``reason:`` text, so a typo fix renames it and
@@ -260,7 +261,8 @@ def unpinned_rules(rules_dir: Path, tooldefs_dir: Optional[Path] = None) -> list
     def unpinned(item: Any) -> bool:
         return isinstance(item, dict) and not str(item.get("id") or "").strip()
 
-    for path in sorted(rules_dir.glob("*.yaml")):
+    dirs = [rules_dirs] if isinstance(rules_dirs, Path) else list(rules_dirs)
+    for path in sorted(p for d in dirs for p in d.glob("*.yaml")):
         data = yaml.safe_load(path.read_text()) or {}
         for key in ("bashToolPatterns", "mcpToolPolicies"):
             for item in data.get(key) or []:
@@ -282,24 +284,19 @@ def load_effective_config(
 ) -> tuple[dict, str]:
     """Load the rule set the hook would load, plus a label naming its sources.
 
-    The label is not decoration: `~/.agentwire/damage-control/` and
-    `~/.agentwire/tooldefs/` win over the bundled copies and never self-heal, so
-    a lint result is only meaningful alongside which set produced it (#916).
+    The label is not decoration: the host's overlay dirs (`~/.agentwire/damage-control/`,
+    `~/.agentwire/tooldefs/`) replace bundled files of the same name, so a lint result is only
+    meaningful alongside which set produced it (#916). Explicit dirs bypass the machine's own.
     """
-    from ..safety_commands import RULES_DIR, TOOLDEFS_DIR, get_damage_control_source
+    from damage_control import engine
 
-    bundled_rules = get_damage_control_source()
-    bundled_tooldefs = Path(__file__).parent.parent / "tooldefs"
-
-    if rules_dir is None:
-        rules_dir = RULES_DIR if (RULES_DIR.exists() and any(RULES_DIR.glob("*.yaml"))) else bundled_rules
-    if tooldefs_dir is None:
-        tooldefs_dir = (
-            TOOLDEFS_DIR if (TOOLDEFS_DIR.exists() and any(TOOLDEFS_DIR.glob("*.yaml")))
-            else bundled_tooldefs
-        )
-    label = f"rules={rules_dir}, tooldefs={tooldefs_dir}"
-    return load_config(rules_dir, tooldefs_dir), label
+    if rules_dir is not None or tooldefs_dir is not None:
+        label = f"rules={rules_dir}, tooldefs={tooldefs_dir}"
+        return load_config(rules_dir or [], tooldefs_dir), label
+    sources = engine.resolve_sources(engine.load_safety_config())
+    label = (f"bundled rules + overlay {sources.overlay_rules or '(none)'}, "
+             f"bundled tooldefs + overlay {sources.overlay_tooldefs or '(none)'}")
+    return load_config(**sources._asdict()), label
 
 
 def render_report(report: PostureReport, label: str) -> list[str]:

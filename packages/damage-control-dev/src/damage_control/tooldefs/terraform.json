@@ -1,0 +1,68 @@
+{
+ "name": "Terraform",
+ "binary": "terraform",
+ "purpose": "Define and provision infrastructure as code",
+ "docs": "https://developer.hashicorp.com/terraform/cli",
+ "install": "brew install terraform",
+ "commands": [
+  {
+   "id": "tooldef.terraform-initialize-working-directory-downloads-providers",
+   "cmd": "terraform init",
+   "access": "write",
+   "description": "Initialize working directory (downloads providers)"
+  },
+  {
+   "cmd": "terraform validate",
+   "access": "read",
+   "description": "Validate configuration files"
+  },
+  {
+   "cmd": "terraform plan [-out=<file>]",
+   "access": "read",
+   "description": "Preview changes without applying"
+  },
+  {
+   "cmd": "terraform show",
+   "access": "read",
+   "description": "Show current state or a plan file"
+  },
+  {
+   "cmd": "terraform state list",
+   "access": "read",
+   "description": "List resources in state"
+  },
+  {
+   "cmd": "terraform output",
+   "access": "read",
+   "description": "Show output values"
+  },
+  {
+   "id": "tooldef.terraform-apply-planned-changes-to-infrastructure",
+   "cmd": "terraform apply",
+   "access": "write",
+   "description": "Apply planned changes to infrastructure"
+  },
+  {
+   "id": "tooldef.terraform-apply-a-saved-plan",
+   "cmd": "terraform apply <plan-file>",
+   "access": "write",
+   "description": "Apply a saved plan"
+  },
+  {
+   "id": "tooldef.terraform-import-existing-infrastructure-into-state",
+   "cmd": "terraform import <resource> <id>",
+   "access": "write",
+   "description": "Import existing infrastructure into state"
+  },
+  {
+   "cmd": "terraform destroy",
+   "access": "blocked",
+   "description": "Destroy ALL managed infrastructure (unrecoverable)"
+  },
+  {
+   "cmd": "terraform state rm <resource>",
+   "access": "blocked",
+   "description": "Remove resource from state (can cause drift)"
+  }
+ ]
+}

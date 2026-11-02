@@ -483,35 +483,30 @@ def install_hooks(
         for ev in event:
             register_hook_in_settings(ev, hook_name)
 
-    # Heal the full damage-control surface (hook scripts + rules + tooldefs +
-    # PreToolUse matchers), not just the settings.json matchers. This closes the
-    # documented post-rebuild gap: CLAUDE.md tells users to re-run `hooks install`
-    # after a rebuild, so it must actually sync the DC files/rules — drift-aware,
-    # bringing previously-shipped versions forward and never clobbering a
-    # file it does not recognize.
+    # Register the damage-control hooks (exec form, recorded interpreter), write the profile
+    # they load and the break-glass script, and retire stale rule copies. This is what makes
+    # `hooks install` after a rebuild actually switch the machine to the package it just built.
     #
-    # NOT quiet, and NOT silently swallowed: this heal can now legitimately
-    # decline to act (a newer installed hook, a hand-edited rule), and a decline
-    # an operator never sees is the #916/#936 failure mode itself — `hooks
-    # install` printing success while the thing it installs stays stale.
+    # NOT quiet, and NOT silently swallowed: this heal can legitimately decline to act (a hook
+    # set that fails its selftest keeps the old registration), and a decline an operator never
+    # sees is the #916/#936 failure mode itself — `hooks install` printing success while the
+    # thing it installs stays stale.
     try:
         from agentwire.safety_commands import heal_damage_control
         dc = heal_damage_control(quiet=True, allow_foreign=allow_foreign)
-        held = (
-            dc.get("hooks_downgrade_refused", [])
-            + dc.get("rules_unknown", [])
-            + dc.get("tooldefs_unknown", [])
+        results["damage-control"] = (
+            "selftest-failed" if dc.get("selftest_failures")
+            else "updated" if dc.get("matchers_added") else "current"
         )
-        if held:
-            print(f"  Damage control: {len(held)} file(s) HELD BACK: {', '.join(held)}")
-            print("     Details/override: agentwire safety install --yes [--force]")
-        for key, verb in (("rules_updated", "rule"), ("tooldefs_updated", "tooldef")):
+        if dc.get("selftest_failures"):
+            print(f"  Damage control: selftest FAILED, registration left as it was: "
+                  f"{'; '.join(dc['selftest_failures'])}")
+            print("     Details: agentwire doctor")
+        for key, verb in (("rules_kept_edited", "rule"), ("tooldefs_kept_edited", "tooldef")):
             for name in dc.get(key, []):
-                print(f"  Damage control: updated {verb} {name}")
-        if dc.get("tooldefs_updated") or dc.get("tooldefs_installed"):
-            from agentwire.safety_commands import unattended_grant_notice
-            for line in unattended_grant_notice():
-                print(line)
+                print(f"  Damage control: your edited {verb} {name} replaces the bundled one")
+        if dc.get("matchers_added"):
+            print(f"  Damage control: registered {dc['matchers_added']} hook entries ({dc['interpreter']})")
         if dc.get("settings_error"):
             raise SettingsError(dc["settings_error"])
     except SettingsError:
@@ -537,6 +532,9 @@ def cmd_hooks_install(args) -> int:
         return 1
     if any(state == "refused-foreign" for state in results.values()):
         # A refusal must never be reportable as a successful install (#936).
+        return 1
+    if results.get("damage-control") == "selftest-failed":
+        # Likewise a guard that could not be proven (the old registration is still in force).
         return 1
     for hook_name, target_dir, *_ in _managed_hook_files():
         state = results.get(hook_name)

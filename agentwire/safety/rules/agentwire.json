@@ -1,0 +1,28 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "agentwire.tmux-kill-session-targeting-agentwire-sessions",
+   "pattern": "\\btmux\\s+kill-session\\s+.*\\bagentwire",
+   "reason": "tmux kill-session targeting AgentWire sessions",
+   "anchored": true
+  },
+  {
+   "id": "agentwire.agentwire-destroy-if-implemented-destroys-agentwire-state",
+   "pattern": "\\bagentwire\\s+destroy\\b",
+   "reason": "agentwire destroy (if implemented - destroys AgentWire state)",
+   "anchored": true
+  },
+  {
+   "id": "agentwire.agentwire-force-remove-operations",
+   "pattern": "\\bagentwire\\s+.*--force.*remove\\b",
+   "reason": "agentwire force remove operations",
+   "anchored": true
+  },
+  {
+   "id": "agentwire.recursive-forced-rm-of-the-agentwire-directory-itself-destro",
+   "pattern": "\\brm\\s+(?:[^;&|]*\\s)?-(?:[a-zA-Z]*[rRf][a-zA-Z]*|-recursive|-force)\\b[^;&|]*\\s(?:(?:~|\\$HOME|/Users/[^/\\s]+|/home/[^/\\s]+)/)?\\.agentwire/?(?=\\s|$|[;&|])",
+   "reason": "Recursive/forced rm of the .agentwire directory itself (destroys AgentWire state)",
+   "anchored": true
+  }
+ ]
+}

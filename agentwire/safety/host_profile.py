@@ -1,22 +1,33 @@
 """AgentWire's damage-control profile: everything the generic engine is told about AgentWire.
 
-``build_profile(Profile, ...)`` is the engine's host convention (``_core`` looks for a
-``host_profile`` module beside it and falls back to the generic profile when there is
-none). It takes the data classes as arguments rather than importing them so the SAME
-text can be inlined into the standalone hook scripts, where no package is importable
-(``scripts/regen_damage_control_hooks.py``). In #1209 M6 this file becomes
-``agentwire/safety_ext.py`` and the engine package drops it.
+``build_profile()`` is the whole surface (#1209 M3, section 4.2), as plain data. A hook never
+imports it: ``agentwire hooks install`` writes it to the protected manifest
+(``manifest_path()``) and the hook's command line names that file. In-process callers (the
+CLI, the portal, the tests) call ``activate()`` to judge by the same profile. In #1209 M6 this
+file becomes ``agentwire/safety_ext.py``.
 """
 
+from pathlib import Path
 
-def build_profile(profile_cls, group_cls, template_cls):
-    return profile_cls(
+from damage_control import engine
+from damage_control.profile import GroupSpec, McpCommandTemplate, Profile, dump_profile
+
+# AgentWire's rule layer (JSON built from the YAML beside it). An absolute path: the hook
+# reads it through the manifest, and a manifest is only valid for the install that wrote it.
+RULES_DIR = Path(__file__).resolve().parent / "rules"
+
+
+def build_profile() -> Profile:
+    return Profile(
         name="agentwire",
         config_dir="~/.agentwire",
         config_dir_env="AGENTWIRE_DIR",
         protected_paths=(
             "~/.agentwire/hooks/damage-control/*.py",  # the hook scripts themselves
             "~/.agentwire/damage-control/*.yaml",      # the damage-control rule files
+            "~/.agentwire/damage-control/*.json",      # ...and their JSON form (the hook reads either)
+            "~/.agentwire/bin/damage-control-breakglass",  # the human's way out: an agent must not rewrite it
+            "~/.agentwire/damagecontrol-install.json",     # the interpreter record doctor re-verifies
             # Execution-plane configs: agentwire runs strings from these files through
             # its OWN ``subprocess.run(..., shell=True)`` calls (scheduler gate commands
             # in scheduler.py, service healthchecks in services.py) — those subprocesses
@@ -104,17 +115,17 @@ def build_profile(profile_cls, group_cls, template_cls):
             "tooldef.uv-run-a-script-in-project-environment",
             "tooldef.uv-run-a-command-in-project-environment",
         ),
-        extra_rules_dirs=("agentwire-rules",),
+        extra_rules_dirs=(str(RULES_DIR),),
         # Outbound MCP tools and the shell command they run under the hood. Keep in
         # lockstep with ``email_send`` / ``quo_send`` in ``agentwire/mcp_server.py`` and
         # the ``outbound.agentwire-*`` rules.
         mcp_command_templates=(
-            template_cls("email_send", ("agentwire", "email"),
+            McpCommandTemplate("email_send", ("agentwire", "email"),
                                (("to", "--to", True), ("subject", "--subject", False))),
-            template_cls("quo_send", ("agentwire", "quo"), (("to", "--to", False),)),
+            McpCommandTemplate("quo_send", ("agentwire", "quo"), (("to", "--to", False),)),
         ),
         groups=(
-            group_cls("agentwire", "group", "AgentWire state and session destruction",
+            GroupSpec("agentwire", "group", "AgentWire state and session destruction",
                       layer_rules=("agentwire.yaml",)),
         ),
         group_layer_rules=(
@@ -128,3 +139,23 @@ def build_profile(profile_cls, group_cls, template_cls):
         # rules by default.
         default_packs=("tmux",),
     )
+
+
+def manifest_path() -> Path:
+    """Where the installed hooks find this profile: beside the policy file, protected like it."""
+    return engine.host_path(build_profile().config_dir) / engine.PROFILE_FILE_NAME
+
+
+def write_manifest() -> Path:
+    """Write the profile the hooks load. Atomic: a hook racing the write sees the old file or the new."""
+    path = manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(dump_profile(build_profile()))
+    tmp.replace(path)
+    return path
+
+
+def activate() -> None:
+    """Judge by AgentWire's profile in this process."""
+    engine.install_profile(build_profile())

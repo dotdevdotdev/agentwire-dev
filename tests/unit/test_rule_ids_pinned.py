@@ -11,13 +11,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agentwire.safety._core import DEFAULT_UNATTENDED_ALLOW, load_config, parse_unattended_allow
+from damage_control.engine import (
+    DEFAULT_UNATTENDED_ALLOW,
+    bundled_rule_sources,
+    bundled_tooldefs_dir,
+    load_config,
+    parse_unattended_allow,
+)
+
 from agentwire.safety.lint import unpinned_rules
-from agentwire.safety_commands import get_damage_control_source
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-RULES = get_damage_control_source()
-TOOLDEFS = ROOT / "agentwire" / "tooldefs"
+RULES = bundled_rule_sources()
+TOOLDEFS = bundled_tooldefs_dir()
 GOLDEN = ROOT / "corpus" / "golden" / "rule_ids.json"
 
 

@@ -1,5 +1,6 @@
 """Shared test fixtures for the AgentWire test suite."""
 
+import functools
 import os
 import sys
 from pathlib import Path
@@ -359,42 +360,75 @@ def clean_env(monkeypatch):
 # damage-control hooks
 # ---------------------------------------------------------------------------
 #
-# The hooks are PEP 723 inline-deps scripts under hyphenated filenames
-# (`bash-tool-damage-control.py`), so they load via importlib rather than a
-# normal import. One loader, shared by every test that needs a hook module.
+# The hook is `python -I -m damage_control.hook <kind> --profile <manifest>` (#1209 M4).
+# One runner, shared by every test that drives the real entry; in-process tests use the
+# engine directly (importing `agentwire.safety` above makes it judge by AgentWire's profile).
 
-HOOKS_DIR = Path(__file__).resolve().parent.parent / "agentwire" / "hooks" / "damage-control"
+import agentwire.safety  # noqa: E402,F401  (activates AgentWire's damage-control profile)
 
 
-def load_damage_control_hook(filename: str):
-    """Load a hyphenated damage-control hook script as an importable module.
+def _profile_manifest(directory: Path) -> Path:
+    """AgentWire's profile as a hook loads it: a JSON file named on the command line."""
+    from damage_control.profile import dump_profile
 
-    The script's `audit_logger` import resolves via sys.path injection so the
-    fallback no-op log_* functions are not needed.
-    """
-    import importlib.util
+    from agentwire.safety import host_profile
 
-    sys.path.insert(0, str(HOOKS_DIR))
-    try:
-        path = HOOKS_DIR / filename
-        spec = importlib.util.spec_from_file_location(
-            filename.replace(".py", "").replace("-", "_"), path
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        sys.path.pop(0)
+    path = directory / "damagecontrol-profile.json"
+    path.write_text(dump_profile(host_profile.build_profile()))
+    return path
+
+
+@functools.lru_cache(maxsize=1)
+def shared_profile_manifest() -> Path:
+    """One manifest per test process, for module-level helpers that cannot take a fixture."""
+    import tempfile
+
+    return _profile_manifest(Path(tempfile.mkdtemp(prefix="dc-profile-")))
+
+
+def hook_argv(kind, python=None, profile=True):
+    """The argv Claude Code runs for a hook of ``kind``."""
+    argv = [python or sys.executable, "-I", "-m", "damage_control.hook", kind]
+    return argv + ["--profile", str(shared_profile_manifest())] if profile else argv
+
+
+@pytest.fixture(scope="session")
+def hook_profile():
+    return shared_profile_manifest()
+
+
+@pytest.fixture(scope="session")
+def run_hook(hook_profile):
+    """``run_hook(kind, payload, env=None, cwd=None, profile=True, python=None, args=None)`` -> CompletedProcess."""
+    import json as _json
+    import subprocess as _subprocess
+
+    def run(kind, payload, env=None, cwd=None, profile=True, python=None, args=None, timeout=60):
+        argv = [python or sys.executable, "-I", "-m", "damage_control.hook", kind]
+        if profile:
+            argv += ["--profile", str(hook_profile)]
+        argv += list(args or [])
+        full_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(Path.home()),
+                    **(env or {})}
+        text = payload if isinstance(payload, str) else _json.dumps(payload)
+        return _subprocess.run(argv, input=text, capture_output=True, text=True,
+                               env=full_env, cwd=cwd, timeout=timeout)
+
+    return run
 
 
 @pytest.fixture(scope="module")
 def bash_hook():
-    return load_damage_control_hook("bash-tool-damage-control.py")
+    from damage_control import engine
+
+    return engine
 
 
 @pytest.fixture(scope="module")
 def mcp_hook():
-    return load_damage_control_hook("mcp-tool-damage-control.py")
+    from damage_control import engine
+
+    return engine
 
 
 @pytest.fixture(autouse=True)
@@ -408,5 +442,5 @@ def _stub_hook_probes(request, monkeypatch):
         return
     from agentwire import safety_commands
 
-    monkeypatch.setattr(safety_commands, "damage_control_selftest", lambda: [])
+    monkeypatch.setattr(safety_commands, "damage_control_selftest", lambda interpreter=None: [])
     monkeypatch.setattr(safety_commands, "claude_code_version", lambda: (2, 1, 316))

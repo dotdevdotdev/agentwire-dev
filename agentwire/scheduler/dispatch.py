@@ -563,7 +563,8 @@ def _unattended_env(task: SchedulerTask) -> dict[str, str]:
     env = dict(os.environ)
     env["AGENTWIRE_UNATTENDED"] = "1"
     try:
-        from ..safety._core import encode_unattended_allow
+        from damage_control.engine import encode_unattended_allow
+
         from ..tasks import load_task
         tc = load_task(Path(task.project), task.task)
         extra = getattr(tc, "unattended_allow", None)

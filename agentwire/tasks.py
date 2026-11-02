@@ -140,7 +140,7 @@ class TaskConfig:
     # Naming a rule here REPLACES any looser grant for it from
     # safety.unattended_allow / DEFAULT_UNATTENDED_ALLOW, so a scoped entry
     # genuinely narrows rather than being swallowed by an unscoped default.
-    # Parsed and validated by safety._core.parse_unattended_allow.
+    # Parsed and validated by damage_control.engine.parse_unattended_allow.
     unattended_allow: list[str | dict] = field(default_factory=list)
 
     # Keys present in the YAML that this dataclass doesn't know about. A task
@@ -400,7 +400,7 @@ def validate_task(task: TaskConfig) -> list[str]:
     # A malformed unattended_allow entry grants NOTHING (parse_unattended_allow
     # drops it). Silently dropping a grant the author believes they wrote is how
     # this surfaces as a 04:00 timeout instead of a review comment (#914).
-    from .safety._core import parse_unattended_allow
+    from damage_control.engine import parse_unattended_allow
     _, allow_errors = parse_unattended_allow(task.unattended_allow)
     issues.extend(f"unattended_allow: {e}" for e in allow_errors)
 

@@ -21,9 +21,12 @@ asserts none, so one failure lists them all.
 from pathlib import Path
 
 import pytest
-
-from agentwire.safety._core import check_command, load_config
-from agentwire.safety.groups import bundled_rule_dirs
+from damage_control.engine import (
+    bundled_rule_sources,
+    bundled_tooldefs_dir,
+    check_command,
+    load_config,
+)
 
 # This corpus asserts on ``~``-form secret paths (``cat ~/.ssh/id_rsa``), so it
 # needs ``$HOME`` to look like a real home. The #893 redirect points HOME at a
@@ -36,8 +39,8 @@ from agentwire.safety.groups import bundled_rule_dirs
 pytestmark = pytest.mark.real_agentwire_home
 
 REPO = Path(__file__).resolve().parent.parent.parent
-RULES_DIR = bundled_rule_dirs()
-TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
+RULES_DIR = bundled_rule_sources()
+TOOLDEFS_DIR = bundled_tooldefs_dir()
 
 # Built without literal "rm -<flags>" substrings where convenient so the live
 # damage-control hook does not block the test file itself being written/read.
@@ -301,7 +304,7 @@ ZERO_ACCESS_READS = [
 
 
 def test_zero_access_reads_are_blocked_and_normal_reads_are_not(cfg):
-    from agentwire.safety._core import check_read_path
+    from damage_control.engine import check_read_path
 
     leaked = [p for p in ZERO_ACCESS_READS if check_read_path(p, cfg)[0] is not True]
     assert not leaked, leaked
@@ -311,7 +314,7 @@ def test_zero_access_reads_are_blocked_and_normal_reads_are_not(cfg):
 def test_secrets_stay_blocked_wherever_home_is(cfg, monkeypatch):
     """#1121: a HOME under /tmp or the macOS temp tree sits inside the bundled
     /tmp allowance, which must never re-permit a secret under it."""
-    from agentwire.safety._core import check_read_path
+    from damage_control.engine import check_read_path
 
     leaked = []
     for home in ("/Users/x", "/tmp/x", "/var/folders/zz/T/x"):
@@ -330,21 +333,26 @@ def test_every_content_reading_tool_is_policed():
     from agentwire.safety_commands import DAMAGE_CONTROL_MATCHERS
 
     for tool in ("Read", "Grep", "Glob"):
-        assert DAMAGE_CONTROL_MATCHERS.get(tool) == "read-tool-damage-control.py", (
+        assert DAMAGE_CONTROL_MATCHERS.get(tool) == "read", (
             f"{tool} is not covered by the damage-control read hook"
         )
 
 
 # ---------------------------------------------------------------------------
-# Missing YAML parser must fail CLOSED, not open.
+# No YAML parser: the bundled JSON rules still enforce; a human's YAML is skipped LOUDLY.
 # ---------------------------------------------------------------------------
 
 
-def test_missing_parser_fails_closed(monkeypatch):
-    import agentwire.safety._core as core
+def test_missing_parser_still_enforces_the_bundled_rules(monkeypatch, tmp_path):
+    import damage_control.engine as core
 
-    monkeypatch.setattr(core, "yaml", None)
-    merged = core.load_config(RULES_DIR)
-    assert merged.get("_parser_unavailable")
-    result = core.check_command("echo hi", merged)
-    assert result["decision"] == "block"
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    (overlay / "mine.yaml").write_text("bashToolPatterns:\n  - pattern: 'frobnicate'\n    reason: mine\n")
+    monkeypatch.setattr(core, "_yaml", lambda: None)
+    merged = core.load_config(RULES_DIR, TOOLDEFS_DIR, overlay_rules=overlay)
+    assert merged["bashToolPatterns"], "bundled JSON rules must load without PyYAML"
+    assert core.check_command("ls", merged)["decision"] == "allow"
+    assert core.check_command("rm -rf /", merged)["decision"] == "block"
+    skipped = [f["file"] for f in merged["_parse_failures"]]
+    assert skipped == [str(overlay / "mine.yaml")], "the unreadable overlay must be reported, not silently dropped"

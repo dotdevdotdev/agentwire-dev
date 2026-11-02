@@ -5,21 +5,13 @@ a rule no longer trips the rule, and every way a message value could actually
 run something — or sit next to a real command — still reaches the rules.
 """
 
-from pathlib import Path
 
 import pytest
-
-from agentwire.safety._core import check_command, load_config
+from damage_control.engine import bundled_rule_sources, check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home
 
-RULES_DIR = (
-    Path(__file__).resolve().parent.parent.parent
-    / "agentwire"
-    / "hooks"
-    / "damage-control"
-    / "rules"
-)
+RULES_DIR = bundled_rule_sources()
 _RF = "-r" + "f"
 SQL = "DROP " + "TABLE"
 

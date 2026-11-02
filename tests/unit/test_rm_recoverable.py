@@ -10,9 +10,8 @@ one real-git test is marked ``slow``.
 """
 
 import pytest
-
-from agentwire.safety import _core
-from agentwire.safety._core import rm_removes_only_recoverable_files
+from damage_control import engine as _core
+from damage_control.engine import rm_removes_only_recoverable_files
 
 pytestmark = pytest.mark.real_agentwire_home
 

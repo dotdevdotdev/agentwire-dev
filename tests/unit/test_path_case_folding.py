@@ -9,14 +9,18 @@ import os
 import sys
 
 import pytest
-
-from agentwire.safety import _core
-from agentwire.safety._core import check_path, check_read_path, load_config, match_path
-from agentwire.safety.groups import bundled_rule_dirs
+from damage_control import engine as _core
+from damage_control.engine import (
+    bundled_rule_sources,
+    check_path,
+    check_read_path,
+    load_config,
+    match_path,
+)
 
 pytestmark = pytest.mark.real_agentwire_home
 
-RULES_DIR = bundled_rule_dirs()
+RULES_DIR = bundled_rule_sources()
 HOME = os.path.expanduser("~")
 VARIANTS = (
     ".SSH/ID_RSA",

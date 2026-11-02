@@ -1,0 +1,166 @@
+{
+ "name": "Git",
+ "binary": "git",
+ "purpose": "Version control — track changes, manage branches, collaborate via remotes",
+ "docs": "https://git-scm.com/docs",
+ "commands": [
+  {
+   "cmd": "git status",
+   "access": "read",
+   "description": "Show working tree status"
+  },
+  {
+   "cmd": "git log [--oneline] [--graph]",
+   "access": "read",
+   "description": "Show commit history"
+  },
+  {
+   "cmd": "git diff [<file>]",
+   "access": "read",
+   "description": "Show unstaged changes"
+  },
+  {
+   "cmd": "git diff --staged",
+   "access": "read",
+   "description": "Show staged changes"
+  },
+  {
+   "cmd": "git show <commit>",
+   "access": "read",
+   "description": "Show commit details"
+  },
+  {
+   "cmd": "git branch [-a] [-v]",
+   "access": "read",
+   "description": "List branches"
+  },
+  {
+   "cmd": "git remote -v",
+   "access": "read",
+   "description": "List remotes"
+  },
+  {
+   "cmd": "git stash list",
+   "access": "read",
+   "description": "List stashed changes"
+  },
+  {
+   "cmd": "git stash show [-p]",
+   "access": "read",
+   "description": "Show a stash's changes"
+  },
+  {
+   "cmd": "git merge-base [--is-ancestor] <commit> <commit>",
+   "access": "read",
+   "description": "Find common ancestor / check ancestry"
+  },
+  {
+   "cmd": "git add <file>",
+   "access": "write",
+   "description": "Stage file for commit",
+   "id": "git.add"
+  },
+  {
+   "cmd": "git add -u",
+   "access": "write",
+   "description": "Stage all tracked file changes (deletions + modifications)",
+   "id": "git.add-u"
+  },
+  {
+   "cmd": "git commit -m '<message>'",
+   "access": "write",
+   "description": "Create a commit",
+   "id": "git.commit"
+  },
+  {
+   "id": "tooldef.git-stash-current-changes",
+   "cmd": "git stash",
+   "access": "write",
+   "description": "Stash current changes"
+  },
+  {
+   "id": "tooldef.git-apply-most-recent-stash",
+   "cmd": "git stash pop",
+   "access": "write",
+   "description": "Apply most recent stash"
+  },
+  {
+   "id": "tooldef.git-switch-branches-create-one-b-or-restore-working-tree-fil",
+   "cmd": "git checkout <target>",
+   "access": "write",
+   "description": "Switch branches, create one (-b), or restore working-tree files (overwrites uncommitted changes to restored paths)"
+  },
+  {
+   "id": "tooldef.git-merge-branch-into-current",
+   "cmd": "git merge <branch>",
+   "access": "write",
+   "description": "Merge branch into current"
+  },
+  {
+   "id": "tooldef.git-rebase-current-branch-onto-another",
+   "cmd": "git rebase <branch>",
+   "access": "write",
+   "description": "Rebase current branch onto another"
+  },
+  {
+   "id": "tooldef.git-apply-a-commit-to-current-branch",
+   "cmd": "git cherry-pick <commit>",
+   "access": "write",
+   "description": "Apply a commit to current branch"
+  },
+  {
+   "cmd": "git fetch [--all]",
+   "access": "read",
+   "description": "Download remote changes without merging"
+  },
+  {
+   "id": "tooldef.git-fetch-and-merge-remote-changes",
+   "cmd": "git pull",
+   "access": "write",
+   "description": "Fetch and merge remote changes"
+  },
+  {
+   "cmd": "git push",
+   "access": "write",
+   "description": "Push commits to remote",
+   "id": "git.push"
+  },
+  {
+   "id": "tooldef.git-force-push-only-if-remote-hasn-t-changed-safer-than-forc",
+   "cmd": "git push --force-with-lease",
+   "access": "write",
+   "description": "Force push only if remote hasn't changed (safer than --force)"
+  },
+  {
+   "cmd": "git reset --hard",
+   "access": "blocked",
+   "description": "Discard all uncommitted changes (unrecoverable)"
+  },
+  {
+   "cmd": "git push --force",
+   "access": "blocked",
+   "description": "Force push regardless of remote state — can overwrite others' work",
+   "note": "Use --force-with-lease instead"
+  },
+  {
+   "cmd": "git clean -fd",
+   "access": "blocked",
+   "description": "Delete all untracked files and directories"
+  },
+  {
+   "cmd": "git stash clear",
+   "access": "blocked",
+   "description": "Delete ALL stashes permanently"
+  },
+  {
+   "cmd": "git filter-branch",
+   "access": "blocked",
+   "description": "Rewrite entire commit history"
+  },
+  {
+   "cmd": "git reflog expire",
+   "access": "blocked",
+   "description": "Destroy the recovery mechanism for lost commits"
+  }
+ ]
+}

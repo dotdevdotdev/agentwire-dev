@@ -1,0 +1,31 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "remote.ssh-remote-reboot",
+   "pattern": "\\bssh\\s+.*\\breboot\\b",
+   "reason": "SSH remote reboot",
+   "ask": true,
+   "anchored": false
+  },
+  {
+   "id": "remote.ssh-remote-shutdown",
+   "pattern": "\\bssh\\s+.*\\bshutdown\\b",
+   "reason": "SSH remote shutdown",
+   "ask": true,
+   "anchored": false
+  },
+  {
+   "id": "remote.ssh-remote-service-stop",
+   "pattern": "\\bssh\\s+.*\\bsystemctl\\s+stop\\b",
+   "reason": "SSH remote service stop",
+   "ask": true,
+   "anchored": false
+  },
+  {
+   "id": "remote.ssh-remote-docker-rm-f",
+   "pattern": "\\bssh\\s+.*\\bdocker\\s+rm\\s+.*-f",
+   "reason": "SSH remote docker rm -f",
+   "anchored": false
+  }
+ ]
+}

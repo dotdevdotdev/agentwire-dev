@@ -1,0 +1,117 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "databases.redis-cli-flushall-wipes-all-data",
+   "pattern": "\\bredis-cli\\s+FLUSHALL",
+   "reason": "redis-cli FLUSHALL (wipes ALL data)",
+   "anchored": true
+  },
+  {
+   "id": "databases.redis-cli-flushdb-wipes-database",
+   "pattern": "\\bredis-cli\\s+FLUSHDB",
+   "reason": "redis-cli FLUSHDB (wipes database)",
+   "anchored": true
+  },
+  {
+   "id": "databases.postgresql-dropdb",
+   "pattern": "\\bdropdb\\b",
+   "reason": "PostgreSQL dropdb",
+   "anchored": true
+  },
+  {
+   "id": "databases.mysql-drop-database",
+   "pattern": "\\bmysqladmin\\s+drop\\b",
+   "reason": "MySQL drop database",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bprisma\\s+migrate\\s+reset\\b",
+   "reason": "prisma migrate reset (drops the database and re-applies migrations)",
+   "id": "db.prisma-reset",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bflyway\\s+clean\\b",
+   "reason": "flyway clean (drops all objects in the schema)",
+   "id": "db.flyway-clean",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bprisma\\s+migrate\\s+(deploy|dev)\\b",
+   "reason": "prisma migrate (applies database migrations)",
+   "ask": true,
+   "id": "db.prisma-migrate",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bprisma\\s+db\\s+push\\b",
+   "reason": "prisma db push (pushes schema changes to the database)",
+   "ask": true,
+   "id": "db.prisma-db-push",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bsupabase\\s+db\\s+push\\b",
+   "reason": "supabase db push (applies local migrations to the linked database)",
+   "ask": true,
+   "id": "db.supabase-db-push",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bsupabase\\s+migration\\s+up\\b",
+   "reason": "supabase migration up (applies pending migrations)",
+   "ask": true,
+   "id": "db.supabase-migration-up",
+   "anchored": true
+  },
+  {
+   "pattern": "\\balembic\\s+(upgrade|downgrade)\\b",
+   "reason": "alembic upgrade/downgrade (applies/reverts SQLAlchemy migrations)",
+   "ask": true,
+   "id": "db.alembic",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bmanage\\.py\\s+migrate\\b",
+   "reason": "Django manage.py migrate (applies database migrations)",
+   "ask": true,
+   "id": "db.django-migrate",
+   "anchored": true
+  },
+  {
+   "pattern": "\\b(rails|rake)\\s+db:migrate\\b",
+   "reason": "rails db:migrate (applies ActiveRecord migrations)",
+   "ask": true,
+   "id": "db.rails-migrate",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bknex\\s+migrate:(latest|up|down|rollback)\\b",
+   "reason": "knex migrate (applies/reverts Knex migrations)",
+   "ask": true,
+   "id": "db.knex-migrate",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bsequelize\\s+db:migrate\\b",
+   "reason": "sequelize db:migrate (applies Sequelize migrations)",
+   "ask": true,
+   "id": "db.sequelize-migrate",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bflyway\\s+migrate\\b",
+   "reason": "flyway migrate (applies pending migrations)",
+   "ask": true,
+   "id": "db.flyway-migrate",
+   "anchored": true
+  },
+  {
+   "pattern": "\\bliquibase\\s+update\\b",
+   "reason": "liquibase update (applies pending changesets)",
+   "ask": true,
+   "id": "db.liquibase-update",
+   "anchored": true
+  }
+ ]
+}

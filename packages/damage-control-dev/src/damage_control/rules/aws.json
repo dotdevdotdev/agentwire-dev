@@ -1,0 +1,85 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "aws.aws-s3-rm-recursive-deletes-all-objects",
+   "pattern": "\\baws\\s+s3\\s+rm\\s+.*--recursive",
+   "reason": "aws s3 rm --recursive (deletes all objects)",
+   "anchored": true
+  },
+  {
+   "id": "aws.aws-s3-rb-force-force-removes-bucket",
+   "pattern": "\\baws\\s+s3\\s+rb\\s+.*--force",
+   "reason": "aws s3 rb --force (force removes bucket)",
+   "anchored": true
+  },
+  {
+   "id": "aws.aws-ec2-terminate-instances",
+   "pattern": "\\baws\\s+ec2\\s+terminate-instances\\b",
+   "reason": "aws ec2 terminate-instances",
+   "anchored": true
+  },
+  {
+   "id": "aws.aws-rds-delete-db-instance",
+   "pattern": "\\baws\\s+rds\\s+delete-db-instance\\b",
+   "reason": "aws rds delete-db-instance",
+   "anchored": true
+  },
+  {
+   "id": "aws.aws-cloudformation-delete-stack-deletes-infrastructure",
+   "pattern": "\\baws\\s+cloudformation\\s+delete-stack\\b",
+   "reason": "aws cloudformation delete-stack (deletes infrastructure)",
+   "anchored": true
+  },
+  {
+   "id": "aws.aws-dynamodb-delete-table",
+   "pattern": "\\baws\\s+dynamodb\\s+delete-table\\b",
+   "reason": "aws dynamodb delete-table",
+   "anchored": true
+  },
+  {
+   "id": "aws.aws-eks-delete-cluster",
+   "pattern": "\\baws\\s+eks\\s+delete-cluster\\b",
+   "reason": "aws eks delete-cluster",
+   "anchored": true
+  },
+  {
+   "id": "aws.aws-lambda-delete-function",
+   "pattern": "\\baws\\s+lambda\\s+delete-function\\b",
+   "reason": "aws lambda delete-function",
+   "anchored": true
+  },
+  {
+   "id": "aws.aws-iam-delete-role",
+   "pattern": "\\baws\\s+iam\\s+delete-role\\b",
+   "reason": "aws iam delete-role",
+   "anchored": true
+  },
+  {
+   "id": "aws.aws-iam-delete-user",
+   "pattern": "\\baws\\s+iam\\s+delete-user\\b",
+   "reason": "aws iam delete-user",
+   "anchored": true
+  },
+  {
+   "pattern": "\\baws\\s+cloudformation\\s+deploy\\b",
+   "reason": "aws cloudformation deploy (ships an infrastructure change)",
+   "ask": true,
+   "id": "deploy.aws-cloudformation",
+   "anchored": true
+  },
+  {
+   "pattern": "\\baws\\s+lambda\\s+update-function-code\\b",
+   "reason": "aws lambda update-function-code (ships new function code)",
+   "ask": true,
+   "id": "deploy.aws-lambda-update",
+   "anchored": true
+  },
+  {
+   "pattern": "\\baws\\s+ecs\\s+update-service\\b",
+   "reason": "aws ecs update-service (ships an ECS deployment)",
+   "ask": true,
+   "id": "deploy.aws-ecs-update",
+   "anchored": true
+  }
+ ]
+}

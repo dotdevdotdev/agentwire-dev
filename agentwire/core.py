@@ -355,7 +355,7 @@ def _set_session_name_env(agent: "AgentCommand", session_name: str, created_by: 
     Every session created via ``cmd_new`` / ``cmd_spawn`` / ``cmd_recreate``
     / ``cmd_fork`` / scheduler-spawn paths gets ``AGENTWIRE_SESSION_NAME`` so
     downstream tooling (notably the worker damage-control rules in
-    ``safety/_core.py``) can identify which agentwire session the running
+    ``damage_control/engine.py``) can identify which agentwire session the running
     tool is part of.
 
     ``created_by`` of ``''`` (root/orchestrator) or ``None`` means no

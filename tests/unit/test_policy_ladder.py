@@ -11,10 +11,9 @@ import json
 import types
 
 import pytest
-
-from agentwire.safety import adapter, policy
-from agentwire.safety.policy import ALLOW, ASK, BLOCK, Context, Guard, ToolCall
-from agentwire.safety.profile import GENERIC, McpCommandTemplate
+from damage_control import adapter, policy
+from damage_control.policy import ALLOW, ASK, BLOCK, Context, Guard, ToolCall
+from damage_control.profile import GENERIC, McpCommandTemplate
 
 HINT = "To permit this for an unattended task, add rule id '{rule_id}' to its tasks file"
 

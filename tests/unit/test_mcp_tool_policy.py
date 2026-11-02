@@ -9,12 +9,11 @@ block / grants) is driven through the real hook in test_damage_control_hooks.
 from pathlib import Path
 
 import pytest
-
-from agentwire.safety.groups import bundled_rule_dirs
+from damage_control.engine import bundled_rule_sources, bundled_tooldefs_dir
 
 REPO = Path(__file__).resolve().parent.parent.parent
-RULES_DIR = bundled_rule_dirs()
-TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
+RULES_DIR = bundled_rule_sources()
+TOOLDEFS_DIR = bundled_tooldefs_dir()
 
 DANGEROUS_CORE = {
     "mcp__agentwire__worktree_remove": "mcp.agentwire.worktree-remove",

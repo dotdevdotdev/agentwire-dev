@@ -26,6 +26,13 @@ uv build
 
 Produces `dist/agentwire_dev-{VERSION}-py3-none-any.whl` and `dist/agentwire_dev-{VERSION}.tar.gz`.
 
+`agentwire-dev` depends on the workspace package `damage-control-dev` (`packages/damage-control-dev/`, #1209 M4), so a PyPI install resolves it from PyPI. Build and publish it **first** whenever its version is new (its version lives in `packages/damage-control-dev/src/damage_control/__init__.py`):
+
+```bash
+uv build --package damage-control-dev     # -> dist/damage_control_dev-{DC_VERSION}*
+uv publish --token "$(grep '^PYPI_TOKEN=' ~/.agentwire/.env | cut -d= -f2-)" dist/damage_control_dev-{DC_VERSION}*
+```
+
 Optional sanity check — confirm `agentwire/templates/` and `agentwire/static/` are bundled:
 
 ```bash

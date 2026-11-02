@@ -1,0 +1,119 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "git.git-reset-hard-use-soft-or-stash",
+   "pattern": "\\bgit\\s+reset\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?--hard\\b",
+   "pattern_src": "\\bgit\\s+reset\\s+{ARGS}--hard\\b",
+   "reason": "git reset --hard (use --soft or stash)",
+   "anchored": true
+  },
+  {
+   "id": "git.git-clean-with-force-directory-flags",
+   "pattern": "\\bgit\\s+clean\\s+(?!(?:[^;&|]*\\s)?(?:-(?!-)[a-z]*n[a-z]*(?=[\\s;&|)`]|$)|--dry-run\\b))(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?(?:-(?!-)[a-z]*[fd][a-z]*|--force)(?=[\\s;&|)`]|$)",
+   "pattern_src": "\\bgit\\s+clean\\s+(?!(?:[^;&|]*\\s)?(?:-(?!-)[a-z]*n[a-z]*(?=[\\s;&|)`]|$)|--dry-run\\b)){ARGS}(?:-(?!-)[a-z]*[fd][a-z]*|--force)(?=[\\s;&|)`]|$)",
+   "reason": "git clean with force/directory flags",
+   "anchored": true
+  },
+  {
+   "id": "git.git-push-force-use-force-with-lease",
+   "pattern": "\\bgit\\s+push\\s+.*--force(?!-with-lease)",
+   "reason": "git push --force (use --force-with-lease)",
+   "anchored": true
+  },
+  {
+   "id": "git.git-push-f-use-force-with-lease",
+   "pattern": "\\bgit\\s+push\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?-(?!-)[a-z]*f[a-z]*(?=[\\s;&|)`]|$)",
+   "pattern_src": "\\bgit\\s+push\\s+{ARGS}-(?!-)[a-z]*f[a-z]*(?=[\\s;&|)`]|$)",
+   "reason": "git push -f (use --force-with-lease)",
+   "anchored": true
+  },
+  {
+   "id": "git.git-stash-clear-deletes-all-stashes",
+   "pattern": "\\bgit\\s+stash\\s+clear\\b",
+   "reason": "git stash clear (deletes ALL stashes)",
+   "anchored": true
+  },
+  {
+   "id": "git.git-reflog-expire-destroys-recovery-mechanism",
+   "pattern": "\\bgit\\s+reflog\\s+expire\\b",
+   "reason": "git reflog expire (destroys recovery mechanism)",
+   "anchored": true
+  },
+  {
+   "id": "git.git-gc-prune-now-can-lose-dangling-commits",
+   "pattern": "\\bgit\\s+gc\\s+.*--prune=now",
+   "reason": "git gc --prune=now (can lose dangling commits)",
+   "anchored": true
+  },
+  {
+   "id": "git.git-filter-branch-rewrites-entire-history",
+   "pattern": "\\bgit\\s+filter-branch\\b",
+   "reason": "git filter-branch (rewrites entire history)",
+   "anchored": true
+  },
+  {
+   "id": "git.discards-all-uncommitted-changes",
+   "pattern": "\\bgit\\s+checkout\\s+--\\s*\\.",
+   "reason": "Discards all uncommitted changes",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "git.discards-all-uncommitted-changes-2",
+   "pattern": "\\bgit\\s+restore\\s+\\.",
+   "reason": "Discards all uncommitted changes",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "git.rm-tracked-files",
+   "pattern": "\\bgit\\s+rm\\b(?!.*--cached)",
+   "reason": "git rm deletes tracked files (use rm of a clean file, or confirm)",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "git.config-set-redirect-key",
+   "pattern": "\\bgit\\s+config\\b(?![^;&|]*\\s(?:--(?:get|unset|list|edit)|-l\\b|-e\\b))[^;&|]*?\\s(?:core\\.(?:worktree|hookspath)|include\\.path|includeif\\.\\S+\\.path)\\s+\\S",
+   "reason": "git config redirects the worktree, hooks dir, or an included config",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "git.permanently-deletes-a-stash",
+   "pattern": "\\bgit\\s+stash\\s+drop\\b",
+   "reason": "Permanently deletes a stash",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "git.force-deletes-branch-even-if-unmerged",
+   "pattern": "\\bgit\\s+branch\\s+(?:(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\\s;&|)`]|$)|(?=(?:[^;&|]*\\s)?(?:-(?!-)[a-z]*d[a-z]*|--delete)(?=[\\s;&|)`]|$))(?=(?:[^;&|]*\\s)?(?:-(?!-)[a-z]*f[a-z]*|--force)(?=[\\s;&|)`]|$)))",
+   "pattern_src": "\\bgit\\s+branch\\s+(?:{ARGS}-(?!-)[a-z]*(?-i:D)[a-z]*(?=[\\s;&|)`]|$)|(?=(?:[^;&|]*\\s)?(?:-(?!-)[a-z]*d[a-z]*|--delete)(?=[\\s;&|)`]|$))(?=(?:[^;&|]*\\s)?(?:-(?!-)[a-z]*f[a-z]*|--force)(?=[\\s;&|)`]|$)))",
+   "reason": "Force deletes branch (even if unmerged)",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "git.deletes-remote-branch",
+   "pattern": "\\bgit\\s+push\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?--delete\\b",
+   "pattern_src": "\\bgit\\s+push\\s+{ARGS}--delete\\b",
+   "reason": "Deletes remote branch",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "git.deletes-remote-branch-old-syntax",
+   "pattern": "\\bgit\\s+push\\s+\\S+\\s+:\\S+",
+   "reason": "Deletes remote branch (old syntax)",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "git.gh-repo-delete-deletes-repository",
+   "pattern": "\\bgh\\s+repo\\s+delete\\b",
+   "reason": "gh repo delete (deletes repository)",
+   "anchored": true
+  }
+ ]
+}

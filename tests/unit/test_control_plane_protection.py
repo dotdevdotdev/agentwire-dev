@@ -12,13 +12,13 @@ Every table collects its offenders and asserts none, so one failure lists them a
 import os
 
 import pytest
-
-from agentwire.safety._core import (
+from damage_control.engine import (
     check_command,
     check_path,
     is_protected_control_plane,
     load_safety_config,
 )
+
 from agentwire.safety_commands import load_patterns
 
 # This module is *about* the real control plane: it asserts that the owner's

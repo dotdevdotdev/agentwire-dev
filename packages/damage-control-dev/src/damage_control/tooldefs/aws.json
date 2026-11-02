@@ -1,0 +1,140 @@
+{
+ "name": "AWS CLI",
+ "binary": "aws",
+ "purpose": "Manage AWS cloud resources — S3, EC2, RDS, Lambda, IAM, and more",
+ "docs": "https://awscli.amazonaws.com/v2/documentation/api/latest/index.html",
+ "install": "brew install awscli",
+ "commands": [
+  {
+   "cmd": "aws sts get-caller-identity",
+   "access": "read",
+   "description": "Show current AWS identity (account, user, ARN)"
+  },
+  {
+   "cmd": "aws configure list",
+   "access": "read",
+   "description": "Show current CLI configuration"
+  },
+  {
+   "cmd": "aws s3 ls [s3://<bucket>]",
+   "access": "read",
+   "description": "List buckets or objects"
+  },
+  {
+   "id": "tooldef.aws-cli-copy-files-to-from-s3",
+   "cmd": "aws s3 cp <src> <dst>",
+   "access": "write",
+   "description": "Copy files to/from S3"
+  },
+  {
+   "id": "tooldef.aws-cli-sync-directory-to-from-s3",
+   "cmd": "aws s3 sync <src> <dst>",
+   "access": "write",
+   "description": "Sync directory to/from S3"
+  },
+  {
+   "id": "tooldef.aws-cli-delete-a-single-s3-object",
+   "cmd": "aws s3 rm s3://<bucket>/<key>",
+   "access": "write",
+   "description": "Delete a single S3 object"
+  },
+  {
+   "cmd": "aws s3 rm s3://<bucket> --recursive",
+   "access": "blocked",
+   "description": "Delete ALL objects in bucket"
+  },
+  {
+   "cmd": "aws s3 rb s3://<bucket> --force",
+   "access": "blocked",
+   "description": "Force remove bucket and all contents"
+  },
+  {
+   "cmd": "aws ec2 describe-instances",
+   "access": "read",
+   "description": "List EC2 instances"
+  },
+  {
+   "cmd": "aws ec2 describe-vpcs",
+   "access": "read",
+   "description": "List VPCs"
+  },
+  {
+   "id": "tooldef.aws-cli-start-stopped-ec2-instances",
+   "cmd": "aws ec2 start-instances --instance-ids <id>",
+   "access": "write",
+   "description": "Start stopped EC2 instances"
+  },
+  {
+   "id": "tooldef.aws-cli-stop-running-ec2-instances",
+   "cmd": "aws ec2 stop-instances --instance-ids <id>",
+   "access": "write",
+   "description": "Stop running EC2 instances"
+  },
+  {
+   "cmd": "aws ec2 terminate-instances --instance-ids <id>",
+   "access": "blocked",
+   "description": "Permanently terminate EC2 instances (unrecoverable)"
+  },
+  {
+   "cmd": "aws rds describe-db-instances",
+   "access": "read",
+   "description": "List RDS database instances"
+  },
+  {
+   "cmd": "aws rds delete-db-instance --db-instance-identifier <id>",
+   "access": "blocked",
+   "description": "Delete RDS instance (data loss)"
+  },
+  {
+   "cmd": "aws lambda list-functions",
+   "access": "read",
+   "description": "List Lambda functions"
+  },
+  {
+   "id": "tooldef.aws-cli-invoke-a-lambda-function",
+   "cmd": "aws lambda invoke --function-name <name> <outfile>",
+   "access": "write",
+   "description": "Invoke a Lambda function"
+  },
+  {
+   "cmd": "aws lambda delete-function --function-name <name>",
+   "access": "blocked",
+   "description": "Delete a Lambda function"
+  },
+  {
+   "cmd": "aws iam list-users",
+   "access": "read",
+   "description": "List IAM users"
+  },
+  {
+   "cmd": "aws iam list-roles",
+   "access": "read",
+   "description": "List IAM roles"
+  },
+  {
+   "cmd": "aws iam delete-role --role-name <name>",
+   "access": "blocked",
+   "description": "Delete IAM role"
+  },
+  {
+   "cmd": "aws iam delete-user --user-name <name>",
+   "access": "blocked",
+   "description": "Delete IAM user"
+  },
+  {
+   "cmd": "aws cloudformation list-stacks",
+   "access": "read",
+   "description": "List CloudFormation stacks"
+  },
+  {
+   "cmd": "aws cloudformation describe-stacks --stack-name <name>",
+   "access": "read",
+   "description": "Describe a stack"
+  },
+  {
+   "cmd": "aws cloudformation delete-stack --stack-name <name>",
+   "access": "blocked",
+   "description": "Delete a CloudFormation stack and all its resources"
+  }
+ ]
+}

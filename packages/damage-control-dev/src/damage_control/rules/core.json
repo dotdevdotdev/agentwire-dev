@@ -1,0 +1,332 @@
+{
+ "bashToolPatterns": [
+  {
+   "id": "core.rm-with-recursive-or-force-flags",
+   "pattern": "\\brm\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?-(?!-)[a-z]*[rf][a-z]*(?=[\\s;&|)`]|$)",
+   "pattern_src": "\\brm\\s+{ARGS}-(?!-)[a-z]*[rf][a-z]*(?=[\\s;&|)`]|$)",
+   "reason": "rm with recursive or force flags",
+   "anchored": true
+  },
+  {
+   "id": "core.rm-with-recursive-flag",
+   "pattern": "\\brm\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?--recursive",
+   "pattern_src": "\\brm\\s+{ARGS}--recursive",
+   "reason": "rm with --recursive flag",
+   "anchored": true
+  },
+  {
+   "id": "core.rm-with-force-flag",
+   "pattern": "\\brm\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?--force",
+   "pattern_src": "\\brm\\s+{ARGS}--force",
+   "reason": "rm with --force flag",
+   "anchored": true
+  },
+  {
+   "id": "core.sudo-rm",
+   "pattern": "\\bsudo\\s+rm\\b",
+   "reason": "sudo rm",
+   "anchored": true
+  },
+  {
+   "id": "core.rmdir-use-git-clean-or-manual-cleanup",
+   "pattern": "\\brmdir\\b",
+   "reason": "rmdir (use git clean or manual cleanup)",
+   "bypassable": true,
+   "anchored": true
+  },
+  {
+   "id": "core.rm-file-deletion-use-git-clean-or-manual-cleanup",
+   "pattern": "\\brm\\s+[^-]",
+   "reason": "rm file deletion (use git clean or manual cleanup)",
+   "bypassable": true,
+   "anchored": true
+  },
+  {
+   "id": "core.trash-command-moves-files-to-trash-use-git-clean-or-manual-c",
+   "pattern": "(?:^|[;&|])\\s*trash\\s+",
+   "reason": "trash command (moves files to trash - use git clean or manual cleanup)",
+   "bypassable": true,
+   "anchored": true
+  },
+  {
+   "id": "core.find-delete-recursive-deletion-use-git-clean-or-manual-clean",
+   "pattern": "\\bfind\\b.*\\s-delete\\b",
+   "reason": "find -delete (recursive deletion - use git clean or manual cleanup)",
+   "bypassable": true,
+   "anchored": true
+  },
+  {
+   "id": "core.find-exec-chmod-777-world-writable",
+   "pattern": "\\bfind\\b.*-(?:exec|execdir|ok|okdir)\\s+(?:\\S*/)?chmod\\s+(?:-[^\\s;&|]*\\s+)*(?:--\\s+)?0?777\\b",
+   "reason": "find -exec chmod 777 (world writable)",
+   "anchored": true
+  },
+  {
+   "id": "core.find-exec-rm-deletion-via-find-use-git-clean-or-manual-clean",
+   "pattern": "\\bfind\\b.*-exec\\s+rm\\b",
+   "reason": "find -exec rm (deletion via find - use git clean or manual cleanup)",
+   "bypassable": true,
+   "anchored": true
+  },
+  {
+   "id": "core.chmod-777-world-writable",
+   "pattern": "\\bchmod\\s+(?:-[^\\s;&|]*\\s+)*(?:--\\s+)?0?777\\b",
+   "reason": "chmod 777 (world writable)",
+   "anchored": true
+  },
+  {
+   "id": "core.recursive-chmod-777",
+   "pattern": "\\bchmod\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\\s;&|)`]|$).*777",
+   "pattern_src": "\\bchmod\\s+{ARGS}(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\\s;&|)`]|$).*777",
+   "reason": "recursive chmod 777",
+   "anchored": true
+  },
+  {
+   "id": "core.recursive-chown-to-root",
+   "pattern": "\\bchown\\s+(?=[^;&|]*\\broot\\b)(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\\s;&|)`]|$)",
+   "pattern_src": "\\bchown\\s+(?=[^;&|]*\\broot\\b){ARGS}(?:-(?!-)[a-z]*r[a-z]*|--recursive)(?=[\\s;&|)`]|$)",
+   "reason": "recursive chown to root",
+   "anchored": true
+  },
+  {
+   "id": "core.filesystem-format-command",
+   "pattern": "\\bmkfs\\.",
+   "reason": "filesystem format command",
+   "anchored": true
+  },
+  {
+   "id": "core.dd-writing-to-device",
+   "pattern": "\\bdd\\s+.*of=/dev/",
+   "reason": "dd writing to device",
+   "anchored": true
+  },
+  {
+   "id": "core.kill-all-processes",
+   "pattern": "\\bkill\\s+(?:[^\\s;&|]+\\s+)+-1(?=[\\s;&|)`]|$)",
+   "reason": "kill all processes",
+   "anchored": true
+  },
+  {
+   "id": "core.kill-all-processes-2",
+   "pattern": "\\bkill\\s+-1(?=\\s)[^;&|]*?\\s-[A-Za-z0-9]",
+   "reason": "kill all processes",
+   "anchored": true
+  },
+  {
+   "id": "core.kill-sigkill",
+   "pattern": "\\bkill\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?(?:-(?:9|KILL|SIGKILL)|-s\\s*(?:9|KILL|SIGKILL)|-n\\s+9|--signal[=\\s]\\s*(?:9|KILL|SIGKILL))(?=[\\s;&|)`]|$)",
+   "pattern_src": "\\bkill\\s+{ARGS}(?:-(?:9|KILL|SIGKILL)|-s\\s*(?:9|KILL|SIGKILL)|-n\\s+9|--signal[=\\s]\\s*(?:9|KILL|SIGKILL))(?=[\\s;&|)`]|$)",
+   "reason": "kill -9 (SIGKILL, no cleanup; use a plain kill first)",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "core.crontab-install",
+   "pattern": "(?<![\\w.-])(?<!\\./)crontab(?=[\\s;&|)`]|$)(?![^;&|]*\\s(?:-[A-Za-z]*l[A-Za-z]*|--list|-V|--version)(?=[\\s;&|)`]|$))",
+   "reason": "crontab installs or edits scheduled commands",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "core.rsync-delete",
+   "pattern": "\\brsync\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?--(?:del|delete[a-z-]*|remove-(?:source|sent)-files)(?=[\\s=;&|)`]|$)",
+   "pattern_src": "\\brsync\\s+{ARGS}--(?:del|delete[a-z-]*|remove-(?:source|sent)-files)(?=[\\s=;&|)`]|$)",
+   "reason": "rsync deletes files (--delete*, --remove-source-files)",
+   "ask": true,
+   "anchored": true
+  },
+  {
+   "id": "core.killall-9",
+   "pattern": "\\bkillall\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?-9\\b",
+   "pattern_src": "\\bkillall\\s+{ARGS}-9\\b",
+   "reason": "killall -9",
+   "anchored": true
+  },
+  {
+   "id": "core.pkill-9",
+   "pattern": "\\bpkill\\s+(?:(?!--(?:\\s|$))[^\\s;&|]+\\s+)*?-9\\b",
+   "pattern_src": "\\bpkill\\s+{ARGS}-9\\b",
+   "reason": "pkill -9",
+   "anchored": true
+  },
+  {
+   "id": "core.clearing-shell-history",
+   "pattern": "\\bhistory\\s+-c\\b",
+   "reason": "clearing shell history",
+   "anchored": true
+  }
+ ],
+ "zeroAccessPaths": [
+  ".env",
+  ".env.*",
+  ".env*.local",
+  "*.env",
+  "~/.ssh/",
+  "~/.gnupg/",
+  "~/.aws/",
+  "~/.config/gcloud/",
+  "*-credentials.json",
+  "*serviceAccount*.json",
+  "*service-account*.json",
+  "~/.azure/",
+  "~/.kube/",
+  "kubeconfig",
+  "*-secret.yaml",
+  "secrets.yaml",
+  "~/.docker/",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.pfx",
+  "*.tfstate",
+  "*.tfstate.backup",
+  ".terraform/",
+  ".vercel/",
+  ".netlify/",
+  "firebase-adminsdk*.json",
+  "serviceAccountKey.json",
+  ".supabase/",
+  "~/.netrc",
+  "~/.npmrc",
+  "~/.pypirc",
+  "~/.git-credentials",
+  ".git-credentials",
+  "dump.sql",
+  "backup.sql",
+  "*.dump"
+ ],
+ "readOnlyPaths": [
+  "/etc/",
+  "/usr/",
+  "/bin/",
+  "/sbin/",
+  "/boot/",
+  "/root/",
+  "~/.bash_history",
+  "~/.zsh_history",
+  "~/.node_repl_history",
+  "~/.bashrc",
+  "~/.zshrc",
+  "~/.profile",
+  "~/.bash_profile",
+  "package-lock.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "Gemfile.lock",
+  "poetry.lock",
+  "Pipfile.lock",
+  "composer.lock",
+  "Cargo.lock",
+  "go.sum",
+  "flake.lock",
+  "bun.lockb",
+  "uv.lock",
+  "npm-shrinkwrap.json",
+  "*.lock",
+  "*.lockb",
+  "*.min.js",
+  "*.min.css",
+  "*.bundle.js",
+  "*.chunk.js",
+  "dist/",
+  "build/",
+  "out/",
+  ".next/",
+  ".nuxt/",
+  ".output/",
+  "node_modules/",
+  "__pycache__/",
+  ".venv/",
+  "venv/",
+  "target/"
+ ],
+ "noDeletePaths": [
+  "~/.claude/",
+  "CLAUDE.md",
+  "LICENSE",
+  "LICENSE.*",
+  "COPYING",
+  "COPYING.*",
+  "NOTICE",
+  "PATENTS",
+  "README.md",
+  "README.*",
+  "CONTRIBUTING.md",
+  "CHANGELOG.md",
+  "CODE_OF_CONDUCT.md",
+  "SECURITY.md",
+  ".git/",
+  ".gitignore",
+  ".gitattributes",
+  ".gitmodules",
+  ".github/",
+  ".gitlab-ci.yml",
+  ".circleci/",
+  "Jenkinsfile",
+  ".travis.yml",
+  "azure-pipelines.yml",
+  "Dockerfile",
+  "Dockerfile.*",
+  "docker-compose.yml",
+  "docker-compose.*.yml",
+  ".dockerignore"
+ ],
+ "allowedPaths": [
+  {
+   "path": "*/dist/*",
+   "allow": "all"
+  },
+  {
+   "path": "*/build/*",
+   "allow": "all"
+  },
+  {
+   "path": "*/out/*",
+   "allow": "all"
+  },
+  {
+   "path": "*/.next/*",
+   "allow": "all"
+  },
+  {
+   "path": "*/.nuxt/*",
+   "allow": "all"
+  },
+  {
+   "path": "*/.output/*",
+   "allow": "all"
+  },
+  {
+   "path": "*/__pycache__/*",
+   "allow": "all"
+  },
+  {
+   "path": "*/.eggs/*",
+   "allow": "all"
+  },
+  {
+   "path": "*.egg-info/*",
+   "allow": "all"
+  },
+  {
+   "path": "*/.pytest_cache/*",
+   "allow": "all"
+  },
+  {
+   "path": "*/.mypy_cache/*",
+   "allow": "all"
+  },
+  {
+   "path": "*/.ruff_cache/*",
+   "allow": "all"
+  },
+  {
+   "path": "/tmp/*",
+   "allow": "all"
+  },
+  {
+   "path": "/var/tmp/*",
+   "allow": "all"
+  }
+ ]
+}
