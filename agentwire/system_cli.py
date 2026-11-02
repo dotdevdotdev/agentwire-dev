@@ -8,6 +8,7 @@ session: ``up`` (boot all services then the dev session), ``dev``, ``init``,
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import urllib.request
@@ -36,6 +37,11 @@ from .project_config import load_project_config
 from .roles import inject_soul, load_roles, resolve_roles
 
 
+# Seconds before `uv cache clean` is abandoned: a long-lived `uv run` (the dev
+# portal) holds the cache lock for its whole lifetime (#1246).
+UV_CACHE_CLEAN_TIMEOUT = 20.0
+
+
 def _clean_uv_cache_for_agentwire() -> None:
     """Drop only agentwire-dev's and damage-control-dev's entries from the uv cache.
 
@@ -46,15 +52,39 @@ def _clean_uv_cache_for_agentwire() -> None:
     cached wheel of it would ship old rules just as a stale agentwire wheel would.
     """
     for package in ("agentwire-dev", "damage-control-dev"):
-        result = subprocess.run(
-            ["uv", "cache", "clean", package],
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                ["uv", "cache", "clean", package],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=UV_CACHE_CLEAN_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            print(
+                f"  - uv cache clean {package} skipped: the uv cache lock is held for more than "
+                f"{UV_CACHE_CLEAN_TIMEOUT:.0f}s by {_uv_cache_lock_holders()} "
+                "(a long-lived `uv run`, e.g. the dev portal). The install below uses --reinstall, "
+                "so the build is still fresh."
+            )
+            continue
         if result.returncode == 0:
             print(f"  ✓ Cleared {package} entries from uv cache")
         else:
             print(f"  - uv cache clean {package} skipped: {result.stderr.strip() or 'unknown error'}")
+
+
+def _uv_cache_lock_holders() -> str:
+    """Name the processes holding the uv cache lock, for the timeout message."""
+    cache_dir = os.environ.get("UV_CACHE_DIR") or str(Path.home() / ".cache" / "uv")
+    try:
+        out = subprocess.run(
+            ["lsof", "-t", str(Path(cache_dir) / ".lock")],
+            capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL,
+        ).stdout.split()
+    except (OSError, subprocess.TimeoutExpired):
+        out = []
+    return f"pid {', '.join(out)}" if out else "another uv process"
 
 
 # === Dev Command ===
