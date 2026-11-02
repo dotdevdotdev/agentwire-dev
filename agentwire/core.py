@@ -943,12 +943,18 @@ def _same_project(path_a: Path, path_b: Path) -> bool:
     return common_a == common_b
 
 
-def resolve_default_created_by(caller: str | None, target_path: Path) -> str | None:
+def resolve_default_created_by(
+    caller: str | None, target_path: Path, delegated: bool = False
+) -> str | None:
     """The default ``created_by`` when none was explicitly given.
 
     Inherit the caller only when the new session's project is the one the
     caller is already running in — a cross-project spawn gets its own root
-    instead of flattening into the caller's subtree (#715). An explicit
+    instead of flattening into the caller's subtree (#715). EXCEPT delegated
+    work (``delegated=True``: the spawn carries a task prompt): that is a
+    child whose completion the caller is waiting on, so it parents to the
+    caller in any project — nobody should have to pass their own session
+    name to be told when their worker finishes (#1261). An explicit
     --created-by always wins and never reaches this function.
 
     Uses ``_live_session_cwd`` rather than ``_get_session_project_path`` —
@@ -975,7 +981,52 @@ def resolve_default_created_by(caller: str | None, target_path: Path) -> str | N
     caller_path = _live_session_cwd(caller)
     if caller_path is None:
         return None
+    if delegated:
+        return caller
     return caller if _same_project(caller_path, target_path) else None
+
+
+def closest_sessions(name: str, candidates, limit: int = 3) -> list[str]:
+    """Candidate session names nearest to ``name`` (typo or repo-vs-session mixup)."""
+    import difflib
+
+    pool = sorted(set(candidates))
+    close = difflib.get_close_matches(name, pool, n=limit, cutoff=0.5)
+    # A repo/project name vs its session name is a prefix/substring relation
+    # (`agentwire-dev` vs `agentwire`) that edit distance under-ranks.
+    related = [c for c in pool if c not in close and (c in name or name in c)]
+    return (close + related)[:limit]
+
+
+def unknown_session_error(
+    name: str, live: "set[str] | None", *, require_live: bool, what: str
+) -> str | None:
+    """Why ``name`` can't be a ``what`` target, or None when it's acceptable.
+
+    Fails at the moment a wrong name is NAMED instead of hours later as a
+    dead-letter (#1261). ``''`` (explicitly standalone), ``name@machine``
+    (remote — unverifiable from here) and an unreachable tmux (``live is
+    None``: an outage is not a gone session) always pass.
+
+    ``require_live`` (spawn parents): the session must be running now.
+    Otherwise (message targets) a session is KNOWN if it is live OR has a
+    record in ``~/.agentwire/sessions/`` — so a busy or restarting session is
+    still deferred to, never refused.
+    """
+    if not name or "@" in name or live is None:
+        return None
+    if name in live:
+        return None
+    if not require_live and session_metadata_path(name).exists():
+        return None
+    near = closest_sessions(name, live)
+    hint = f" — did you mean: {', '.join(near)}?" if near else ""
+    listing = f" Live sessions: {', '.join(sorted(live))}." if live and not near else ""
+    return (
+        f"{what} '{name}' is not a live session{hint}{listing} Your session "
+        "name is NOT your repo name: `agentwire list` / `tmux display -p '#S'` "
+        "tells you."
+    )
 
 
 NO_REPORT_PATH_HINT = (
@@ -1009,9 +1060,10 @@ def unparented_delegation_warning(
         return None
     return (
         f"session '{session_name}' was given a task but has NO parent "
-        f"(cross-project spawns are standalone roots, #715): it cannot "
-        f"notify-parent and its completion will not reach you. "
-        f"Re-spawn with --created-by {caller} to make it report back to you."
+        f"('{caller}' is not a live agentwire session that delegation could "
+        f"auto-parent to): it cannot notify-parent and its completion will "
+        f"not reach you. Re-spawn from a live session, or pass "
+        f"--created-by <live session>."
     )
 
 

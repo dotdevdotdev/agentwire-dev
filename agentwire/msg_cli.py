@@ -75,6 +75,13 @@ def cmd_msg_send(args) -> int:
             print(f"Error: {msg}")
         return 1
     sender = claimed or detected or "unknown"
+    unknown = inbox.unknown_target_error(args.to)
+    if unknown:
+        if getattr(args, "json", False):
+            print(json.dumps({"success": False, "error": unknown}))
+        else:
+            print(f"Error: {unknown}")
+        return 1
     try:
         written = inbox.enqueue(args.to, text, kind=args.kind, sender=sender,
                                 ref=getattr(args, "ref", ""))

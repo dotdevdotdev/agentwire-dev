@@ -134,6 +134,21 @@ def _shared_dir_conflicts(panes_output: str, session_name: str, target: str) -> 
     return conflicting
 
 
+def created_by_error(created_by: "str | None") -> "str | None":
+    """Why an explicit ``--created-by`` can't be this spawn's parent, or None.
+
+    Called BEFORE any worktree/session exists so a wrong name leaves nothing
+    behind (#1261). ``None`` (derive it) and ``''`` (standalone) always pass.
+    """
+    if not created_by:
+        return None
+    from . import inbox
+    from .core import unknown_session_error
+
+    return unknown_session_error(
+        created_by, inbox.live_sessions(), require_live=True, what="--created-by")
+
+
 def cmd_new(args) -> int:
     """Create a new agent session.
 
@@ -157,6 +172,13 @@ def cmd_new(args) -> int:
     # Parse session name: project, branch, machine. Done early so the session
     # KIND can be derived from whether a worktree is being created.
     project, branch, machine_id = parse_session_name(name)
+
+    # A wrong --created-by fails here, before any worktree/session exists
+    # (#1261). Remote spawns are exempt: the parent can't be verified from here.
+    if not machine_id:
+        parent_err = created_by_error(getattr(args, 'created_by', None))
+        if parent_err:
+            return _output_result(False, json_mode, parent_err)
 
     # --- Role resolution (two distinct phases) -----------------------------
     # Phase 1 — resolve. The session's ROLE is derived from the spawn verb:
@@ -530,7 +552,8 @@ def cmd_new(args) -> int:
     if created_by is None and getattr(args, 'kind', None) == 'orchestrator':
         created_by = ''
     elif created_by is None:
-        created_by = resolve_default_created_by(caller, session_path)
+        created_by = resolve_default_created_by(
+            caller, session_path, delegated=bool(first_message))
     orphan_warning = unparented_delegation_warning(
         session_name, caller, created_by, first_message)
     if orphan_warning and not json_mode:
@@ -1074,6 +1097,10 @@ def cmd_worktree(args) -> int:
 
     if not name:
         return _output_result(False, json_mode, "Usage: agentwire worktree <name> (or --list / --remove <name> / --prune)")
+
+    parent_err = created_by_error(getattr(args, 'created_by', None))
+    if parent_err:
+        return _output_result(False, json_mode, parent_err)
 
     if not _check_tmux_installed():
         return _output_result(False, json_mode, "tmux is required but not installed")

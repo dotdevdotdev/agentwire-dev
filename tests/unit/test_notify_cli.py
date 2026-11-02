@@ -37,6 +37,7 @@ def worktree_child(monkeypatch):
     monkeypatch.setattr(pane_manager, "get_current_session", lambda: "agentwire-dev-issue-661-bar")
     monkeypatch.setattr(pane_manager, "get_current_pane_index", lambda: 0)
     monkeypatch.setattr(prompt_router, "resolve_parent", lambda s, p: ("orch", 0))
+    monkeypatch.setattr(inbox, "live_sessions", lambda: {"orch"})
 
 
 class TestQueuedMode:
