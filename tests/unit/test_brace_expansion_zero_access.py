@@ -10,11 +10,11 @@ a group holding whitespace, a group with no comma) must not start blocking.
 import pytest
 
 from damage_control.engine import brace_variants, check_command, load_config
-from damage_control.groups import bundled_rule_dirs
+from damage_control.engine import bundled_rule_sources
 
 pytestmark = pytest.mark.real_agentwire_home
 
-RULES_DIR = bundled_rule_dirs()
+RULES_DIR = bundled_rule_sources()
 
 
 @pytest.fixture(scope="module")

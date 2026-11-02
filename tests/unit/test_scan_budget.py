@@ -11,11 +11,11 @@ from pathlib import Path
 import pytest
 
 import damage_control.engine as core
-from damage_control.engine import check_command, load_config
+from damage_control.engine import bundled_rule_sources, check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home
 
-RULES_DIR = Path(__file__).resolve().parent.parent.parent / "agentwire" / "hooks" / "damage-control" / "rules"
+RULES_DIR = bundled_rule_sources()
 
 
 @pytest.fixture(scope="module")

@@ -245,7 +245,7 @@ def unattended_defaults_missing(config: dict) -> list[str]:
     return sorted(rid for rid in defaults if rid not in known)
 
 
-def unpinned_rules(rules_dir: Path, tooldefs_dir: Optional[Path] = None) -> list[str]:
+def unpinned_rules(rules_dirs: Any, tooldefs_dir: Optional[Path] = None) -> list[str]:
     """Rules that carry no explicit ``id:`` (#1209 M1), as ``file: reason`` lines.
 
     A derived id comes from the ``reason:`` text, so a typo fix renames it and
@@ -261,7 +261,8 @@ def unpinned_rules(rules_dir: Path, tooldefs_dir: Optional[Path] = None) -> list
     def unpinned(item: Any) -> bool:
         return isinstance(item, dict) and not str(item.get("id") or "").strip()
 
-    for path in sorted(rules_dir.glob("*.yaml")):
+    dirs = [rules_dirs] if isinstance(rules_dirs, Path) else list(rules_dirs)
+    for path in sorted(p for d in dirs for p in d.glob("*.yaml")):
         data = yaml.safe_load(path.read_text()) or {}
         for key in ("bashToolPatterns", "mcpToolPolicies"):
             for item in data.get(key) or []:

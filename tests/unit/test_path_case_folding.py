@@ -12,11 +12,11 @@ import pytest
 
 from damage_control import engine as _core
 from damage_control.engine import check_path, check_read_path, load_config, match_path
-from damage_control.groups import bundled_rule_dirs
+from damage_control.engine import bundled_rule_sources
 
 pytestmark = pytest.mark.real_agentwire_home
 
-RULES_DIR = bundled_rule_dirs()
+RULES_DIR = bundled_rule_sources()
 HOME = os.path.expanduser("~")
 VARIANTS = (
     ".SSH/ID_RSA",

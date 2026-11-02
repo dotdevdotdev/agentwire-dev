@@ -10142,17 +10142,6 @@ def _decide_rules(
             "unverifiable": True,
         }
 
-    # Parser unavailable ⇒ no rules loaded ⇒ fail closed (block), before the
-    # escape hatch / kill switch can wave it through.
-    if config.get("_parser_unavailable"):
-        return {
-            "decision": "block",
-            "reason": str(config["_parser_unavailable"]),
-            "pattern": "parserUnavailable",
-            "id": "core.parser-unavailable",
-            "command": command,
-        }
-
     escape_reason = detect_escape_hatch(command)
     if escape_reason:
         return {
@@ -10605,16 +10594,6 @@ def check_mcp_tool(tool_name: str, config: Dict[str, Any]) -> Dict[str, Any]:
     """
     safety_cfg = config.get("safety", {}) if isinstance(config.get("safety"), dict) else {}
     disabled_rules = set(safety_cfg.get("disabled_rules", []) or [])
-
-    # No YAML parser ⇒ no policies loaded ⇒ fail closed, same as check_command.
-    if config.get("_parser_unavailable"):
-        return {
-            "decision": "block",
-            "reason": str(config["_parser_unavailable"]),
-            "id": None,
-            "mutates": None,
-            "matched": False,
-        }
 
     if safety_cfg.get("enabled", True) is False:
         return {

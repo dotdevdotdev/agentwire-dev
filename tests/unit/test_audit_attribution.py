@@ -12,29 +12,15 @@ HOME/AGENTWIRE_DIR, so no live/host rules can leak in) per the
 name-the-rule-set-you-measured lesson (#913/#916).
 """
 
-import importlib.util
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import HOOKS_DIR
-
-
-def _load_audit_logger():
-    spec = importlib.util.spec_from_file_location(
-        "audit_logger_under_test", HOOKS_DIR / "audit_logger.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture()
 def audit_logger(monkeypatch, tmp_path):
-    mod = _load_audit_logger()
+    from damage_control import audit as mod
+
     monkeypatch.setenv("AGENTWIRE_DIR", str(tmp_path))
     monkeypatch.delenv("AGENTWIRE_SESSION_ID", raising=False)
     monkeypatch.delenv("TMUX", raising=False)
@@ -64,27 +50,21 @@ class TestHookSubprocessAttribution:
     the shipped one.
     """
 
-    def _run_hook(self, hook_file, payload, tmp_path):
+    @pytest.fixture(autouse=True)
+    def _hook(self, run_hook):
+        self.run_hook = run_hook
+
+    def _run_hook(self, kind, payload, tmp_path):
         home = tmp_path / "home"
         home.mkdir(exist_ok=True)
-        env = {
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
-            "HOME": str(home),
-            "AGENTWIRE_DIR": str(tmp_path),
-        }
-        return subprocess.run(
-            [sys.executable, str(HOOKS_DIR / hook_file)],
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=20,
+        return self.run_hook(
+            kind, payload, env={"HOME": str(home), "AGENTWIRE_DIR": str(tmp_path)}, timeout=20,
         )
 
     def test_bash_block_row_carries_conversation_id(self, tmp_path):
         _write_metadata(tmp_path, "probe-session", ["conv-uuid-1"])
         proc = self._run_hook(
-            "bash-tool-damage-control.py",
+            "bash",
             {
                 "tool_name": "Bash",
                 "tool_input": {"command": "rm -rf /"},

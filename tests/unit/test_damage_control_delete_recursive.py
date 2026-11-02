@@ -7,21 +7,16 @@ covered, and never for the things no entry can reach (home, repo root, cwd,
 offenders and asserts none, so one failure lists them all.
 """
 
-from pathlib import Path
-
 import pytest
 import yaml
 
-REPO = Path(__file__).resolve().parent.parent.parent
-RULES_DIR = REPO / "agentwire" / "hooks" / "damage-control" / "rules"
-TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
 DR = ["delete-recursive"]
 
 
 @pytest.fixture(scope="module")
 def bundled_config(bash_hook):
-    cfg = bash_hook.load_config(RULES_DIR, TOOLDEFS_DIR)
-    assert not cfg.get("_parser_unavailable"), "rules failed to load"
+    cfg = bash_hook.load_config(bash_hook.bundled_rule_sources(), bash_hook.bundled_tooldefs_dir())
+    assert cfg["bashToolPatterns"], "rules failed to load"
     return cfg
 
 

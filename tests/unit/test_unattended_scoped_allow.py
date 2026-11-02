@@ -23,10 +23,10 @@ from damage_control.engine import (
     resolve_unattended_grants,
     unattended_grant_allows,
 )
-from damage_control.groups import bundled_rule_dirs
+from damage_control.engine import bundled_rule_sources, bundled_tooldefs_dir
 
-BUNDLED_RULES = bundled_rule_dirs()
-BUNDLED_TOOLDEFS = Path(_core.__file__).parent.parent / "tooldefs"
+BUNDLED_RULES = bundled_rule_sources()
+BUNDLED_TOOLDEFS = bundled_tooldefs_dir()
 
 
 @pytest.fixture(scope="module")

@@ -1,5 +1,6 @@
 """Shared test fixtures for the AgentWire test suite."""
 
+import functools
 import os
 import sys
 from pathlib import Path
@@ -376,9 +377,23 @@ def _profile_manifest(directory: Path) -> Path:
     return path
 
 
+@functools.lru_cache(maxsize=1)
+def shared_profile_manifest() -> Path:
+    """One manifest per test process, for module-level helpers that cannot take a fixture."""
+    import tempfile
+
+    return _profile_manifest(Path(tempfile.mkdtemp(prefix="dc-profile-")))
+
+
+def hook_argv(kind, python=None, profile=True):
+    """The argv Claude Code runs for a hook of ``kind``."""
+    argv = [python or sys.executable, "-I", "-m", "damage_control.hook", kind]
+    return argv + ["--profile", str(shared_profile_manifest())] if profile else argv
+
+
 @pytest.fixture(scope="session")
-def hook_profile(tmp_path_factory):
-    return _profile_manifest(tmp_path_factory.mktemp("hook-profile"))
+def hook_profile():
+    return shared_profile_manifest()
 
 
 @pytest.fixture(scope="session")

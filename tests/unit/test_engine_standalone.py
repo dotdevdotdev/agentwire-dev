@@ -20,7 +20,7 @@ ENGINE_FILES = [
     REPO / "agentwire" / "hooks" / "damage-control" / "audit_logger.py",
 ]
 RULES_DIR = REPO / "agentwire" / "hooks" / "damage-control" / "rules"
-TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
+TOOLDEFS_DIR = bundled_tooldefs_dir()
 ALLOWED_THIRD_PARTY = {"yaml"}
 
 

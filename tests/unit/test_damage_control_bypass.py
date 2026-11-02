@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from damage_control.engine import check_command, load_config
-from damage_control.groups import bundled_rule_dirs
+from damage_control.engine import bundled_rule_sources, bundled_tooldefs_dir
 
 # This corpus asserts on ``~``-form secret paths (``cat ~/.ssh/id_rsa``), so it
 # needs ``$HOME`` to look like a real home. The #893 redirect points HOME at a
@@ -36,8 +36,8 @@ from damage_control.groups import bundled_rule_dirs
 pytestmark = pytest.mark.real_agentwire_home
 
 REPO = Path(__file__).resolve().parent.parent.parent
-RULES_DIR = bundled_rule_dirs()
-TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
+RULES_DIR = bundled_rule_sources()
+TOOLDEFS_DIR = bundled_tooldefs_dir()
 
 # Built without literal "rm -<flags>" substrings where convenient so the live
 # damage-control hook does not block the test file itself being written/read.
@@ -330,21 +330,26 @@ def test_every_content_reading_tool_is_policed():
     from agentwire.safety_commands import DAMAGE_CONTROL_MATCHERS
 
     for tool in ("Read", "Grep", "Glob"):
-        assert DAMAGE_CONTROL_MATCHERS.get(tool) == "read-tool-damage-control.py", (
+        assert DAMAGE_CONTROL_MATCHERS.get(tool) == "read", (
             f"{tool} is not covered by the damage-control read hook"
         )
 
 
 # ---------------------------------------------------------------------------
-# Missing YAML parser must fail CLOSED, not open.
+# No YAML parser: the bundled JSON rules still enforce; a human's YAML is skipped LOUDLY.
 # ---------------------------------------------------------------------------
 
 
-def test_missing_parser_fails_closed(monkeypatch):
+def test_missing_parser_still_enforces_the_bundled_rules(monkeypatch, tmp_path):
     import damage_control.engine as core
 
-    monkeypatch.setattr(core, "yaml", None)
-    merged = core.load_config(RULES_DIR)
-    assert merged.get("_parser_unavailable")
-    result = core.check_command("echo hi", merged)
-    assert result["decision"] == "block"
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    (overlay / "mine.yaml").write_text("bashToolPatterns:\n  - pattern: 'frobnicate'\n    reason: mine\n")
+    monkeypatch.setattr(core, "_yaml", lambda: None)
+    merged = core.load_config(RULES_DIR, TOOLDEFS_DIR, overlay_rules=overlay)
+    assert merged["bashToolPatterns"], "bundled JSON rules must load without PyYAML"
+    assert core.check_command("ls", merged)["decision"] == "allow"
+    assert core.check_command("rm -rf /", merged)["decision"] == "block"
+    skipped = [f["file"] for f in merged["_parse_failures"]]
+    assert skipped == [str(overlay / "mine.yaml")], "the unreadable overlay must be reported, not silently dropped"

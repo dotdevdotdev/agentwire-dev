@@ -525,6 +525,13 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_profile(args: argparse.Namespace) -> int:
+    """Write AgentWire's profile manifest to ``--out`` (for the 3.9 hook job, which cannot import agentwire)."""
+    Path(args.out).write_text(profile_manifest().read_text())
+    print(args.out)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -534,6 +541,9 @@ def main() -> int:
     rec.set_defaults(func=cmd_record)
     sub.add_parser("check", help="re-record and diff against the committed snapshot").set_defaults(func=cmd_check)
     sub.add_parser("harvest", help="refresh harvested.json from the safety tests").set_defaults(func=cmd_harvest)
+    prof = sub.add_parser("profile", help="write AgentWire's damage-control profile manifest")
+    prof.add_argument("--out", required=True)
+    prof.set_defaults(func=cmd_profile)
     args = parser.parse_args()
     return args.func(args)
 

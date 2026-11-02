@@ -42,9 +42,9 @@ def test_every_bundled_file_has_exactly_one_owner_and_the_owner_pins_still_hold(
 
 
 def test_agentwire_mcp_policies_resolve_to_their_own_ids_not_the_writeish_fallback(mcp_hook):
-    from damage_control.groups import bundled_rule_dirs
+    from damage_control.engine import bundled_rule_sources
 
-    cfg = mcp_hook.load_config(bundled_rule_dirs(), PKG / "tooldefs")
+    cfg = mcp_hook.load_config(bundled_rule_sources(), PKG / "tooldefs")
     by_tool = {}
     for pol in cfg["mcpToolPolicies"]:  # first match wins
         for tool in AGENTWIRE_MCP_TOOLS:
@@ -57,9 +57,9 @@ def test_agentwire_mcp_policies_resolve_to_their_own_ids_not_the_writeish_fallba
 
 def test_the_owner_env_allow_is_still_loaded():
     from damage_control.engine import load_config
-    from damage_control.groups import bundled_rule_dirs
+    from damage_control.engine import bundled_rule_sources
 
-    allowed = [p["path"] for p in load_config(bundled_rule_dirs())["allowedPaths"] if isinstance(p, dict)]
+    allowed = [p["path"] for p in load_config(bundled_rule_sources())["allowedPaths"] if isinstance(p, dict)]
     assert "~/projects/agentwire-dev/.env" in allowed and "~/.agentwire/.env" in allowed
 
 
@@ -72,7 +72,7 @@ def machine(home):  # noqa: F811
 
 def _old_agentwire_yaml(monkeypatch) -> bytes:
     """Stand-in for a pre-carve install: the current file plus a marker, registered as shipped."""
-    old = (safety_commands.get_damage_control_source() / "agentwire.yaml").read_bytes() + b"\n# pre-carve\n"
+    old = (bundled_rules_dir() / "agentwire.yaml").read_bytes() + b"\n# pre-carve\n"
     real = safety_commands.load_rule_baselines()
     shipped = {**real, "rules": {**real["rules"], "agentwire.yaml": [hashlib.sha256(old).hexdigest()]}}
     monkeypatch.setattr(safety_commands, "load_rule_baselines", lambda: shipped)

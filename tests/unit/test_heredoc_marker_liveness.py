@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 
 from damage_control.engine import check_command, load_config
-from damage_control.groups import bundled_rule_dirs
+from damage_control.engine import bundled_rule_sources
 
 pytestmark = pytest.mark.real_agentwire_home
 
 REPO = Path(__file__).resolve().parent.parent.parent
-RULES_DIR = bundled_rule_dirs()
+RULES_DIR = bundled_rule_sources()
 
 PLAIN = "cd ~/.agentwire && touch damagecontrol.yml"
 TAILS = [

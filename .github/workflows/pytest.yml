@@ -70,29 +70,40 @@ jobs:
           path: coverage.xml
           if-no-files-found: ignore
 
-  # The hooks are standalone scripts that run under whatever `python3` the user has, and
-  # the declared floor is 3.9 (#1223: a 3.10-only construct made them crash non-blocking,
-  # i.e. fail OPEN). The main job runs 3.12 and cannot see that. This job installs only
-  # pytest + pyyaml — no agentwire dependencies, which need 3.10 — and runs the stdlib-only
-  # hook subprocess tests plus the engine-standalone and fail-closed pins under 3.9 itself.
+  # The hook is `python -I -m damage_control.hook` and runs under whatever `python3` the user
+  # has; the package's declared floor is 3.9 (#1223: a 3.10-only construct made the hooks crash
+  # non-blocking, i.e. fail OPEN). The main job runs 3.12 and cannot see that. agentwire itself
+  # needs 3.10, so the AgentWire profile manifest is written under a newer interpreter first and
+  # handed to the 3.9 job as a file — exactly how the installed hook receives it.
   hooks-py39:
     name: hook subprocess tests (Python 3.9)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Write the AgentWire profile manifest (3.12)
+        run: uv run python scripts/golden_snapshot.py profile --out "$RUNNER_TEMP/dc-profile.json"
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9"
 
-      - name: Install test dependencies
-        run: python -m pip install pytest pyyaml
+      - name: Install the damage_control package and test dependencies
+        run: python -m pip install pytest ./packages/damage-control-dev
 
       # --noconftest: tests/conftest.py imports agentwire's full dependency set.
       - name: Run hook tests on the declared floor
+        env:
+          DC_TEST_PROFILE: ${{ runner.temp }}/dc-profile.json
         run: >
           python -m pytest -q --noconftest -p no:cacheprovider -m "not slow"
           tests/unit/test_hook_subprocess.py
           tests/unit/test_hook_python_floor.py
           tests/unit/test_hook_fail_closed.py
+          tests/unit/test_hook_fail_closed_matrix.py
           tests/unit/test_engine_standalone.py

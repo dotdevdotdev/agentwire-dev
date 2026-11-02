@@ -15,11 +15,11 @@ from pathlib import Path
 import pytest
 
 from damage_control import engine as C  # noqa: N812
-from damage_control.groups import bundled_rule_dirs
+from damage_control.engine import bundled_rule_sources, bundled_tooldefs_dir
 
 REPO = Path(__file__).resolve().parent.parent.parent
-BUNDLED_RULES = bundled_rule_dirs()
-BUNDLED_TOOLDEFS = REPO / "agentwire" / "tooldefs"
+BUNDLED_RULES = bundled_rule_sources()
+BUNDLED_TOOLDEFS = bundled_tooldefs_dir()
 
 UV_IDS = {
     "tooldef.uv-run-a-script-in-project-environment",

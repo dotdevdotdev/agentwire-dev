@@ -14,14 +14,16 @@ import yaml
 
 from agentwire import safety_commands
 from damage_control.engine import (
+    bundled_rules_dir,
+    bundled_tooldefs_dir,
     load_config,
     load_safety_config,
     policy_file_parse_failures,
 )
 
 ROOT = Path(safety_commands.__file__).parent
-RULES = safety_commands.get_damage_control_source()
-TOOLDEFS = ROOT / "tooldefs"
+RULES = bundled_rules_dir()
+TOOLDEFS = bundled_tooldefs_dir()
 
 
 def _load(rules: Path, tooldefs: Path):

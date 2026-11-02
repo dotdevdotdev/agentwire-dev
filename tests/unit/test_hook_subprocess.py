@@ -1,7 +1,9 @@
 """The five real hook entrypoints, driven as subprocesses with recorded payloads (#1209 M0).
 
-Stdlib + pyyaml only, so the Python 3.9 CI job can run it without installing
-agentwire: it asserts the exit code and stdout Claude Code actually sees (exit 2 =
+Stdlib + pytest only, so the Python 3.9 CI job can run it without installing
+agentwire: the AgentWire profile arrives as a manifest file (``DC_TEST_PROFILE``, written
+by ``scripts/golden_snapshot.py profile`` under a newer interpreter), exactly as the
+installed hook receives it. It asserts the exit code and stdout Claude Code actually sees (exit 2 =
 block, ``permissionDecision: ask`` on stdout = confirm, exit 0 + silence = allow).
 Full-corpus coverage of the same entrypoints lives in the golden snapshot; this file
 is the small, fast, interpreter-portable slice.
@@ -14,9 +16,7 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
 
-HOOKS_DIR = Path(__file__).resolve().parent.parent.parent / "agentwire" / "hooks" / "damage-control"
 FAKE_HOME = "/golden/home"
 BASE = {"session_id": "00000000-0000-0000-0000-000000000000", "cwd": FAKE_HOME + "/project",
         "hook_event_name": "PreToolUse"}
@@ -40,6 +40,15 @@ INTERACTIVE = [
 ]
 
 
+def _profile():
+    path = os.environ.get("DC_TEST_PROFILE")
+    if path:
+        return path
+    from tests.conftest import shared_profile_manifest
+
+    return str(shared_profile_manifest())
+
+
 def _run(hook, tool, tool_input, tmp_path, mode="default", unattended=False):
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": FAKE_HOME,
            "PWD": FAKE_HOME + "/project", "AGENTWIRE_DIR": str(tmp_path)}
@@ -47,7 +56,7 @@ def _run(hook, tool, tool_input, tmp_path, mode="default", unattended=False):
         env["AGENTWIRE_UNATTENDED"] = "1"
     payload = dict(BASE, tool_name=tool, tool_input=tool_input, permission_mode=mode)
     proc = subprocess.run(
-        [sys.executable, str(HOOKS_DIR / (hook + "-tool-damage-control.py"))],
+        [sys.executable, "-I", "-m", "damage_control.hook", hook, "--profile", _profile()],
         input=json.dumps(payload), capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=120,
     )
     if proc.returncode == 2:

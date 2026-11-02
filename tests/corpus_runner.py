@@ -18,14 +18,14 @@ from typing import Any, Dict, Iterator, List, Tuple
 import jsonschema
 import yaml
 
-from damage_control.groups import bundled_rule_dirs
+from damage_control.engine import bundled_rule_sources, bundled_tooldefs_dir
 
 REPO = Path(__file__).resolve().parent.parent
 CORPUS_DIR = REPO / "corpus"
 CASES_DIR = CORPUS_DIR / "cases"
 SCHEMA_PATH = CORPUS_DIR / "schema.json"
-RULES_DIR = bundled_rule_dirs()
-TOOLDEFS_DIR = REPO / "agentwire" / "tooldefs"
+RULES_DIR = bundled_rule_sources()
+TOOLDEFS_DIR = bundled_tooldefs_dir()
 
 # Deliberately not under /tmp: core.yaml allowlists /tmp, which outranks zeroAccessPaths.
 DEFAULT_HOME = "/golden/home"
