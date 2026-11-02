@@ -8,7 +8,6 @@ substitution chooses or supplies the code still conceals.
 """
 
 import pytest
-
 from damage_control.engine import ambiguity_conceals_verb
 
 pytestmark = pytest.mark.real_agentwire_home

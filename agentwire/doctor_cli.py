@@ -435,8 +435,8 @@ def _render_damage_control_section(fix: bool = False) -> int:
         from damage_control.engine import (
             control_plane_allowlist_overlaps,
             load_allowed_paths,
+            load_effective_config,
         )
-        from damage_control.engine import load_effective_config
         dc_cfg = load_effective_config()
         allowed_entries = load_allowed_paths(dc_cfg)
         overlaps = control_plane_allowlist_overlaps(allowed_entries)
@@ -516,8 +516,9 @@ def _render_damage_control_section(fix: bool = False) -> int:
         issues += 1
 
     try:
-        from .safety import host_profile
         from damage_control.profile import dump_profile
+
+        from .safety import host_profile
         manifest = host_profile.manifest_path()
         if not manifest.exists():
             print(f"  [!!] Damage-control profile missing: {manifest}")
@@ -550,6 +551,7 @@ def _render_damage_control_section(fix: bool = False) -> int:
     # disabled pack is a choice, not drift.
     try:
         from damage_control import packs as _packs
+
         from agentwire.safety_packs_cli import overview
         broken = _packs.read_state(safety_commands.DAMAGECONTROL_FILE)["broken"]
         if broken:

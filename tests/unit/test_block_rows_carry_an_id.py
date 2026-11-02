@@ -7,7 +7,6 @@ them or tell a rule from a check.
 """
 
 import pytest
-
 from damage_control.engine import bundled_rule_sources, check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home

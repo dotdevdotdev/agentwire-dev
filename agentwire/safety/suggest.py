@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from damage_control.engine import _abs_path, _operand_is_literal, _parse_rm_command
+
 from agentwire.safety.audit import load_rows
 
 REGENERABLE_NAMES = (

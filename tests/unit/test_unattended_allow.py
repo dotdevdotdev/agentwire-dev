@@ -13,7 +13,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from damage_control import engine as C  # noqa: N812
 from damage_control.engine import bundled_rule_sources, bundled_tooldefs_dir
 

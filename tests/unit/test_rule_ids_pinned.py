@@ -18,7 +18,9 @@ from damage_control.engine import (
     load_config,
     parse_unattended_allow,
 )
+
 from agentwire.safety.lint import unpinned_rules
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 RULES = bundled_rule_sources()
 TOOLDEFS = bundled_tooldefs_dir()

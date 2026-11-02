@@ -10,7 +10,6 @@ one real-git test is marked ``slow``.
 """
 
 import pytest
-
 from damage_control import engine as _core
 from damage_control.engine import rm_removes_only_recoverable_files
 

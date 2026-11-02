@@ -13,9 +13,10 @@ import shutil
 import sys
 from typing import Any, Dict, List
 
-from . import safety_commands
 from damage_control import packs as pack_state
 from damage_control.groups import Entry, registry
+
+from . import safety_commands
 
 
 def _file_status(section: str, name: str) -> str:

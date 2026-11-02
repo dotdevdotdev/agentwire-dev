@@ -22,12 +22,12 @@ import sys
 from pathlib import Path
 
 import pytest
+from damage_control import engine, packs
 
 from agentwire import safety_commands
 from agentwire.safety import host_profile
 from agentwire.safety import provenance as prov
-from damage_control import engine, packs
-from tests.unit.test_safety_heal import fake_env as machine  # noqa: F401  (fixture)
+from tests.unit.test_safety_heal import fake_env  # noqa: F401  (fixture)
 
 
 def sha256(b: bytes) -> str:
@@ -36,6 +36,12 @@ def sha256(b: bytes) -> str:
 
 BUNDLED_RULES = engine.bundled_rules_dir()
 BUNDLED_TOOLDEFS = engine.bundled_tooldefs_dir()
+
+
+@pytest.fixture
+def machine(fake_env):  # noqa: F811
+    """A throwaway ~/.agentwire that heal treats as canonical. Never the real one."""
+    return fake_env
 
 
 # ===========================================================================

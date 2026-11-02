@@ -7,8 +7,10 @@ other time, and the failure is silent and machine-wide:
 
     a session on a task branch runs `agentwire safety install` (or `uv run
     agentwire ...`, or anything that heals hooks), and its OWN checkout — which
-    may predate a P0 security fix by days — is copied over
-    ``~/.agentwire/hooks/damage-control/`` for every other session on the box.
+    may predate a P0 security fix by days — becomes the hook for every other
+    session on the box (before #1209 M4 its scripts were copied over
+    ``~/.agentwire/hooks/damage-control/``; now its interpreter and profile are
+    REGISTERED, and its venv dies with the worktree).
 
 That is not hypothetical: it reverted #918's ``git -C`` bypass fix within an
 hour of deployment, from one of six live worktrees carrying the pre-fix package.
@@ -18,10 +20,8 @@ current`` — correctly, because the installed copy now matched whatever source
 last ran.
 
 So the guard is provenance, not version comparison: **only the canonical install
-may write machine-global config.** A version stamp (see
-``scripts/regen_damage_control_hooks.py``) is a useful second line and is what
-lets ``doctor`` say "the installed hook is older than the package", but on its
-own it cannot stop a stale branch that has itself regenerated its hooks.
+may write machine-global config.** Comparing versions is no substitute: it cannot stop a stale branch that has
+itself regenerated its registration.
 
 Three states:
 

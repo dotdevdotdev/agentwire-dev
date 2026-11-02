@@ -9,9 +9,7 @@ blocks.
 
 
 import pytest
-
-from damage_control.engine import check_command, load_config
-from damage_control.engine import bundled_rule_sources
+from damage_control.engine import bundled_rule_sources, check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home
 

@@ -25,6 +25,9 @@ def build_profile() -> Profile:
         protected_paths=(
             "~/.agentwire/hooks/damage-control/*.py",  # the hook scripts themselves
             "~/.agentwire/damage-control/*.yaml",      # the damage-control rule files
+            "~/.agentwire/damage-control/*.json",      # ...and their JSON form (the hook reads either)
+            "~/.agentwire/bin/damage-control-breakglass",  # the human's way out: an agent must not rewrite it
+            "~/.agentwire/damagecontrol-install.json",     # the interpreter record doctor re-verifies
             # Execution-plane configs: agentwire runs strings from these files through
             # its OWN ``subprocess.run(..., shell=True)`` calls (scheduler gate commands
             # in scheduler.py, service healthchecks in services.py) — those subprocesses

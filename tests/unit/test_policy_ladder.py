@@ -11,7 +11,6 @@ import json
 import types
 
 import pytest
-
 from damage_control import adapter, policy
 from damage_control.policy import ALLOW, ASK, BLOCK, Context, Guard, ToolCall
 from damage_control.profile import GENERIC, McpCommandTemplate

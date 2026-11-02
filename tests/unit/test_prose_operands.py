@@ -5,10 +5,8 @@ a rule no longer trips the rule, and every way a message value could actually
 run something — or sit next to a real command — still reaches the rules.
 """
 
-from pathlib import Path
 
 import pytest
-
 from damage_control.engine import bundled_rule_sources, check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home

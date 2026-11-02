@@ -8,9 +8,8 @@ scan must answer inside its budget: ask (never allow) when over it.
 import signal
 from pathlib import Path
 
-import pytest
-
 import damage_control.engine as core
+import pytest
 from damage_control.engine import bundled_rule_sources, check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home

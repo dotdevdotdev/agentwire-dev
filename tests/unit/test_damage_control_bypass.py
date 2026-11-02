@@ -21,9 +21,12 @@ asserts none, so one failure lists them all.
 from pathlib import Path
 
 import pytest
-
-from damage_control.engine import check_command, load_config
-from damage_control.engine import bundled_rule_sources, bundled_tooldefs_dir
+from damage_control.engine import (
+    bundled_rule_sources,
+    bundled_tooldefs_dir,
+    check_command,
+    load_config,
+)
 
 # This corpus asserts on ``~``-form secret paths (``cat ~/.ssh/id_rsa``), so it
 # needs ``$HOME`` to look like a real home. The #893 redirect points HOME at a

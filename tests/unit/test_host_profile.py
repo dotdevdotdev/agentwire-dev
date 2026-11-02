@@ -6,10 +6,16 @@ import textwrap
 from pathlib import Path
 
 import pytest
-
 from damage_control import engine as _core
 from damage_control import groups
-from damage_control.profile import GENERIC, GroupSpec, McpCommandTemplate, ProfileError, dump_profile, load_profile
+from damage_control.profile import (
+    GENERIC,
+    GroupSpec,
+    McpCommandTemplate,
+    ProfileError,
+    dump_profile,
+    load_profile,
+)
 
 
 @contextlib.contextmanager
@@ -221,3 +227,16 @@ def test_the_profile_manifest_round_trips_and_rejects_what_it_does_not_know(tmp_
             load_profile(path)
     with pytest.raises(ProfileError):
         load_profile(tmp_path / "absent.json")
+
+
+def test_the_files_the_new_install_adds_to_the_control_plane_are_protected():
+    """The break-glass script and the interpreter record are control plane: an agent that can rewrite
+    either can defeat the way out, or point doctor at a fake interpreter."""
+    from agentwire.safety import host_profile
+
+    home = str(Path.home())
+    unprotected = [p for p in ("bin/damage-control-breakglass", "damagecontrol-install.json",
+                               "damagecontrol-profile.json", "damage-control/mine.json")
+                   if not _core.is_protected_control_plane(f"{home}/.agentwire/{p}")]
+    assert not unprotected, unprotected
+    assert host_profile.manifest_path().name == _core.PROFILE_FILE_NAME

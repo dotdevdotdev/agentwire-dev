@@ -9,7 +9,6 @@ block / grants) is driven through the real hook in test_damage_control_hooks.
 from pathlib import Path
 
 import pytest
-
 from damage_control.engine import bundled_rule_sources, bundled_tooldefs_dir
 
 REPO = Path(__file__).resolve().parent.parent.parent

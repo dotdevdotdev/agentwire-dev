@@ -8,9 +8,7 @@ a group holding whitespace, a group with no comma) must not start blocking.
 
 
 import pytest
-
-from damage_control.engine import brace_variants, check_command, load_config
-from damage_control.engine import bundled_rule_sources
+from damage_control.engine import brace_variants, bundled_rule_sources, check_command, load_config
 
 pytestmark = pytest.mark.real_agentwire_home
 

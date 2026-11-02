@@ -242,8 +242,9 @@ def pinned_env(home: str = FAKE_HOME) -> Iterator[None]:
 
 
 def _engine_config(kill_switch: bool) -> Dict[str, Any]:
-    import agentwire.safety  # noqa: F401  (judge by AgentWire's profile, as the hooks do)
     from damage_control.engine import load_config
+
+    import agentwire.safety  # noqa: F401  (judge by AgentWire's profile, as the hooks do)
 
     config = load_config(RULES_DIR, TOOLDEFS_DIR)
     if not config.get("bashToolPatterns"):
@@ -352,8 +353,9 @@ def hook_payload(tool: str, text: str, permission_mode: str) -> Dict[str, Any]:
 @functools.lru_cache(maxsize=None)
 def profile_manifest() -> Path:
     """AgentWire's profile as a hook loads it: a JSON file named on the command line."""
-    from agentwire.safety import host_profile
     from damage_control.profile import dump_profile
+
+    from agentwire.safety import host_profile
 
     path = Path(tempfile.mkdtemp(prefix="golden-profile-")) / "damagecontrol-profile.json"
     path.write_text(dump_profile(host_profile.build_profile()))

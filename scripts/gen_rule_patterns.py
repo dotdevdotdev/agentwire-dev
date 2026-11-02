@@ -26,7 +26,7 @@ import re
 import sys
 from pathlib import Path
 
-RULES_DIR = Path(__file__).resolve().parent.parent / "agentwire" / "hooks" / "damage-control" / "rules"
+RULES_DIR = Path(__file__).resolve().parent.parent / "packages" / "damage-control-dev" / "src" / "damage_control" / "rules"
 
 ARGS_FRAGMENT = r"(?:(?!--(?:\s|$))[^\s;&|]+\s+)*?"
 

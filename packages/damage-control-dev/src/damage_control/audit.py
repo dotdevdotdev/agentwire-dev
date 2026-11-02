@@ -199,7 +199,6 @@ def log_entry(
         allowed_by: The user-owned allowlist entry that allowed a command a rule
             would otherwise block (e.g. ``delete-recursive: /repo/dist/*``)
     """
-    import os
     context = get_session_context()
 
     entry = {

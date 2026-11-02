@@ -24,7 +24,7 @@ closed):
   shelled out to `tasks promote` would hand the agent an instant, unguarded
   bypass of the whole scheme. CLI-only keeps this on the human's own terminal.
 - `agentwire tasks promote` is ALSO hard-blocked as a `PROTECTED_COMMAND_PATTERNS`
-  entry in `safety/_core.py` — escape-hatch- and kill-switch-EXEMPT (same tier
+  entry in `damage_control/engine.py` — escape-hatch- and kill-switch-EXEMPT (same tier
   as the protected-control-plane file check), so `# allow:` and
   `enabled: false` can't open it either.
 - `cmd_tasks_promote` ITSELF refuses to run outside a genuine host context
@@ -46,10 +46,10 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from damage_control.engine import is_unattended
 
 from .core import _get_session_project_path, _output_json, _output_result
 from .project_config import ensure_gitignored
-from damage_control.engine import is_unattended
 from .tasks import PROPOSED_TASKS_FILENAME, TASKS_FILENAME, parse_task_config, validate_task
 
 # Explicit host-side opt-in for a non-interactive `promote` (e.g. the owner's

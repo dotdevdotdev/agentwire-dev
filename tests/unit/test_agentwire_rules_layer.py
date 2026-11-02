@@ -11,11 +11,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from damage_control import engine, packs
+from damage_control.groups import bundled_files, default_packs, registry, unclassified
 
 from agentwire import safety_commands
 from agentwire.safety import host_profile
-from damage_control import engine, packs
-from damage_control.groups import bundled_files, default_packs, registry, unclassified
 from tests.unit.test_safety_heal import fake_env  # noqa: F401  (fixture used by `home`)
 from tests.unit.test_safety_packs import home  # noqa: F401  (fixture)
 
@@ -56,8 +56,7 @@ def test_agentwire_mcp_policies_resolve_to_their_own_ids_not_the_writeish_fallba
 
 
 def test_the_owner_env_allow_is_still_loaded():
-    from damage_control.engine import load_config
-    from damage_control.engine import bundled_rule_sources
+    from damage_control.engine import bundled_rule_sources, load_config
 
     allowed = [p["path"] for p in load_config(bundled_rule_sources())["allowedPaths"] if isinstance(p, dict)]
     assert "~/projects/agentwire-dev/.env" in allowed and "~/.agentwire/.env" in allowed

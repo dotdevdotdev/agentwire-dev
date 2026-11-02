@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+
 @pytest.fixture()
 def audit_logger(monkeypatch, tmp_path):
     from damage_control import audit as mod

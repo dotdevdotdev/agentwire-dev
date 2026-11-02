@@ -11,19 +11,17 @@ shape, not the behaviour.
 """
 
 import json
-from pathlib import Path
 
 import pytest
-
-from damage_control import engine as _core
 from damage_control.engine import (
     DEFAULT_UNATTENDED_ALLOW,
+    bundled_rule_sources,
+    bundled_tooldefs_dir,
     check_command,
     load_config,
     resolve_unattended_grants,
     unattended_grant_allows,
 )
-from damage_control.engine import bundled_rule_sources, bundled_tooldefs_dir
 
 BUNDLED_RULES = bundled_rule_sources()
 BUNDLED_TOOLDEFS = bundled_tooldefs_dir()

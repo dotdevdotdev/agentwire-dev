@@ -369,8 +369,9 @@ import agentwire.safety  # noqa: E402,F401  (activates AgentWire's damage-contro
 
 def _profile_manifest(directory: Path) -> Path:
     """AgentWire's profile as a hook loads it: a JSON file named on the command line."""
-    from agentwire.safety import host_profile
     from damage_control.profile import dump_profile
+
+    from agentwire.safety import host_profile
 
     path = directory / "damagecontrol-profile.json"
     path.write_text(dump_profile(host_profile.build_profile()))

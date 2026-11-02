@@ -7,7 +7,6 @@ quoted filename, a path).
 """
 
 import pytest
-
 from damage_control.engine import matches_path_in_command
 
 pytestmark = pytest.mark.real_agentwire_home

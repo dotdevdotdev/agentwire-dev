@@ -17,7 +17,6 @@ from typing import Any, Dict, Iterator, List, Tuple
 
 import jsonschema
 import yaml
-
 from damage_control.engine import bundled_rule_sources, bundled_tooldefs_dir
 
 REPO = Path(__file__).resolve().parent.parent

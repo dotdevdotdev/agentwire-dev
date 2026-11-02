@@ -8,11 +8,11 @@ import shutil
 from types import SimpleNamespace
 
 import pytest
-
-from agentwire import safety_commands, safety_packs_cli
 from damage_control import engine, packs
 from damage_control.engine import check_protected_bash_command
 from damage_control.groups import default_packs, registry
+
+from agentwire import safety_commands, safety_packs_cli
 from tests.unit.test_safety_heal import fake_env  # noqa: F401  (fixture)
 
 # One destructive command per pack: with the pack's files installed each is

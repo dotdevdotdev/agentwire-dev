@@ -11,8 +11,6 @@ from contextlib import redirect_stderr
 from pathlib import Path
 
 import yaml
-
-from agentwire import safety_commands
 from damage_control.engine import (
     bundled_rules_dir,
     bundled_tooldefs_dir,
@@ -20,6 +18,8 @@ from damage_control.engine import (
     load_safety_config,
     policy_file_parse_failures,
 )
+
+from agentwire import safety_commands
 
 ROOT = Path(safety_commands.__file__).parent
 RULES = bundled_rules_dir()
