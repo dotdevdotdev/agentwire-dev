@@ -6,7 +6,6 @@ outside that range, the checkout tests one engine and the wheel ships against an
 """
 
 import re
-import tomllib
 from pathlib import Path
 
 from packaging.requirements import Requirement
@@ -17,10 +16,12 @@ ENGINE_INIT = REPO / "packages" / "damage-control-dev" / "src" / "damage_control
 
 
 def _pin() -> Requirement:
-    deps = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["dependencies"]
-    pins = [Requirement(d) for d in deps if Requirement(d).name == "damage-control-dev"]
+    # Text match, not tomllib: the project supports Python 3.10, which has no tomllib.
+    pins = re.findall(
+        r'^\s*"(damage-control-dev[^"]*)"', (REPO / "pyproject.toml").read_text(), re.M
+    )
     assert len(pins) == 1, pins
-    return pins[0]
+    return Requirement(pins[0])
 
 
 def test_workspace_version_is_inside_the_pin():
