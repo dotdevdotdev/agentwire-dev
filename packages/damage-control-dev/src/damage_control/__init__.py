@@ -6,4 +6,4 @@ escape the hook's fail-closed wrapper (a Python crash exits 1, which Claude Code
 as non-blocking).
 """
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
