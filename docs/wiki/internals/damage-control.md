@@ -1322,6 +1322,93 @@ silent loop with no screen to show it on.
 
 ---
 
+## Path-naming rules inventory (#1255)
+
+Rule: a protection for a file or directory is a **path class** (`zeroAccessPaths`,
+`readOnlyPaths`, `noDeletePaths`, the control plane), judged on the resolved path, so it holds
+for every spelling (relative, `./`, `..`, `~`, `$HOME`/`${HOME}`, symlinked cwd, glob/brace,
+absolute). A text rule is kept only where the thing is a command shape. #1252 made relative
+operands resolve against the payload cwd; this inventory is the follow-up audit of what still
+named a path in text. Method: every `bashToolPatterns` entry in `rules/*.yaml` and
+`agentwire/safety/rules/*.yaml` whose pattern names a file/directory was listed (171 text rules
+in all; 15 mention a path-ish token), tooldef `cmd:` templates were read (200 commands; every
+path-like token is a remote resource URI — `s3://`, `gs://`, `deployment/<name>` — not a
+filesystem path), and every concrete path-class entry was swept in-process across 8 spellings
+x 2-7 operations.
+
+### Text rules that name a path
+
+| id | pattern names | class today | decision |
+|----|---------------|-------------|----------|
+| `agentwire.recursive-forced-rm-of-the-agentwire-directory-itself-destro` | `.agentwire` with a `~`/`$HOME`/`/Users/x` prefix | text; the same target is already `noDeletePaths` (`~/.agentwire/`) and the verb is already `core.rm-with-*-flag` | **covered**. Kept as the operation-specific reason; its path text is not load-bearing — the class and the flag rules block every spelling (pinned by `tests/unit/test_path_spelling.py` through the real hook) |
+| `core.dd-writing-to-device` | `of=/dev/` | text | **keep** — `/dev/null` and `/dev/stdout` are legitimate write targets, so `/dev/` cannot be a class; the hazard is the `dd` verb |
+| `core.find-exec-chmod-777-world-writable` | `chmod` | text | keep — command shape (a mode, not a path) |
+| `core.filesystem-format-command` | `mkfs.` | text | keep — command shape |
+| `core.crontab-install` | `crontab` | text | keep — command shape (the program installs a payload) |
+| `core.clearing-shell-history` | `history -c` | text | keep — command shape; the history **files** are `readOnlyPaths` already |
+| `core.shutil-rmtree-recursive-delete-equivalent-to-rm-rf` | `shutil.rmtree` | text | keep — interpreter payload shape |
+| `git.config-set-redirect-key` (`core.worktree`, `core.hookspath`, `include.path`, `includeif.*.path`) | git config **keys** | text | keep — a config key, not a path; the files that hold them are covered by the additions below |
+| `git.config-exec-key`, `git.config-set-exec-key`, `git.config-set-alias-bang` | git config keys that run a program | text | keep — command shape |
+| `git.discards-all-uncommitted-changes`, `-2` | `.` operand of `git checkout --`/`git restore` | text | keep — `.` is "the whole tree" for git, not a file |
+| `db.django-migrate` | `manage.py` | text | keep — command shape (the verb `migrate`) |
+| `db.mongosh-write` | `.insertOne(…)` | text | keep — method names, not files |
+
+Engine data that is path text but not a rule: `_KERNEL_CONTROL_PLANE_WORDS` and the profile's
+`control_plane_words` (a fail-closed heuristic for "this unreadable command may mention the
+control plane"), `benign_path_patterns` (carve-outs such as `.claude/projects/*/memory`), and
+`protected_commands` (`agentwire tasks promote`, …: command shapes). All **keep**.
+
+### Path classes (already classes)
+
+| file | zero-access | read-only | no-delete | allowed | decision |
+|------|------------:|----------:|----------:|--------:|----------|
+| `core.yaml` | 37 | 43 | 29 | 14 | already class |
+| `control-plane.yaml` / `agentwire-control-plane.yaml` | | 3 / 3 | | | already class (plus the code-level protected check) |
+| `agentwire-core.yaml` | 7 | | 6 | 2 | already class |
+
+The sweep found that the class *mechanism* had four spelling holes, all closed in the engine:
+
+- **`$HOME` / `${HOME}` / brace forms in the read-only and no-delete ladders.** The zero-access
+  scan canonicalized the command and expanded braces; the ladders read the raw text, so
+  `echo x > $HOME/.bashrc` and `echo x > {~/.bashrc,x}` were allowed while the `~` and absolute
+  spellings were blocked. `path_ladder_haystacks` now judges the canonical and brace-expanded
+  spellings too.
+- **A bare directory entry used from inside the directory.** `.git/`, `.terraform/`, `.github/`,
+  `.circleci/`, `.vercel/`, `.netlify/`, `.supabase/` were matched only when the command *said*
+  the directory name, so `rm hooks/x` run from `<repo>/.git`, or `cat <file>` run from
+  `<repo>/.terraform`, named a guarded path without any spelling the text could see.
+  The cwd resolver's guarded-path test now treats a bare `dir/` entry as a path component.
+- **A bare entry spelled absolutely.** The ladder's `{path}` regex for a bare name (`.git/hooks/`,
+  `node_modules/`, `CLAUDE.md`) matched only text that *began* with that name, so
+  `echo x > /repo/node_modules/x` was allowed while `echo x > node_modules/x` was blocked. A bare
+  name is a path component and now takes an optional directory prefix, as globs always did.
+- **Variants judged without the payload cwd.** A resolved variant was decided with no cwd, so the
+  cwd-dependent policies (`delete-recursive` coverage, recoverable-file `rm`) disagreed between
+  the relative and the absolute spelling of the same operation.
+
+### Class membership: entries the audit added
+
+| class | entry | why |
+|-------|-------|-----|
+| `readOnlyPaths` | `~/.zshenv`, `~/.zprofile`, `~/.zlogin`, `~/.zlogout`, `~/.bash_login`, `~/.bash_logout` | the other login/profile files were listed (`.bashrc`, `.zshrc`, `.profile`, `.bash_profile`); these run in the same shells |
+| `readOnlyPaths` | `~/.gitconfig`, `~/.config/git/` | global git config holds exec keys (`core.fsmonitor`, `core.pager`, `alias.x=!…`); only the `git config` *command* was ruled, not an editor/redirect writing the file |
+| `readOnlyPaths` | `.git/config`, `.git/hooks/` | repo-local twins of the above; a hook runs on the next git operation, outside the hook layer |
+| `zeroAccessPaths` | `~/.config/gh/hosts.yml`, `~/.cargo/credentials.toml`, `~/.cargo/credentials`, `~/.gem/credentials`, `~/.terraform.d/credentials.tfrc.json` | package-manager and CLI auth stores, the same class as `~/.npmrc`, `~/.pypirc`, `~/.netrc` |
+
+Considered and left alone: project-level `.npmrc` / `.yarnrc.yml` (routinely edited, token-bearing
+only when the user puts one there), `~/.config/gcloud/`, `~/.aws/`, `~/.kube/`, `~/.docker/`,
+`~/.ssh/`, `~/.gnupg/`, `~/.azure/` (already zero-access, swept clean), and `sed -i` on a
+build directory such as `dist/` (the absolute spelling is blocked while `echo >` into the same
+directory is allowed by `allowedPaths`; that inconsistency is not a spelling gap and is out of
+scope here).
+
+Counts: 15 path-mentioning text rules examined → 0 migrated (the only rule that names a path
+is already shadowed by a class), 1 covered, 14 kept as command shapes; 4 engine spelling holes
+closed; 15 class entries added (10 read-only, 5 zero-access).
+Decision flips versus the golden snapshot: none in verdict; two rule ids change (`rm .claude/notes.txt` and
+`rm notes.txt` from `~/.claude` are now blocked by `core.no-delete-path` instead of the bypassable
+`core.rm-file-deletion-…`, because the resolved variant is judged with the payload cwd).
+
 ## Closed, fail-closed, user-owned (#1065)
 
 The single honest statement of what the text hook decides. A PreToolUse hook reads

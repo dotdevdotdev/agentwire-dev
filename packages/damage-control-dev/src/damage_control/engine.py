@@ -857,7 +857,11 @@ def _path_context_regex(path: str) -> str:
         return r'["\']?(?:[^\s"\';|&<>]*/)?' + glob_to_regex(path)
     expanded = os.path.expanduser(path)
     if expanded == path:
-        return re.escape(path)
+        if path.startswith("/"):
+            return re.escape(path)
+        # A bare name (`.git/hooks/`, `node_modules/`, `CLAUDE.md`) is a path
+        # component: the same entry guards `/repo/.git/hooks/x` as `.git/hooks/x`.
+        return r'["\']?(?:[^\s"\';|&<>]*/)?' + re.escape(path)
     return r'(?:' + re.escape(expanded) + r'|' + re.escape(path) + r')'
 
 
@@ -917,7 +921,18 @@ def path_ladder_haystacks(command: str, path: str) -> List[str]:
         canon = canonicalize_command(token)
         return canon != token and bool(keep.search(canon))
 
-    return masked_subcommands(mask_sed_substitutions(command), keep=_mentions_path)
+    # ``~``/``$HOME``/``${HOME}`` name the home dir and ``{a,b}`` expands before the
+    # verb runs: the ladders judge those spellings too, as the zero-access scan does.
+    spellings = [command]
+    canon = canonicalize_command(command)
+    if canon != command:
+        spellings.append(canon)
+    for text in list(spellings):
+        spellings.extend(v for v in brace_variants(text) or () if v not in spellings)
+    haystacks: List[str] = []
+    for text in spellings:
+        haystacks += [h for h in masked_subcommands(mask_sed_substitutions(text), keep=_mentions_path) if h not in haystacks]
+    return haystacks
 
 
 def check_path_patterns(
@@ -5975,7 +5990,22 @@ def _guarded_path_test(config: Dict[str, Any]) -> Callable[[str], bool]:
         for p in (config.get(key) or [])
         if isinstance(p, str)
     ]
-    return lambda path: is_protected_control_plane(path) or any(match_path(path, p) for p in patterns)
+    # A bare directory entry (`.git/`, `node_modules/`) is a path COMPONENT, not an
+    # absolute prefix: a file inside it is guarded wherever the directory sits, so
+    # `rm hooks/x` run from `<repo>/.git` names a guarded path without saying `.git`.
+    bare_dirs = [
+        "/" + p for p in patterns
+        if p.endswith("/") and not p.startswith(("/", "~")) and not is_glob_pattern(p)
+    ]
+
+    def guarded(path: str) -> bool:
+        if is_protected_control_plane(path) or any(match_path(path, p) for p in patterns):
+            return True
+        fold = str.lower if _casefolds_paths(path) else str
+        probe = fold(path) + "/"
+        return any(fold(d) in probe for d in bare_dirs)
+
+    return guarded
 
 
 def _before_first_cd(command: str) -> str:
@@ -10077,7 +10107,7 @@ def _decide_command(
         # The control plane outranks the escape hatch and the kill switch, so a
         # relative spelling of it is judged before either can end the walk.
         for variant in _cwd_resolved_variants(command, cwd, config):
-            inner = _decide_rules(variant, config)
+            inner = _decide_rules(variant, config, cwd)
             if inner.get("protected"):
                 return dict(inner, command=command)
             resolved.append(inner)
