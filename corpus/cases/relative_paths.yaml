@@ -1,0 +1,296 @@
+# Relative path operands resolve against the payload cwd (damage-control-dev 0.1.2). Schema: corpus/schema.json.
+- id: relative-path-operand-001
+  tool: Bash
+  input: echo x > .claude/settings.json
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-002
+  tool: Bash
+  input: echo x | tee .claude/settings.json
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-003
+  tool: Bash
+  input: cp /golden/stage/a .claude/settings.json
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-004
+  tool: Bash
+  input: echo x > .claude/hooks/h.sh
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-005
+  tool: Bash
+  input: echo x > settings.json
+  context:
+    cwd: /golden/home/.claude
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-006
+  tool: Bash
+  input: echo x > ../settings.json
+  context:
+    cwd: /golden/home/.claude/hooks
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-007
+  tool: Bash
+  input: echo x > damagecontrol.yml
+  context:
+    cwd: /golden/home/.agentwire
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-008
+  tool: Bash
+  input: echo x > .agentwire/damagecontrol.yml
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-009
+  tool: Bash
+  input: sed -i s/a/b/ .agentwire/config.yaml
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-010
+  tool: Bash
+  input: cat .ssh/id_rsa
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+  class: relative-path-operand
+  tags:
+  - zero-access
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-011
+  tool: Bash
+  input: cat id_rsa
+  context:
+    cwd: /golden/home/.ssh
+  expect:
+    decision: block
+  class: relative-path-operand
+  tags:
+  - zero-access
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-012
+  tool: Bash
+  input: head -n1 .aws/credentials
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+  class: relative-path-operand
+  tags:
+  - zero-access
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-013
+  tool: Bash
+  input: rm .claude/notes.txt
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+  class: relative-path-operand
+  tags:
+  - no-delete
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-014
+  tool: Bash
+  input: rm notes.txt
+  context:
+    cwd: /golden/home/.claude
+  expect:
+    decision: block
+  class: relative-path-operand
+  tags:
+  - no-delete
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-015
+  tool: Bash
+  input: echo x >> .bash_history
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+  class: relative-path-operand
+  tags:
+  - read-only
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-016
+  tool: Bash
+  input: echo x > ../.claude/settings.json
+  context:
+    cwd: /golden/home/project
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-017
+  tool: Bash
+  input: echo x > .claude/settings.json
+  context:
+    cwd: /golden/elsewhere
+  expect:
+    decision: allow
+    protected: false
+  class: relative-path-operand
+  tags:
+  - stays-allowed
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-018
+  tool: Bash
+  input: cat .ssh/id_rsa
+  context:
+    cwd: /golden/elsewhere
+  expect:
+    decision: allow
+    protected: false
+  class: relative-path-operand
+  tags:
+  - stays-allowed
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-019
+  tool: Bash
+  input: rm .claude/notes.txt
+  context:
+    cwd: /golden/elsewhere
+  expect:
+    decision: allow
+    protected: false
+  class: relative-path-operand
+  tags:
+  - stays-allowed
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-020
+  tool: Bash
+  input: 'echo x > .claude/settings.json  # allow: because'
+  context:
+    cwd: /golden/elsewhere
+  expect:
+    decision: allow
+    protected: false
+  class: relative-path-operand
+  tags:
+  - stays-allowed
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-021
+  tool: Bash
+  input: cd /golden/elsewhere && echo x > .claude/settings.json
+  context:
+    cwd: /golden/home
+  expect:
+    decision: allow
+    protected: false
+  class: relative-path-operand
+  tags:
+  - stays-allowed
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-022
+  tool: Bash
+  input: cd ~ && echo x > .claude/settings.json
+  context:
+    cwd: /golden/elsewhere
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - cd-prefix
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-023
+  tool: Bash
+  input: cd ~ && cat .ssh/id_rsa
+  context:
+    cwd: /golden/elsewhere
+  expect:
+    decision: block
+  class: relative-path-operand
+  tags:
+  - cd-prefix
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-024
+  tool: Bash
+  input: 'echo hi
+
+    echo x > .claude/settings.json'
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - control-plane
+  source: tests/unit/test_relative_path_operands.py::CASES
+- id: relative-path-operand-025
+  tool: Bash
+  input: 'echo x > .claude/settings.json  # allow: because'
+  context:
+    cwd: /golden/home
+  expect:
+    decision: block
+    protected: true
+  class: relative-path-operand
+  tags:
+  - escape-hatch
+  source: tests/unit/test_relative_path_operands.py::CASES

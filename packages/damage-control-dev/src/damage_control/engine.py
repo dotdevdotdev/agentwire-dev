@@ -24,7 +24,7 @@ import signal
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 from damage_control import audit
 from damage_control.profile import GENERIC
@@ -5594,11 +5594,11 @@ def _ansi_c_fold(text: str) -> str:
     return _ANSI_C.sub(_dec, text)
 
 
-def _resolve_word(word: str, cwd: str) -> str:
-    """``word`` (already unquoted) made absolute when it names a protected file under ``cwd``."""
+def _resolve_word(word: str, cwd: str, guarded: Callable[[str], bool]) -> str:
+    """``word`` (already unquoted) made absolute when it names a ``guarded`` path under ``cwd``."""
     opt = _OPT_VALUE.fullmatch(word)
     if opt:  # of=<file>, --output=<file>, --output-document=<file>, -o=<file>
-        return opt.group(1) + _resolve_word(opt.group(2), cwd)
+        return opt.group(1) + _resolve_word(opt.group(2), cwd, guarded)
     if word.startswith("-"):
         return word
     if _PLAIN_WORD.fullmatch(word):
@@ -5606,22 +5606,16 @@ def _resolve_word(word: str, cwd: str) -> str:
         if re.search(r"[*?\[]", word):
             hits = _glob_hits(joined)
             return hits[0] if hits else word
-        return joined if is_protected_control_plane(joined) else word
+        return joined if guarded(joined) else word
 
     def _sub(m: "re.Match[str]") -> str:  # a word with quotes inside (python -c "open('x')")
         cand = posixpath.normpath(posixpath.join(cwd, m.group(1)))
-        return cand if is_protected_control_plane(cand) else m.group(0)
+        return cand if guarded(cand) else m.group(0)
 
     return _REL_WORD.sub(_sub, word)
 
 
-def _absolutize(text: str, cwd: str) -> str:
-    """Rewrite words in ``text`` that name a protected file under ``cwd``.
-
-    The text is first folded through what the shell does to a word before the
-    program sees it — ANSI-C ``$'…'``, ``$PWD``, adjacent quotes, backslashes —
-    so the relative spelling reaches the same check the absolute one does.
-    """
+def _absolutize_line(text: str, cwd: str, guarded: Callable[[str], bool]) -> str:
     folded = _ansi_c_fold(text).replace("${PWD}", cwd).replace("$PWD", cwd)
     try:
         lex = shlex.shlex(folded, posix=True, punctuation_chars=True)
@@ -5629,12 +5623,24 @@ def _absolutize(text: str, cwd: str) -> str:
         words = list(lex)
     except ValueError:
         return _REL_WORD.sub(
-            lambda m: _resolve_word(m.group(1), cwd), folded
+            lambda m: _resolve_word(m.group(1), cwd, guarded), folded
         )
-    resolved = [w if _PUNCT_WORD.fullmatch(w) else _resolve_word(w, cwd) for w in words]
+    resolved = [w if _PUNCT_WORD.fullmatch(w) else _resolve_word(w, cwd, guarded) for w in words]
     if resolved == words and folded == text:
         return text
     return " ".join(w if _PUNCT_WORD.fullmatch(w) else _quote_word(w) for w in resolved)
+
+
+def _absolutize(text: str, cwd: str, guarded: Callable[[str], bool] = is_protected_control_plane) -> str:
+    """Rewrite words in ``text`` that name a ``guarded`` path under ``cwd`` (default: the control plane).
+
+    The text is first folded through what the shell does to a word before the
+    program sees it — ANSI-C ``$'…'``, ``$PWD``, adjacent quotes, backslashes —
+    so the relative spelling reaches the same check the absolute one does.
+    Each line is rewritten on its own: a newline separates commands, and
+    flattening it would pull a later command's verb out of command position.
+    """
+    return "\n".join(_absolutize_line(line, cwd, guarded) for line in text.split("\n"))
 
 
 _ASSIGN_STMT = _rx(
@@ -5938,6 +5944,19 @@ def _alias_target(path: str) -> Optional[str]:
     return None
 
 
+def _alias_variants(rest: str, cwd: str) -> List[str]:
+    """``rest`` with each relative word that is an existing alias of a protected file spelled as that file."""
+    out: List[str] = []
+    for m in itertools.islice(_PATH_WORD.finditer(rest), _REALPATH_WORD_CAP):
+        word = m.group(0)
+        if word.startswith(("/", "~", "-")) or len(word) < 2:
+            continue
+        target = _alias_target(posixpath.normpath(posixpath.join(cwd, word)))
+        if target:
+            out.append(rest.replace(word, _quote_word(target)))
+    return out
+
+
 def _cwd_realpath_variants(command: str) -> List[str]:
     """``_realpath_variants`` for a relative word after a literal ``cd <dir> &&`` (#1065).
 
@@ -5945,16 +5964,49 @@ def _cwd_realpath_variants(command: str) -> List[str]:
     ``_cwd_variants`` only rewrites words that are lexically protected. The
     aliased word is resolved against the same cwd and judged as what it is.
     """
+    return [new for cwd, rest in _cwd_scopes(command)[0] for new in _alias_variants(rest, cwd)]
+
+
+def _guarded_path_test(config: Dict[str, Any]) -> Callable[[str], bool]:
+    """Whether an absolute path is guarded by ANY class: control plane, zero-access, read-only, no-delete."""
+    patterns = [
+        p
+        for key in ("zeroAccessPaths", "readOnlyPaths", "noDeletePaths")
+        for p in (config.get(key) or [])
+        if isinstance(p, str)
+    ]
+    return lambda path: is_protected_control_plane(path) or any(match_path(path, p) for p in patterns)
+
+
+def _before_first_cd(command: str) -> str:
+    """The text that runs in the payload cwd: everything before the first ``cd`` / ``pushd`` / ``popd``."""
+    starts = [m.start() for rx in (_CD_RE, _POPD_RE) for m in itertools.islice(rx.finditer(command), 1)]
+    return command[: min(starts)] if starts else command
+
+
+def _cwd_resolved_variants(command: str, cwd: Optional[str], config: Dict[str, Any]) -> List[str]:
+    """``command`` with each relative operand that names a guarded path spelled absolutely.
+
+    Relative operands are resolved against the payload ``cwd`` — and its
+    ``realpath``, when the cwd is itself a symlink — for the text that runs
+    there, and against each literal ``cd <dir> &&`` / ``git -C`` / ``env -C``
+    scope for the text that runs in it. The absolute spelling is then judged by
+    the same rules as any other, so ``> .claude/settings.json`` from ``$HOME`` is
+    ``> ~/.claude/settings.json``. A missing cwd adds nothing: what a relative
+    word means is then unknown, which the unverifiable-target verdict owns.
+    """
+    scopes = list(_cwd_scopes(command)[0])
+    if cwd and os.path.isabs(cwd):
+        lead = _before_first_cd(command)
+        scopes += [(base, lead) for base in dict.fromkeys((posixpath.normpath(cwd), os.path.realpath(cwd)))]
+    guarded = _guarded_path_test(config)
     out: List[str] = []
-    for cwd, rest in _cwd_scopes(command)[0]:
-        for m in itertools.islice(_PATH_WORD.finditer(rest), _REALPATH_WORD_CAP):
-            word = m.group(0)
-            if word.startswith(("/", "~", "-")) or len(word) < 2:
-                continue
-            target = _alias_target(posixpath.normpath(posixpath.join(cwd, word)))
-            if target:
-                out.append(rest.replace(word, _quote_word(target)))
-    return out
+    for base, text in scopes:
+        new = _absolutize(text, base, guarded)
+        if new != text:
+            out.append(new)
+        out.extend(_alias_variants(text, base))
+    return list(dict.fromkeys(out))
 
 
 def _cwd_variants(command: str) -> List[str]:
@@ -10020,6 +10072,15 @@ def _decide_command(
     outer one.
     """
     verdict = _decide_rules(command, config, cwd)
+    resolved = []
+    if not verdict.get("protected"):
+        # The control plane outranks the escape hatch and the kill switch, so a
+        # relative spelling of it is judged before either can end the walk.
+        for variant in _cwd_resolved_variants(command, cwd, config):
+            inner = _decide_rules(variant, config)
+            if inner.get("protected"):
+                return dict(inner, command=command)
+            resolved.append(inner)
     if (
         _depth >= _RESCAN_DEPTH
         or verdict.get("protected")
@@ -10028,8 +10089,10 @@ def _decide_command(
         or verdict["decision"] == "block"
     ):
         return verdict
-    for hidden in _hidden_commands(command, rules=True):
-        inner = _decide_command(hidden, config, cwd, _depth + 1)
+    for inner in itertools.chain(
+        resolved,
+        (_decide_command(hidden, config, cwd, _depth + 1) for hidden in _hidden_commands(command, rules=True)),
+    ):
         if _DECISION_RANK[inner["decision"]] > _DECISION_RANK[verdict["decision"]] and not (
             inner.get("escape") or inner.get("disabled")
         ):

@@ -132,9 +132,9 @@
  },
  "counts": {
   "audit": 8,
-  "engine": 1008,
+  "engine": 1058,
   "engine_by_platform": 8,
-  "hooks": 604,
+  "hooks": 629,
   "hooks_by_platform": 6
  },
  "engine": {
@@ -865,6 +865,30 @@
    "unverifiable": false
   },
   "[\"Bash\", \"cat .env.sample\", \"/golden/home\", \"kill-switch-off\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cat .ssh/id_rsa\", \"/golden/home\", \"default\", \"/golden/elsewhere\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cat .ssh/id_rsa\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": false,
+   "rule_id": "core.zero-access-path",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cat .ssh/id_rsa\", \"/golden/home\", \"kill-switch-off\", \"/golden/elsewhere\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cat .ssh/id_rsa\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
    "decision": "allow",
    "protected": false,
    "rule_id": null,
@@ -1914,6 +1938,18 @@
    "rule_id": null,
    "unverifiable": false
   },
+  "[\"Bash\", \"cat id_rsa\", \"/golden/home\", \"default\", \"/golden/home/.ssh\"]": {
+   "decision": "block",
+   "protected": false,
+   "rule_id": "core.zero-access-path",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cat id_rsa\", \"/golden/home\", \"kill-switch-off\", \"/golden/home/.ssh\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
   "[\"Bash\", \"cat server.key\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": false,
@@ -2166,6 +2202,18 @@
    "rule_id": null,
    "unverifiable": false
   },
+  "[\"Bash\", \"cd /golden/elsewhere && echo x > .claude/settings.json\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cd /golden/elsewhere && echo x > .claude/settings.json\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
   "[\"Bash\", \"cd /tmp && echo hi\", \"/golden/home\", \"default\"]": {
    "decision": "allow",
    "protected": false,
@@ -2238,6 +2286,30 @@
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
+  "[\"Bash\", \"cd ~ && cat .ssh/id_rsa\", \"/golden/home\", \"default\", \"/golden/elsewhere\"]": {
+   "decision": "block",
+   "protected": false,
+   "rule_id": "core.zero-access-path",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cd ~ && cat .ssh/id_rsa\", \"/golden/home\", \"kill-switch-off\", \"/golden/elsewhere\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cd ~ && echo x > .claude/settings.json\", \"/golden/home\", \"default\", \"/golden/elsewhere\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cd ~ && echo x > .claude/settings.json\", \"/golden/home\", \"kill-switch-off\", \"/golden/elsewhere\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
   "[\"Bash\", \"cd ~/.agentwire && touch damagecontrol.yml\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
@@ -2305,6 +2377,18 @@
    "unverifiable": false
   },
   "[\"Bash\", \"cp -t ~/.agentwire/damage-control /tmp/x\", \"/golden/home\", \"kill-switch-off\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cp /golden/stage/a .claude/settings.json\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"cp /golden/stage/a .claude/settings.json\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -3126,6 +3210,18 @@
    "rule_id": null,
    "unverifiable": false
   },
+  "[\"Bash\", \"echo hi\\necho x > .claude/settings.json\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo hi\\necho x > .claude/settings.json\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
   "[\"Bash\", \"echo x > $HOME/.agentwire/damagecontrol.yml\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
@@ -3174,6 +3270,114 @@
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
+  "[\"Bash\", \"echo x > ../.claude/settings.json\", \"/golden/home\", \"default\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > ../.claude/settings.json\", \"/golden/home\", \"kill-switch-off\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > ../settings.json\", \"/golden/home\", \"default\", \"/golden/home/.claude/hooks\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > ../settings.json\", \"/golden/home\", \"kill-switch-off\", \"/golden/home/.claude/hooks\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .agentwire/damagecontrol.yml\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .agentwire/damagecontrol.yml\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .claude/hooks/h.sh\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .claude/hooks/h.sh\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"default\", \"/golden/elsewhere\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"kill-switch-off\", \"/golden/elsewhere\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"default\", \"/golden/elsewhere\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"kill-switch-off\", \"/golden/elsewhere\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > damagecontrol.yml\", \"/golden/home\", \"default\", \"/golden/home/.agentwire\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > damagecontrol.yml\", \"/golden/home\", \"kill-switch-off\", \"/golden/home/.agentwire\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
   "[\"Bash\", \"echo x > dist/app.js\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": false,
@@ -3186,6 +3390,18 @@
    "rule_id": null,
    "unverifiable": false
   },
+  "[\"Bash\", \"echo x > settings.json\", \"/golden/home\", \"default\", \"/golden/home/.claude\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x > settings.json\", \"/golden/home\", \"kill-switch-off\", \"/golden/home/.claude\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
   "[\"Bash\", \"echo x > ~/.agentwire/damagecontrol.yml\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
@@ -3196,6 +3412,18 @@
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x >> .bash_history\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": false,
+   "rule_id": "core.read-only-path",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x >> .bash_history\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
    "unverifiable": false
   },
   "[\"Bash\", \"echo x >> /some/repo/.agentwire.tasks.yml\", \"/golden/home\", \"default\"]": {
@@ -3229,6 +3457,18 @@
    "unverifiable": false
   },
   "[\"Bash\", \"echo x >| ~/.agentwire/damagecontrol.yml\", \"/golden/home\", \"kill-switch-off\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x | tee .claude/settings.json\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"echo x | tee .claude/settings.json\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -4158,6 +4398,18 @@
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
+  "[\"Bash\", \"head -n1 .aws/credentials\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": false,
+   "rule_id": "core.zero-access-path",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"head -n1 .aws/credentials\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
   "[\"Bash\", \"if ((1)); then cat <<'EOF'\\nbody\\nEOF\\ncd ~/.agentwire && touch damagecontrol.yml\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
@@ -4938,6 +5190,42 @@
    "rule_id": null,
    "unverifiable": false
   },
+  "[\"Bash\", \"rm .claude/notes.txt\", \"/golden/home\", \"default\", \"/golden/elsewhere\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"rm .claude/notes.txt\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": false,
+   "rule_id": "core.rm-file-deletion-use-git-clean-or-manual-cleanup",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"rm .claude/notes.txt\", \"/golden/home\", \"kill-switch-off\", \"/golden/elsewhere\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"rm .claude/notes.txt\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"rm notes.txt\", \"/golden/home\", \"default\", \"/golden/home/.claude\"]": {
+   "decision": "block",
+   "protected": false,
+   "rule_id": "core.rm-file-deletion-use-git-clean-or-manual-cleanup",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"rm notes.txt\", \"/golden/home\", \"kill-switch-off\", \"/golden/home/.claude\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
   "[\"Bash\", \"rm ~/.agentwire/damage-control/core.yaml  # allow: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
@@ -5080,6 +5368,18 @@
    "decision": "allow",
    "protected": false,
    "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"sed -i s/a/b/ .agentwire/config.yaml\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"sed -i s/a/b/ .agentwire/config.yaml\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+   "decision": "block",
+   "protected": true,
+   "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
   "[\"Bash\", \"sh -c 'psql -c \\\"DROP TABLE users\\\"'\", \"/golden/home\", \"default\"]": {
@@ -6548,6 +6848,18 @@
    "exit": 0,
    "rule_id": null
   },
+  "[\"Bash\", \"cat .ssh/id_rsa\", \"/golden/home\", \"interactive\", \"/golden/elsewhere\"]": {
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
+  },
+  "[\"Bash\", \"cat .ssh/id_rsa\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.zero-access-path"
+  },
   "[\"Bash\", \"cat .{env,x}\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
@@ -7070,6 +7382,12 @@
    "exit": 0,
    "rule_id": null
   },
+  "[\"Bash\", \"cat id_rsa\", \"/golden/home\", \"interactive\", \"/golden/home/.ssh\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.zero-access-path"
+  },
   "[\"Bash\", \"cat server.key\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
@@ -7196,6 +7514,12 @@
    "exit": 2,
    "rule_id": "core.zero-access-path"
   },
+  "[\"Bash\", \"cd /golden/elsewhere && echo x > .claude/settings.json\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
+  },
   "[\"Bash\", \"cd /tmp && echo hi\", \"/golden/home\", \"interactive\"]": {
    "audit": "allowed",
    "decision": "allow",
@@ -7232,6 +7556,18 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
+  "[\"Bash\", \"cd ~ && cat .ssh/id_rsa\", \"/golden/home\", \"interactive\", \"/golden/elsewhere\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.zero-access-path"
+  },
+  "[\"Bash\", \"cd ~ && echo x > .claude/settings.json\", \"/golden/home\", \"interactive\", \"/golden/elsewhere\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
   "[\"Bash\", \"cd ~/.agentwire && touch damagecontrol.yml\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
@@ -7263,6 +7599,12 @@
    "rule_id": "core.chmod-777-world-writable"
   },
   "[\"Bash\", \"cp -t ~/.agentwire/damage-control /tmp/x\", \"/golden/home\", \"interactive\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
+  "[\"Bash\", \"cp /golden/stage/a .claude/settings.json\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -7712,6 +8054,12 @@
    "exit": 0,
    "rule_id": null
   },
+  "[\"Bash\", \"echo hi\\necho x > .claude/settings.json\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
   "[\"Bash\", \"echo x > $HOME/.agentwire/damagecontrol.yml\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
@@ -7736,17 +8084,83 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
+  "[\"Bash\", \"echo x > ../.claude/settings.json\", \"/golden/home\", \"interactive\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
+  "[\"Bash\", \"echo x > ../settings.json\", \"/golden/home\", \"interactive\", \"/golden/home/.claude/hooks\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
+  "[\"Bash\", \"echo x > .agentwire/damagecontrol.yml\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
+  "[\"Bash\", \"echo x > .claude/hooks/h.sh\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"interactive\", \"/golden/elsewhere\"]": {
+   "audit": "allowed_by_escape",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"interactive\", \"/golden/elsewhere\"]": {
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
+  "[\"Bash\", \"echo x > damagecontrol.yml\", \"/golden/home\", \"interactive\", \"/golden/home/.agentwire\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
   "[\"Bash\", \"echo x > dist/app.js\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
    "rule_id": "core.read-only-path"
   },
+  "[\"Bash\", \"echo x > settings.json\", \"/golden/home\", \"interactive\", \"/golden/home/.claude\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
   "[\"Bash\", \"echo x > ~/.agentwire/damagecontrol.yml\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
    "rule_id": "core.protected-control-plane"
+  },
+  "[\"Bash\", \"echo x >> .bash_history\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.read-only-path"
   },
   "[\"Bash\", \"echo x >> /some/repo/.agentwire.tasks.yml\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
@@ -7761,6 +8175,12 @@
    "rule_id": "core.protected-control-plane"
   },
   "[\"Bash\", \"echo x >| ~/.agentwire/damagecontrol.yml\", \"/golden/home\", \"interactive\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
+  },
+  "[\"Bash\", \"echo x | tee .claude/settings.json\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -8600,6 +9020,12 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
+  "[\"Bash\", \"head -n1 .aws/credentials\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.zero-access-path"
+  },
   "[\"Bash\", \"if ((1)); then cat <<'EOF'\\nbody\\nEOF\\ncd ~/.agentwire && touch damagecontrol.yml\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
@@ -9050,6 +9476,24 @@
    "exit": 2,
    "rule_id": "core.rm-with-recursive-or-force-flags"
   },
+  "[\"Bash\", \"rm .claude/notes.txt\", \"/golden/home\", \"interactive\", \"/golden/elsewhere\"]": {
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
+  },
+  "[\"Bash\", \"rm .claude/notes.txt\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.rm-file-deletion-use-git-clean-or-manual-cleanup"
+  },
+  "[\"Bash\", \"rm notes.txt\", \"/golden/home\", \"interactive\", \"/golden/home/.claude\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.rm-file-deletion-use-git-clean-or-manual-cleanup"
+  },
   "[\"Bash\", \"rm ~/.agentwire/damage-control/core.yaml  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
@@ -9121,6 +9565,12 @@
    "decision": "block",
    "exit": 2,
    "rule_id": "core.read-only-path"
+  },
+  "[\"Bash\", \"sed -i s/a/b/ .agentwire/config.yaml\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.protected-control-plane"
   },
   "[\"Bash\", \"sh -c 'psql -c \\\"DROP TABLE users\\\"'\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",

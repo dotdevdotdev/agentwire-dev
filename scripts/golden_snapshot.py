@@ -193,17 +193,17 @@ def collect_items() -> List[Item]:
     ``tool`` is the hook-level tool name (Bash/Read/Edit/mcp); ``home`` / ``kill_switch`` come
     from a corpus case's context, harvested inputs use the defaults.
     """
-    items: Dict[Tuple[str, str, str, bool], Item] = {}
+    items: Dict[Tuple[str, str, str, bool, str], Item] = {}
 
-    def add(tool: str, text: str, home: str = FAKE_HOME, kill_switch: bool = False) -> None:
-        items.setdefault((tool, text, home, kill_switch), {
-            "tool": tool, "input": text, "home": home, "kill_switch": kill_switch,
+    def add(tool: str, text: str, home: str = FAKE_HOME, kill_switch: bool = False, cwd: str = FAKE_CWD) -> None:
+        items.setdefault((tool, text, home, kill_switch, cwd), {
+            "tool": tool, "input": text, "home": home, "kill_switch": kill_switch, "cwd": cwd,
         })
 
     for case in load_corpus_cases():
         ctx = case.get("context") or {}
         home = ctx.get("home") or FAKE_HOME
-        add(case["tool"], case["input"], home, bool(ctx.get("kill_switch")))
+        add(case["tool"], case["input"], home, bool(ctx.get("kill_switch")), ctx.get("cwd") or FAKE_CWD)
     harvested = json.loads(HARVESTED.read_text()) if HARVESTED.exists() else {}
     for text in harvested.get("check_command", []):
         add("Bash", text)
@@ -253,11 +253,11 @@ def _engine_config(kill_switch: bool) -> Dict[str, Any]:
     return config
 
 
-def engine_decision(tool: str, text: str, config: Dict[str, Any]) -> Dict[str, Any]:
+def engine_decision(tool: str, text: str, config: Dict[str, Any], cwd: str = FAKE_CWD) -> Dict[str, Any]:
     from damage_control import engine as _core
 
     if tool == "Bash":
-        r = _core.check_command(text, config, cwd=FAKE_CWD)
+        r = _core.check_command(text, config, cwd=cwd)
         return {"decision": r["decision"], "rule_id": r.get("id"),
                 "protected": bool(r.get("protected")), "unverifiable": bool(r.get("unverifiable"))}
     if tool in ("Edit", "Write"):
@@ -315,12 +315,12 @@ def record_engine(items: List[Item]) -> Tuple[Dict[str, Any], Dict[str, Dict[str
                 if item["home"] != home:
                     continue
                 for name in ENGINE_CONTEXTS:
-                    key = record_key(item["tool"], item["input"], home, name)
+                    key = record_key(item["tool"], item["input"], home, name, item["cwd"])
                     config = configs[name == "kill-switch-off"]
-                    real[key] = engine_decision(item["tool"], item["input"], config)
+                    real[key] = engine_decision(item["tool"], item["input"], config, item["cwd"])
                     for variant in VARIANTS:
                         with casefold_as(variant):
-                            per_variant[variant][key] = engine_decision(item["tool"], item["input"], config)
+                            per_variant[variant][key] = engine_decision(item["tool"], item["input"], config, item["cwd"])
     wrong = [k for k in real if real[k] != per_variant[host_variant()][k]]
     if wrong:
         raise SystemExit(f"{host_variant()} emulation disagrees with real behaviour on {len(wrong)} rows: {wrong[:3]}")
@@ -329,8 +329,10 @@ def record_engine(items: List[Item]) -> Tuple[Dict[str, Any], Dict[str, Dict[str
     return invariant, {v: {k: per_variant[v][k] for k in sorted(differing)} for v in VARIANTS}
 
 
-def record_key(tool: str, text: str, home: str, context: str) -> str:
-    return json.dumps([tool, text, home, context], ensure_ascii=False)
+def record_key(tool: str, text: str, home: str, context: str, cwd: str = FAKE_CWD) -> str:
+    """A row's identity. The default cwd is implicit, so rows recorded before ``cwd`` existed keep their key."""
+    parts = [tool, text, home, context] + ([cwd] if cwd != FAKE_CWD else [])
+    return json.dumps(parts, ensure_ascii=False)
 
 
 # --------------------------------------------------------------------------------------
@@ -338,8 +340,8 @@ def record_key(tool: str, text: str, home: str, context: str) -> str:
 # --------------------------------------------------------------------------------------
 
 
-def hook_payload(tool: str, text: str, permission_mode: str) -> Dict[str, Any]:
-    base = {"session_id": "00000000-0000-0000-0000-000000000000", "cwd": FAKE_CWD,
+def hook_payload(tool: str, text: str, permission_mode: str, cwd: str = FAKE_CWD) -> Dict[str, Any]:
+    base = {"session_id": "00000000-0000-0000-0000-000000000000", "cwd": cwd,
             "permission_mode": permission_mode, "hook_event_name": "PreToolUse"}
     if tool == "Bash":
         return dict(base, tool_name="Bash", tool_input={"command": text})
@@ -370,19 +372,19 @@ def profile_manifest() -> Path:
     return path
 
 
-def run_hook(tool: str, text: str, home: str, mode: str, unattended: bool) -> Dict[str, Any]:
+def run_hook(tool: str, text: str, home: str, mode: str, unattended: bool, cwd: str = FAKE_CWD) -> Dict[str, Any]:
     """Run one hook as a subprocess against a private AGENTWIRE_DIR; return decision + audit row."""
     kind = HOOK_FOR_TOOL[tool if tool in HOOK_FOR_TOOL else "mcp"]
-    with tempfile.TemporaryDirectory(prefix="golden-hook-") as aw, tempfile.TemporaryDirectory(prefix="golden-cwd-") as cwd:
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": home, "PWD": FAKE_CWD,
+    with tempfile.TemporaryDirectory(prefix="golden-hook-") as aw, tempfile.TemporaryDirectory(prefix="golden-cwd-") as proc_cwd:
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": home, "PWD": cwd,
                "AGENTWIRE_DIR": aw, "LANG": "C.UTF-8", "PYTHONHASHSEED": "0"}
         if unattended:
             env["AGENTWIRE_UNATTENDED"] = "1"
-        payload = hook_payload(tool, text, HOOK_PERMISSION_MODES[mode])
+        payload = hook_payload(tool, text, HOOK_PERMISSION_MODES[mode], cwd)
         proc = subprocess.run(
             [sys.executable, "-I", "-m", "damage_control.hook", kind, "--profile", str(profile_manifest())],
             input=json.dumps(payload), capture_output=True,
-            text=True, env=env, cwd=cwd, timeout=120,
+            text=True, env=env, cwd=proc_cwd, timeout=120,
         )
         verdict = "allow"
         if proc.returncode == 2:
@@ -416,22 +418,22 @@ def derived_path_hook_row(engine_row: Dict[str, Any]) -> Dict[str, Any]:
 
 def record_hooks(items: List[Item], engine: Dict[str, Any],
                  by_platform: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
-    jobs: List[Tuple[str, str, str, str, str, bool]] = []
+    jobs: List[Tuple[Any, ...]] = []
     for item in items:
         if item["kill_switch"]:
             continue  # the kill switch is host state, not a hook payload field
-        tool, text, home = item["tool"], item["input"], item["home"]
-        jobs.append((record_key(tool, text, home, "interactive"), tool, text, home, "interactive", False))
-        ask = engine.get(record_key(tool, text, home, "default"), {}).get("decision") == "ask"
+        tool, text, home, cwd = item["tool"], item["input"], item["home"], item["cwd"]
+        jobs.append((record_key(tool, text, home, "interactive", cwd), tool, text, home, "interactive", False, cwd))
+        ask = engine.get(record_key(tool, text, home, "default", cwd), {}).get("decision") == "ask"
         if tool == "Bash" and ask:
             # Only an `ask` can change with the posture, so only asks are re-run.
-            jobs.append((record_key(tool, text, home, "bypass"), tool, text, home, "bypass", False))
-            jobs.append((record_key(tool, text, home, "unattended"), tool, text, home, "interactive", True))
+            jobs.append((record_key(tool, text, home, "bypass", cwd), tool, text, home, "bypass", False, cwd))
+            jobs.append((record_key(tool, text, home, "unattended", cwd), tool, text, home, "interactive", True, cwd))
     results: Dict[str, Any] = {}
     workers = min(8, os.cpu_count() or 2)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(run_hook, tool, text, home, mode, unattended): key
-                   for key, tool, text, home, mode, unattended in jobs}
+        futures = {pool.submit(run_hook, tool, text, home, mode, unattended, cwd): key
+                   for key, tool, text, home, mode, unattended, cwd in jobs}
         for fut in concurrent.futures.as_completed(futures):
             results[futures[fut]] = fut.result()
     # A path-tool row whose engine verdict differs by platform: the host's real run is
@@ -439,8 +441,8 @@ def record_hooks(items: List[Item], engine: Dict[str, Any],
     # is proven against the real run, so it cannot drift from what a hook actually emits.
     platform_rows: Dict[str, Dict[str, Any]] = {v: {} for v in VARIANTS}
     for key in sorted(results):
-        tool, text, home, mode = json.loads(key)
-        engine_key = record_key(tool, text, home, "default")
+        tool, text, home, mode, *rest = json.loads(key)
+        engine_key = record_key(tool, text, home, "default", *rest)
         if tool in PATH_TOOLS and engine_key in by_platform["darwin"]:
             for variant in VARIANTS:
                 platform_rows[variant][key] = derived_path_hook_row(by_platform[variant][engine_key])
