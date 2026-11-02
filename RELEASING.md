@@ -6,7 +6,7 @@ Every release does **both** a PyPI publish and a GitHub release. The **GitHub re
 
 ## Release order (two packages)
 
-`agentwire-dev` depends on `damage-control-dev` (its own PyPI project, engine source in `packages/damage-control-dev/`). `pyproject.toml` pins it to a range — currently `damage-control-dev>=0.1.0,<0.2` — and `tests/unit/test_damage_control_pin.py` fails if the workspace version leaves that range. A checkout resolves the engine from the workspace; a PyPI install resolves it from PyPI. Order matters, because an `agentwire-dev` that names a version PyPI doesn't have yet is uninstallable:
+`agentwire-dev` depends on `damage-control-dev` (its own PyPI project, engine source in `packages/damage-control-dev/`). `pyproject.toml` pins it to a range — currently `damage-control-dev>=0.1.2,<0.2` — and `tests/unit/test_damage_control_pin.py` fails if the workspace version leaves that range. A checkout resolves the engine from the workspace; a PyPI install resolves it from PyPI. Order matters, because an `agentwire-dev` that names a version PyPI doesn't have yet is uninstallable:
 
 1. **Engine changed?** Bump `__version__` in `packages/damage-control-dev/src/damage_control/__init__.py`, merge, then build and publish it **first** (commands in step 3). Skip entirely when the engine didn't change — the existing pin keeps resolving.
 2. **Pin still admits the engine?** A patch/minor bump inside the range needs no `agentwire-dev` change. A bump outside it (e.g. `0.2.0`) requires widening the range in `pyproject.toml` (`>=0.2.0,<0.3`) in the agentwire PR — the pin test enforces this.
