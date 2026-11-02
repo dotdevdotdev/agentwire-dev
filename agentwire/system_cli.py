@@ -36,7 +36,6 @@ from .core import (
 from .project_config import load_project_config
 from .roles import inject_soul, load_roles, resolve_roles
 
-
 # Seconds before `uv cache clean` is abandoned: a long-lived `uv run` (the dev
 # portal) holds the cache lock for its whole lifetime (#1246).
 UV_CACHE_CLEAN_TIMEOUT = 20.0
