@@ -106,7 +106,7 @@ The portal binds to loopback (`127.0.0.1`) by default. To access the portal from
    ```bash
    agentwire portal token
    ```
-4. **Connect**: Open `https://<your-machine-ip>:8765` on your phone and enter the token when prompted.
+4. **Connect**: run `agentwire portal pair` on the host and scan the QR (or open the printed URL) on your phone. The URL follows the bind: with `server.host: 0.0.0.0` it uses your machine's `.local` name or LAN IP, not `localhost`; pick another address with `--url`. Or open `https://<your-machine-ip>:8765` yourself and enter the token.
 
 Origin checks reject cross-site browser requests on every bind. Keep the portal on a trusted LAN — never port-forward it or run it on a public-facing VPS. For internet access, use Cloudflare Tunnel + Zero Trust. See [SECURITY.md](SECURITY.md) for details.
 

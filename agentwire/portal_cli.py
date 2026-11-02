@@ -10,6 +10,7 @@ and curl helpers travel with this module.
 from __future__ import annotations
 
 import shlex
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -17,13 +18,14 @@ from pathlib import Path
 from .core import (
     _check_portal_health,
     _check_tmux_installed,
-    _default_portal_url,
     _output_json,
+    _portal_scheme,
     _start_portal_local,
     get_portal_session_name,
     load_config,
     tmux_session_exists,
 )
+from .security import is_loopback_host
 
 
 def _start_portal_remote(ssh_target: str, machine_id: str, args) -> int:
@@ -333,19 +335,120 @@ def cmd_portal_token(args) -> int:
     return 0
 
 
+def _lan_ipv4_addrs() -> list[str]:
+    """Non-loopback IPv4 addresses of this host, primary outbound first.
+
+    The UDP-connect trick asks the kernel which interface routes outward;
+    ``connect`` on a datagram socket sends no packets.
+    """
+    addrs: list[str] = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1: never routed, never sent
+            addrs.append(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            addrs.append(ip)
+    except OSError:
+        pass
+    seen: list[str] = []
+    for ip in addrs:
+        if ip not in seen and not ip.startswith("127.") and ip != "0.0.0.0":
+            seen.append(ip)
+    return seen
+
+
+def _mdns_hostname(lan_addrs: list[str]) -> str | None:
+    """``<host>.local`` when it resolves back to one of this host's addresses."""
+    name = socket.gethostname().split(".")[0] + ".local"
+    try:
+        resolved = {ai[4][0] for ai in socket.getaddrinfo(name, None, socket.AF_INET)}
+    except OSError:
+        return None
+    return name if resolved & set(lan_addrs) else None
+
+
+def derive_pair_url(
+    config: dict,
+    *,
+    lan_addrs: list[str],
+    mdns_host: str | None,
+    override: str | None = None,
+) -> tuple[str, str, list[str]]:
+    """Pick the portal base URL a device should open to pair.
+
+    Returns ``(url, source, alternatives)``. Precedence: ``--url`` override >
+    explicit ``portal.url`` > a specific ``server.host`` > (wildcard bind)
+    ``.local`` mDNS name > primary LAN IPv4. Loopback binds keep localhost.
+    The address lookups are injected so this stays a pure function.
+    """
+    if override:
+        return override.rstrip("/"), "--url", []
+    explicit = config.get("portal", {}).get("url")
+    if explicit:
+        return explicit.rstrip("/"), "portal.url", []
+
+    server = config.get("server", {})
+    host = server.get("host", "127.0.0.1")
+    port = server.get("port", 8765)
+    scheme = _portal_scheme(config)
+
+    if is_loopback_host(host):
+        return f"{scheme}://localhost:{port}", "loopback bind", []
+    if host not in ("0.0.0.0", "::", ""):
+        return f"{scheme}://{host}:{port}", "server.host", []
+    if mdns_host:
+        return f"{scheme}://{mdns_host}:{port}", "mDNS hostname", [
+            f"{scheme}://{ip}:{port}" for ip in lan_addrs
+        ]
+    if not lan_addrs:
+        return f"{scheme}://localhost:{port}", "no LAN address found", []
+    return f"{scheme}://{lan_addrs[0]}:{port}", "primary LAN address", [
+        f"{scheme}://{ip}:{port}" for ip in lan_addrs[1:]
+    ]
+
+
 def cmd_portal_pair(args) -> int:
     """Create a short-lived pairing code (+ QR) for a new device."""
     from .devices import PAIRING_TTL_SECONDS, create_pairing
 
-    pairing = create_pairing(name=getattr(args, "name", None) or "device")
+    config = load_config()
+    lan_addrs = _lan_ipv4_addrs()
+    portal_url, source, alternatives = derive_pair_url(
+        config,
+        lan_addrs=lan_addrs,
+        mdns_host=_mdns_hostname(lan_addrs),
+        override=getattr(args, "url", None),
+    )
 
-    portal_url = _default_portal_url()
+    pairing = create_pairing(name=getattr(args, "name", None) or "device")
     pair_url = f"{portal_url}/pair?code={pairing.code}"
     ttl_min = PAIRING_TTL_SECONDS // 60
+
+    if getattr(args, "json", False):
+        _output_json({
+            "success": True,
+            "code": pairing.code,
+            "name": pairing.name,
+            "expires_in_seconds": PAIRING_TTL_SECONDS,
+            "portal_url": portal_url,
+            "url_source": source,
+            "pair_url": pair_url,
+            "alternatives": alternatives,
+        })
+        return 0
 
     print(f"Pairing code: {pairing.code}")
     print(f"  Name:  {pairing.name}")
     print(f"  Expires in {ttl_min} minutes.")
+    print()
+    print(f"Using {portal_url} ({source}).")
+    if alternatives:
+        print("Other addresses (pick one with --url):")
+        for alt in alternatives:
+            print(f"  {alt}")
     print()
     print("On the device, open:")
     print(f"  {pair_url}")
@@ -497,6 +600,10 @@ def register_portal_parser(subparsers) -> None:
         "pair", help="Pair a new device (prints a short-lived code + QR)"
     )
     portal_pair.add_argument("--name", help="Friendly device name (e.g. 'phone')")
+    portal_pair.add_argument(
+        "--url", help="Portal base URL the device should open (overrides auto-detection)"
+    )
+    portal_pair.add_argument("--json", action="store_true", help="Output as JSON")
     portal_pair.set_defaults(func=cmd_portal_pair)
 
     # portal devices — list paired devices
