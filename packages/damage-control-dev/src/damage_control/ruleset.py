@@ -23,7 +23,7 @@ class Change(NamedTuple):
 
 
 def _fingerprint(value: Any) -> str:
-    return hashlib.sha1(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:10]
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:10]
 
 
 def _label(item: Any) -> str:
