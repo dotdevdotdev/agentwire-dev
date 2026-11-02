@@ -90,7 +90,10 @@ class TestInstallHooks:
     def test_fresh_install_deploys_all_and_registers(self, env):
         home, _src = env
         results = install_hooks()
+        dc = results.pop("damage-control")
         assert set(results.values()) == {"installed"}
+        assert dc == "updated"  # the package hooks were proven and registered (#1209 M4)
+        assert install_hooks()["damage-control"] == "current"
         assert (home / ".claude" / "hooks" / "agentwire-permission.sh").exists()
         assert (home / ".claude" / "hooks" / "idle-handler.sh").exists()
         assert (home / ".agentwire" / "queue-processor.sh").exists()

@@ -1,17 +1,15 @@
 """The profile seam (#1209 M3): what a host adds, what it can never undo, and how sources merge."""
 
-import ast
 import contextlib
+import json
 import textwrap
 from pathlib import Path
 
 import pytest
 
 from damage_control import engine as _core
-from damage_control.profile import GENERIC, GroupSpec, McpCommandTemplate
-
-REPO = Path(__file__).resolve().parent.parent.parent
-HOOKS_DIR = REPO / "agentwire" / "hooks" / "damage-control"
+from damage_control import groups
+from damage_control.profile import GENERIC, GroupSpec, McpCommandTemplate, ProfileError, dump_profile, load_profile
 
 
 @contextlib.contextmanager
@@ -40,7 +38,7 @@ def test_a_profile_only_adds_to_the_kernel_never_removes_or_reorders_it():
     kernel = list(_core._KERNEL_PROTECTED_PATHS)
     with installed(host(protected_paths=("~/.host/*",), control_plane_words=(".host",))):
         paths = _core.PROTECTED_CONTROL_PLANE_PATHS
-        assert paths[1:1 + len(kernel)] == kernel  # [0] is the profile's own policy file
+        assert paths[2:2 + len(kernel)] == kernel  # [0] is the profile's policy file, [1] its manifest
         assert paths[-1] == "~/.host/*"
         assert ".host" in _core._CONTROL_PLANE_WORDS and "damagecontrol" in _core._CONTROL_PLANE_WORDS
     # ...and the kernel is enforced with no profile content at all.
@@ -131,21 +129,30 @@ def test_an_extension_source_cannot_loosen_the_control_plane_but_the_first_sourc
     assert "re-permit the protected control plane" in cfg["_parse_failures"][0]["error"]
 
 
-def test_a_layer_directory_is_found_relative_to_the_bundle(tmp_path):
-    with installed(host(extra_rules_dirs=("host-rules",))):
-        assert _core.bundled_rule_sources(tmp_path) == [tmp_path / "rules", tmp_path / "host-rules"]
-        assert _core.resolve_rule_sources(tmp_path)[-1] == tmp_path / "host-rules"
+def test_bundled_sources_are_the_generic_rules_then_the_profiles_absolute_layers(tmp_path):
+    layer = tmp_path / "host-rules"
+    with installed(host(extra_rules_dirs=(str(layer),))):
+        assert _core.bundled_rule_sources() == [_core.bundled_rules_dir(), layer]
+    with installed(GENERIC):
+        assert _core.bundled_rule_sources() == [_core.bundled_rules_dir()]
 
 
-def test_a_host_override_dir_replaces_the_bundle_wholesale(tmp_path, monkeypatch):
+def test_a_host_overlay_replaces_a_bundled_file_by_name_and_never_drops_the_rest(tmp_path, monkeypatch):
     monkeypatch.setenv("HOST_HOME", str(tmp_path / "home"))
-    write_rules(tmp_path / "home" / "damage-control", "mine.yaml", rule("mine.one"))
-    with installed(host(config_dir_env="HOST_HOME", extra_rules_dirs=("host-rules",))):
-        assert _core.resolve_rule_sources(tmp_path / "bundle") == [tmp_path / "home" / "damage-control"]
-        bundled = tmp_path / "bundle" / "tooldefs"
-        assert _core.resolve_tooldef_sources(bundled) == []  # absent => no source, not a crash
-        bundled.mkdir(parents=True)
-        assert _core.resolve_tooldef_sources(bundled) == [bundled]
+    write_rules(tmp_path / "home" / "damage-control", "core.yaml", rule("mine.core"))
+    write_rules(tmp_path / "home" / "damage-control", "extra.yaml", rule("mine.extra"))
+    with installed(host(config_dir_env="HOST_HOME")):
+        sources = _core.resolve_sources({})
+        assert sources.overlay_rules == tmp_path / "home" / "damage-control"
+        assert sources.overlay_tooldefs is None  # absent => no source, not a crash
+        ids = {p["id"] for p in _core.load_config(**sources._asdict())["bashToolPatterns"]}
+    assert {"mine.core", "mine.extra"} <= ids
+    import yaml
+
+    replaced = {p["id"] for p in yaml.safe_load((_core.bundled_rules_dir() / "core.yaml").read_text())["bashToolPatterns"]}
+    assert replaced and not replaced & ids, "the overlay's core.yaml must REPLACE the bundled core.yaml"
+    bundled_ids = {p["id"] for p in _core.load_config(_core.bundled_rule_sources())["bashToolPatterns"]}
+    assert {i for i in bundled_ids if i.startswith("git.")} <= ids, "the rest of the bundle must stay on"
 
 
 def test_mcp_command_templates_synthesize_the_shell_command_a_tool_runs():
@@ -177,29 +184,40 @@ def test_the_agentwire_profile_reproduces_the_hard_coded_outbound_commands():
 
 
 def test_groups_registry_comes_from_the_profile():
-    from agentwire.safety import groups
-
-    generic = groups._with_profile(groups._GENERIC_ENTRIES, GENERIC)
-    assert "agentwire" not in {e.name for e in generic}
-    assert not [e for e in generic if e.layer_rules]
+    with installed(GENERIC):
+        generic = groups.entries()
+        assert "agentwire" not in {e.name for e in generic}
+        assert not [e for e in generic if e.layer_rules]
 
     profile = host(
         groups=(GroupSpec("host", "group", "host stuff", layer_rules=("host.yaml",)),),
         group_layer_rules=(("core", ("host-core.yaml",)),),
     )
-    merged = {e.name: e for e in groups._with_profile(groups._GENERIC_ENTRIES, profile)}
-    assert merged["host"].files("rules") == ("host.yaml",)
-    assert merged["core"].files("rules") == ("core.yaml", "host-core.yaml") and merged["core"].kernel
-    with pytest.raises(ValueError):
-        groups._with_profile(groups._GENERIC_ENTRIES, host(group_layer_rules=(("nope", ("x.yaml",)),)))
+    with installed(profile):
+        merged = groups.registry()
+        assert merged["host"].files("rules") == ("host.yaml",)
+        assert merged["core"].files("rules") == ("core.yaml", "host-core.yaml") and merged["core"].kernel
+    with installed(host(group_layer_rules=(("nope", ("x.yaml",)),))):
+        with pytest.raises(ValueError):
+            groups.entries()
 
 
-def test_every_hook_main_is_parse_decide_render_in_thirty_lines():
-    long = {}
-    for path in sorted(HOOKS_DIR.glob("*-tool-damage-control.py")):
-        main = [n for n in ast.parse(path.read_text()).body if isinstance(n, ast.FunctionDef) and n.name == "main"][-1]
-        if main.end_lineno - main.lineno + 1 > 30:
-            long[path.name] = main.end_lineno - main.lineno + 1
-        calls = {c.func.id for c in ast.walk(main) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
-        assert {"parse_payload", "render"} <= calls, path.name
-    assert not long, long
+def test_the_profile_manifest_round_trips_and_rejects_what_it_does_not_know(tmp_path):
+    from agentwire.safety import host_profile
+
+    original = host_profile.build_profile()
+    path = tmp_path / "profile.json"
+    path.write_text(dump_profile(original))
+    assert load_profile(path) == original
+
+    raw = json.loads(path.read_text())
+    cases = {
+        "unknown field": {**raw, "surprise": 1},
+        "not an object": [raw],
+    }
+    for label, bad in cases.items():
+        path.write_text(json.dumps(bad))
+        with pytest.raises(ProfileError):
+            load_profile(path)
+    with pytest.raises(ProfileError):
+        load_profile(tmp_path / "absent.json")

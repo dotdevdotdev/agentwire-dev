@@ -28,8 +28,13 @@ from typing import Any, Dict, List
 
 REPO = Path(__file__).resolve().parent.parent
 GOLDEN = REPO / "corpus" / "golden" / "effective_rules.json"
-RULE_DIRS = ("agentwire/hooks/damage-control/rules", "agentwire/hooks/damage-control/agentwire-rules")
-TOOLDEFS = "agentwire/tooldefs"
+PACKAGE = "packages/damage-control-dev/src/damage_control"
+# Two layouts, because `--ref` reads history: the package layout (#1209 M4) and the one before it.
+LAYOUTS = (
+    {"rules": (f"{PACKAGE}/rules", "agentwire/safety/rules"), "tooldefs": f"{PACKAGE}/tooldefs"},
+    {"rules": ("agentwire/hooks/damage-control/rules", "agentwire/hooks/damage-control/agentwire-rules"),
+     "tooldefs": "agentwire/tooldefs"},
+)
 
 
 def canonical(merged: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -62,18 +67,32 @@ def load(rules_dirs: List[Path], tooldefs: Path) -> Dict[str, List[str]]:
     return canonical(merged)
 
 
+def _load_root(root: Path) -> Dict[str, List[str]]:
+    """Load whichever layout ``root`` holds (a dir that does not exist is simply absent)."""
+    for layout in LAYOUTS:
+        dirs = [root / d for d in layout["rules"] if (root / d).is_dir()]
+        if dirs:
+            return load(dirs, root / layout["tooldefs"])
+    raise SystemExit(f"no rule directories found under {root}")
+
+
+def _extract(ref: str, rel: str, dest: str) -> None:
+    """Unpack ``rel`` as of ``ref`` into ``dest``; a path that does not exist at the ref is simply absent."""
+    archive = subprocess.run(["git", "-C", str(REPO), "archive", ref, rel], capture_output=True)
+    if archive.returncode == 0:
+        subprocess.run(["tar", "-x", "-C", dest], input=archive.stdout, check=True)
+
+
 def at_ref(ref: str) -> Dict[str, List[str]]:
     with tempfile.TemporaryDirectory() as tmp:
-        for rel in (*RULE_DIRS, TOOLDEFS):  # a dir that does not exist at the ref is simply absent
-            subprocess.run(
-                f"git -C {REPO} archive {ref} {rel} 2>/dev/null | tar -x -C {tmp}", shell=True, check=False
-            )
-        root = Path(tmp)
-        return load([root / d for d in RULE_DIRS if (root / d).is_dir()], root / TOOLDEFS)
+        for layout in LAYOUTS:
+            for rel in (*layout["rules"], layout["tooldefs"]):
+                _extract(ref, rel, tmp)
+        return _load_root(Path(tmp))
 
 
 def current() -> Dict[str, List[str]]:
-    return load([REPO / d for d in RULE_DIRS if (REPO / d).is_dir()], REPO / TOOLDEFS)
+    return _load_root(REPO)
 
 
 def main() -> int:
