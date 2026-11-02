@@ -14,8 +14,7 @@ import pytest
 from damage_control import engine, packs
 from damage_control.groups import bundled_files, registry, unclassified
 
-from agentwire import safety_commands, safety_migrate
-from agentwire import safety_ext
+from agentwire import safety_commands, safety_ext, safety_migrate
 from tests.unit.test_safety_install import fake_env  # noqa: F401  (fixture used by `home`)
 from tests.unit.test_safety_packs import home  # noqa: F401  (fixture)
 

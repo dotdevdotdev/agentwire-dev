@@ -21,6 +21,7 @@ import pytest
 @pytest.fixture()
 def audit_logger(monkeypatch, tmp_path):
     from damage_control import audit as mod
+
     from agentwire.safety_ext import build_profile
 
     mod.configure(build_profile())

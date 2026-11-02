@@ -15,7 +15,6 @@ import venv
 from pathlib import Path
 
 import pytest
-
 from damage_control import claude_code as cc
 from damage_control import install
 

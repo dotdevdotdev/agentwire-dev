@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from damage_control import engine, install
 from damage_control import claude_code as cc
+from damage_control import engine, install
 from damage_control.profile import GENERIC
 
 from agentwire import safety_commands, safety_ext
