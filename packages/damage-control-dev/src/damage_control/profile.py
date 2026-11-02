@@ -57,6 +57,20 @@ class McpCommandTemplate(NamedTuple):
     flags: Tuple[Tuple[str, str, bool], ...] = ()
 
 
+class AuditSpec(NamedTuple):
+    """How the host's sessions are named in an audit row, and where the rows live."""
+
+    # Under the config home (``Profile.config_dir``).
+    log_dir: str = "logs/damage-control"
+    # Env vars the host stamps on a session; empty = the host has none.
+    session_env: str = ""
+    agent_env: str = ""
+    # Directory under the config home of ``<session name>/metadata.json`` records, each
+    # carrying a ``conversation_ids`` chain; the entry naming the hook's conversation id
+    # names the session. Empty = the host keeps no such records.
+    sessions_dir: str = ""
+
+
 class Profile(NamedTuple):
     """Everything a host adds to the generic engine. Defaults are the generic engine."""
 
@@ -90,9 +104,12 @@ class Profile(NamedTuple):
     # First half of the sentence telling a blocked unattended run how to get a grant;
     # ``{rule_id}`` is filled in. Empty = say nothing.
     unattended_grant_hint: str = ""
-    # argv prefix run detached when an unattended action is blocked; the engine appends
-    # ``--reason R --rule-id ID --command C``. Empty = no notification.
+    # argv run detached when an unattended action is blocked, with the event as JSON on stdin:
+    # ``{"event": "unattended_block", "reason", "rule_id", "command"}``. Empty = no notification.
     unattended_block_notifier: Tuple[str, ...] = ()
+
+    # --- audit ------------------------------------------------------------
+    audit: AuditSpec = AuditSpec()
 
     # --- extra rules ------------------------------------------------------
     # Absolute directories of rule files (JSON, or YAML a human wrote) merged after the generic rules.
@@ -147,6 +164,7 @@ def load_profile(path: Path) -> Profile:
     if unknown:
         raise ProfileError(f"profile {path} has unknown fields: {unknown}")
     fields: Dict[str, Any] = {k: _tuple(v) for k, v in raw.items()}
+    fields["audit"] = AuditSpec(*fields.get("audit", ()))
     fields["groups"] = tuple(GroupSpec(*g) for g in fields.get("groups", ()))
     fields["mcp_command_templates"] = tuple(
         McpCommandTemplate(*t) for t in fields.get("mcp_command_templates", ()))
@@ -156,4 +174,4 @@ def load_profile(path: Path) -> Profile:
         raise ProfileError(f"profile {path} is malformed: {e}") from e
 
 
-__all__ = ["GENERIC", "GroupSpec", "McpCommandTemplate", "Profile", "ProfileError", "dump_profile", "load_profile"]
+__all__ = ["AuditSpec", "GENERIC", "GroupSpec", "McpCommandTemplate", "Profile", "ProfileError", "dump_profile", "load_profile"]

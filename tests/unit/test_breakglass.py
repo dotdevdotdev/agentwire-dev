@@ -15,22 +15,24 @@ import venv
 from pathlib import Path
 
 import pytest
+from damage_control import claude_code as cc
+from damage_control import install
 
-from agentwire import safety_commands as sc
-from tests.unit.test_safety_heal import fake_env  # noqa: F401  (fixture)
+from agentwire import safety_ext
+from tests.unit.test_safety_install import fake_env  # noqa: F401  (fixture)
 
 FOREIGN = {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/local/bin/my-own-hook"}]}
 
 
 def _breakglass(home: Path, *args: str):
-    script = sc.install_breakglass()
+    script = install.install_breakglass()
     return subprocess.run([sys.executable, "-I", str(script), *args], capture_output=True, text=True,
                           env={"HOME": str(home), "PATH": "/usr/bin:/bin"}, timeout=60)
 
 
 def _our_entries(home: Path):
     pre = json.loads((home / ".claude" / "settings.json").read_text())["hooks"]["PreToolUse"]
-    return [h for e in pre for h in e["hooks"] if sc._is_ours(h)]
+    return [h for e in pre for h in e["hooks"] if "damage_control.hook" in h.get("args", [])]
 
 
 @pytest.fixture
@@ -42,21 +44,27 @@ def broken_venv(fake_env, tmp_path):  # noqa: F811
     settings = fake_env / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
     settings.write_text(json.dumps({"hooks": {"PreToolUse": [FOREIGN]}}))
-    sc.register_damage_control_in_settings(interpreter)
+    safety_ext.install(log=lambda *_: None)
+    registered = json.loads(settings.read_text())
+    for entry in registered["hooks"]["PreToolUse"]:
+        for hook in entry["hooks"]:
+            if "damage_control.hook" in hook.get("args", []):
+                hook["command"] = interpreter
+    settings.write_text(json.dumps(registered))
     shutil.rmtree(env_dir)
     return fake_env, interpreter
 
 
 def test_the_script_is_copied_out_of_the_package_and_runs_with_no_agentwire(fake_env):  # noqa: F811
-    script = sc.install_breakglass()
-    assert script.parent == sc.BREAKGLASS_DIR and script.stat().st_mode & 0o111
+    script = install.install_breakglass()
+    assert script == install.breakglass_path() and script.stat().st_mode & 0o111
     proc = _breakglass(fake_env, "status")
     assert proc.returncode == 0 and "No damage-control hooks are registered" in proc.stdout
 
 
 def test_status_names_a_dead_interpreter_and_unregister_restores_a_working_session(broken_venv):
     home, interpreter = broken_venv
-    assert len(_our_entries(home)) == len(sc.DAMAGE_CONTROL_MATCHERS)
+    assert len(_our_entries(home)) == len(cc.MATCHERS)
     assert all(h["onFailure"] == "block" for h in _our_entries(home)), "the brick this exists for"
 
     status = _breakglass(home, "status")
@@ -69,14 +77,12 @@ def test_status_names_a_dead_interpreter_and_unregister_restores_a_working_sessi
     assert settings["hooks"]["PreToolUse"] == [FOREIGN], "only our entries go; a hook that is not ours stays"
     backup = home / ".claude" / ("settings.json" + ".breakglass.bak")
     assert backup.is_file() and len(json.loads(backup.read_text())["hooks"]["PreToolUse"]) > 1
-    assert sc.interpreter_state()["state"] in {"unrecorded", "dead"}
 
 
 def test_doctor_flags_the_dead_interpreter_before_the_break_glass_is_needed(broken_venv, capsys):
     from agentwire.doctor_cli import _render_damage_control_section
 
     home, interpreter = broken_venv
-    sc.write_install_record(interpreter)
     issues = _render_damage_control_section()
     out = capsys.readouterr().out
     assert issues >= 1 and interpreter in out and "damage-control-breakglass" in out

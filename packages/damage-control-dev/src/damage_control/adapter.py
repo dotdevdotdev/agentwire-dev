@@ -115,18 +115,23 @@ def notify_unattended_block(engine: Any, subject: str, reason: str, rule_id: Opt
     """Fire-and-forget: tell the owner an unattended action was blocked.
 
     Runs the profile's notifier argv, detached and non-blocking so it never sits on the
-    hook's hot path; failures are swallowed (the block has already fired and is
-    audit-logged regardless). A hook never imports the host, hence the subprocess.
+    hook's hot path, with the event as one JSON object on its stdin:
+    ``{"event": "unattended_block", "reason": ..., "rule_id": ..., "command": ...}``
+    (``command`` is truncated to 500 characters). Failures are swallowed (the block has
+    already fired and is audit-logged regardless). A hook never imports the host, hence the
+    subprocess.
     """
     argv = engine.PROFILE.unattended_block_notifier
     if not argv:
         return
+    event = {"event": "unattended_block", "reason": reason or "", "rule_id": rule_id or "", "command": subject[:500]}
     try:
-        subprocess.Popen(
-            [*argv, "--reason", reason or "", "--rule-id", rule_id or "", "--command", subject[:500]],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+        child = subprocess.Popen(
+            list(argv), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.PIPE,
             start_new_session=True,
         )
+        child.stdin.write(json.dumps(event).encode())
+        child.stdin.close()
     except Exception:
         pass
 

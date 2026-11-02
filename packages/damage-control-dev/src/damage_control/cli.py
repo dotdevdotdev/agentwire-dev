@@ -20,7 +20,6 @@ from typing import List, Optional
 from damage_control import __version__, engine, install, packs
 from damage_control import claude_code as cc
 from damage_control import harness_config as hc
-from damage_control.groups import registry
 from damage_control.profile import ProfileError, load_profile
 
 
@@ -84,7 +83,8 @@ def _load_profile(path: Optional[str]) -> None:
 def _print_findings(findings: List[install.Finding], as_json: bool) -> int:
     code = install.exit_code(findings)
     if as_json:
-        print(json.dumps({"ok": code == 0, "findings": [f._asdict() for f in findings]}, indent=2))
+        print(json.dumps({"ok": code == 0, "version": __version__, "profile": engine.PROFILE.name,
+                          "findings": [f._asdict() for f in findings]}, indent=2))
     else:
         for f in findings:
             print(f.line())
@@ -116,30 +116,20 @@ def _cmd_rules(args: argparse.Namespace) -> int:
 def _cmd_pack_group(args: argparse.Namespace) -> int:
     kind = "pack" if args.command == "packs" else "group"
     policy = engine.policy_file_path()
-    entries = {n: e for n, e in registry().items() if e.kind == kind}
-    state = packs.effective_state(policy)
     if args.action == "list":
-        for name, entry in sorted(entries.items()):
-            print(f"{'on ' if packs.entry_active(entry, state) else 'off'} {name:16} {entry.description}")
+        for row in packs.overview(policy, *engine.overlay_dirs()):
+            if row["kind"] == kind:
+                print(f"{'on ' if row['enabled'] else 'off'} {row['name']:16} {row['description']}")
         return 0
-    if not args.name or args.name not in entries:
-        print(f"unknown {kind} {args.name!r}; choose from: {', '.join(sorted(entries))}", file=sys.stderr)
-        return 2
     if not sys.stdin.isatty():
         print(f"REFUSED: changing damage-control {kind}s is a policy change; run it from your own terminal.", file=sys.stderr)
         return 1
-    entry = entries[args.name]
-    if entry.kernel and args.action == "disable":
-        print(f"REFUSED: {args.name} is a kernel group and cannot be disabled.", file=sys.stderr)
+    try:
+        packs.set_enabled(policy, kind, args.name or "", args.action == "enable")
+    except packs.MembershipError as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
         return 1
-    enable = args.action == "enable"
-    if kind == "pack":
-        current = set(state[packs.PACKS_KEY] or [])
-        packs.write_state(policy, packs=sorted(current | {args.name} if enable else current - {args.name}))
-    else:
-        current = set(state[packs.GROUPS_KEY])
-        packs.write_state(policy, disabled_groups=sorted(current - {args.name} if enable else current | {args.name}))
-    print(f"{args.name}: {'enabled' if enable else 'disabled'}")
+    print(f"{args.name}: {'enabled' if args.action == 'enable' else 'disabled'}")
     return 0
 
 

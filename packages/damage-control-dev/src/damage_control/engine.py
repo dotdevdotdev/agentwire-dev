@@ -26,6 +26,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
+from damage_control import audit
 from damage_control.profile import GENERIC
 
 
@@ -71,9 +72,8 @@ def _rx(pattern: str, flags: int = re.IGNORECASE) -> "re.Pattern[str]":
 #
 # ``install_profile`` rebinds the module globals the rest of this file reads
 # (``PROTECTED_CONTROL_PLANE_PATHS`` …). The last line of the module installs the
-# host's profile: the sibling ``host_profile`` module when this file is imported
-# as a package member, or the ``build_profile`` the hook generator inlined above
-# it. Neither present ⇒ the generic profile.
+# host's profile: the generic profile; a host supplies its own through ``--profile`` (a manifest
+# the hook loads as data).
 
 _KERNEL_PROTECTED_PATHS = (
     "*.damagecontrol.yml",              # project kill switch + rule knobs (any dir)
@@ -119,6 +119,7 @@ def install_profile(profile: Any) -> None:
     global PROFILE, PROTECTED_CONTROL_PLANE_PATHS, PROTECTED_COMMAND_PATTERNS
     global DEFAULT_UNATTENDED_ALLOW, _CANONICAL_HOME, _CONTROL_PLANE_WORDS, _BENIGN_PATH_RE
     PROFILE = profile
+    audit.configure(profile)
     PROTECTED_CONTROL_PLANE_PATHS = [
         f"{profile.config_dir}/{POLICY_FILE_NAME}",  # global kill switch + rule knobs
         f"{profile.config_dir}/{PROFILE_FILE_NAME}",  # the profile the hooks load: protected data, not code
@@ -7779,10 +7780,10 @@ def _grammar(
 
 
 # THIS TABLE LIVES IN CODE, NOT IN A ``rules/*.yaml``, AND THAT IS A
-# DEPLOYMENT REQUIREMENT RATHER THAN A STYLE CHOICE. ``heal_damage_control``
-# treats the two classes differently: hook scripts self-heal when STALE
-# (drift check, then copy), while rules and tooldefs are install-missing-only
-# (``if not target.exists()``), so an EXISTING rule file is never brought
+# DEPLOYMENT REQUIREMENT RATHER THAN A STYLE CHOICE. the retired
+# pre-package ``heal`` treated the two classes differently: hook scripts self-healed when STALE
+# (drift check, then copy), while rules and tooldefs were install-missing-only
+# (``if not target.exists()``), so an EXISTING rule file was never brought
 # forward by any command. A table shipped as YAML would merge green, pass
 # review — and be INERT on day one on every installation that already has the
 # file, with no supported way to update it. #918 deploys because it touched

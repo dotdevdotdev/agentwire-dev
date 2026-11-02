@@ -121,12 +121,9 @@ HOST_LITERAL = re.compile(r"AGENTWIRE_|~/\.agentwire|\.agentwire/")
 def test_no_engine_code_names_an_agentwire_env_var_or_home_path():
     # M3 moved those into the host profile. Docstrings are prose, not behaviour; messages
     # that merely mention the CLI ("agentwire doctor") are a separate, smaller debt.
-    # audit.py is the stated residual: its AGENTWIRE_DIR / AGENTWIRE_SESSION_ID reads become
-    # the profile's `audit` field in M6.
+    # audit.py included since M6: its session/agent env names are the profile's `audit` field.
     offenders = []
     for path in MODULES:
-        if path.name == "audit.py":
-            continue
         tree = ast.parse(path.read_text())
         docstrings = {
             id(n.body[0].value)

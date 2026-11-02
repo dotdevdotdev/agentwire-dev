@@ -6,7 +6,6 @@ scan must answer inside its budget: ask (never allow) when over it.
 """
 
 import signal
-from pathlib import Path
 
 import damage_control.engine as core
 import pytest
@@ -78,44 +77,3 @@ def test_clock_budget_fails_closed_and_cleans_up(cfg, monkeypatch):
     }
     assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
     assert signal.getsignal(signal.SIGALRM) is before
-
-
-def test_registration_sets_the_timeout_on_new_and_existing_entries(tmp_path, monkeypatch):
-    import json
-
-    from agentwire import safety_commands
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    settings_file = tmp_path / ".claude" / "settings.json"
-
-    def timeouts():
-        pre = json.loads(settings_file.read_text())["hooks"]["PreToolUse"]
-        return {h.get("timeout") for entry in pre for h in entry["hooks"]}
-
-    safety_commands.register_damage_control_in_settings()
-    assert timeouts() == {core.HOOK_TIMEOUT_SECONDS}
-    assert core.SCAN_DEADLINE_SECONDS < core.HOOK_TIMEOUT_SECONDS
-    assert safety_commands.damage_control_timeout_drift() == []
-
-    # a pre-#1108 install: owned entries registered with no timeout (plus a foreign hook that must be left alone)
-    settings = json.loads(settings_file.read_text())
-    for entry in settings["hooks"]["PreToolUse"]:
-        for h in entry["hooks"]:
-            h.pop("timeout")
-    settings["hooks"]["PreToolUse"].append(
-        {"matcher": "Bash", "hooks": [{"type": "command", "command": "~/other-hook.sh"}]}
-    )
-    settings_file.write_text(json.dumps(settings))
-    assert set(safety_commands.damage_control_timeout_drift()) == set(safety_commands.DAMAGE_CONTROL_MATCHERS)
-
-    updated = safety_commands.register_damage_control_in_settings()
-    assert updated == len(safety_commands.DAMAGE_CONTROL_MATCHERS)
-    assert safety_commands.damage_control_timeout_drift() == []
-    foreign = [
-        h for e in json.loads(settings_file.read_text())["hooks"]["PreToolUse"] for h in e["hooks"]
-        if h["command"] == "~/other-hook.sh"
-    ]
-    assert foreign == [{"type": "command", "command": "~/other-hook.sh"}]
-    assert safety_commands.register_damage_control_in_settings() == 0
-
-

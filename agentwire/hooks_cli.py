@@ -289,13 +289,13 @@ def hook_matcher(hook_name: str) -> str:
     """The tool-name matcher a managed hook registers with.
 
     The outcome logger exists to label damage-control decisions, so it matches
-    exactly the tools damage control matches (SSOT: ``DAMAGE_CONTROL_MATCHERS``);
+    exactly the tools damage control matches (SSOT: ``damage_control.claude_code.MATCHERS``);
     every other managed hook matches everything.
     """
     if hook_name == "outcome_logger.py":
-        from agentwire.safety_commands import DAMAGE_CONTROL_MATCHERS
+        from damage_control.claude_code import MATCHERS
 
-        return "|".join(DAMAGE_CONTROL_MATCHERS)
+        return "|".join(MATCHERS)
     return ".*"
 
 
@@ -483,36 +483,30 @@ def install_hooks(
         for ev in event:
             register_hook_in_settings(ev, hook_name)
 
-    # Register the damage-control hooks (exec form, recorded interpreter), write the profile
-    # they load and the break-glass script, and retire stale rule copies. This is what makes
+    # Register the damage-control hooks: the package's `init` under AgentWire's profile (exec form,
+    # recorded interpreter, self-tested before anything switches). This is what makes
     # `hooks install` after a rebuild actually switch the machine to the package it just built.
     #
-    # NOT quiet, and NOT silently swallowed: this heal can legitimately decline to act (a hook
+    # NOT quiet, and NOT silently swallowed: the install can legitimately decline to act (a hook
     # set that fails its selftest keeps the old registration), and a decline an operator never
     # sees is the #916/#936 failure mode itself — `hooks install` printing success while the
     # thing it installs stays stale.
     try:
-        from agentwire.safety_commands import heal_damage_control
-        dc = heal_damage_control(quiet=True, allow_foreign=allow_foreign)
+        from agentwire import safety_ext
+
+        failures: list[str] = []
+        outcome = safety_ext.install(allow_foreign=allow_foreign, log=failures.append)
         results["damage-control"] = (
-            "selftest-failed" if dc.get("selftest_failures")
-            else "updated" if dc.get("matchers_added") else "current"
+            "refused-foreign" if outcome.refused
+            else "failed" if outcome.code
+            else "updated" if outcome.changed else "current"
         )
-        if dc.get("selftest_failures"):
-            print(f"  Damage control: selftest FAILED, registration left as it was: "
-                  f"{'; '.join(dc['selftest_failures'])}")
+        if outcome.code:
+            for line in failures:
+                print(f"  Damage control: {line}")
             print("     Details: agentwire doctor")
-        for key, verb in (("rules_kept_edited", "rule"), ("tooldefs_kept_edited", "tooldef")):
-            for name in dc.get(key, []):
-                print(f"  Damage control: your edited {verb} {name} replaces the bundled one")
-        if dc.get("matchers_added"):
-            print(f"  Damage control: registered {dc['matchers_added']} hook entries ({dc['interpreter']})")
-        if dc.get("settings_error"):
-            raise SettingsError(dc["settings_error"])
-    except SettingsError:
-        raise
     except Exception as e:
-        print(f"  Warning: damage-control heal failed: {e}")
+        print(f"  Warning: damage-control install failed: {e}")
 
     # Global skills (currently just /wiki) are agentwire-owned too, and rotted
     # silently because nothing ever resynced the hand-placed copies. Heal them
@@ -533,7 +527,7 @@ def cmd_hooks_install(args) -> int:
     if any(state == "refused-foreign" for state in results.values()):
         # A refusal must never be reportable as a successful install (#936).
         return 1
-    if results.get("damage-control") == "selftest-failed":
+    if results.get("damage-control") == "failed":
         # Likewise a guard that could not be proven (the old registration is still in force).
         return 1
     for hook_name, target_dir, *_ in _managed_hook_files():

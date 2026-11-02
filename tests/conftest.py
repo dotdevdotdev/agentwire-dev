@@ -377,11 +377,11 @@ def _profile_manifest(directory: Path) -> Path:
     from damage_control.groups import registry
     from damage_control.profile import dump_profile
 
-    from agentwire.safety import host_profile
+    from agentwire import safety_ext
 
     every_pack = tuple(sorted(e.name for e in registry().values() if e.kind == "pack"))
     path = directory / "damagecontrol-profile.json"
-    path.write_text(dump_profile(host_profile.build_profile()._replace(default_packs=every_pack)))
+    path.write_text(dump_profile(safety_ext.build_profile()._replace(default_packs=every_pack)))
     return path
 
 
@@ -440,14 +440,16 @@ def mcp_hook():
 
 @pytest.fixture(autouse=True)
 def _stub_hook_probes(request, monkeypatch):
-    """Heal runs the hook selftest (6 real hook launches) and `claude --version` (#1219).
+    """Install runs the hook selftest (6 real hook launches) and `claude --version` (#1219).
 
     Stubbed for every test so the PR gate stays fast and does not depend on the
     developer's Claude install; ``@pytest.mark.real_hook_probe`` keeps the real ones.
     """
     if request.node.get_closest_marker("real_hook_probe"):
         return
-    from agentwire import safety_commands
+    from damage_control import claude_code, install
 
-    monkeypatch.setattr(safety_commands, "damage_control_selftest", lambda interpreter=None: [])
-    monkeypatch.setattr(safety_commands, "claude_code_version", lambda: (2, 1, 316))
+    monkeypatch.setattr(install, "selftest", lambda interpreter, profile=None: [])
+    # The dev venv is an editable install, which the package refuses to write machine-global state from.
+    monkeypatch.setattr(install, "install_source", lambda: "pypi")
+    monkeypatch.setattr(claude_code, "detect_version", lambda: (2, 1, 316))

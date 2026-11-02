@@ -356,7 +356,7 @@ def profile_manifest() -> Path:
     from damage_control.groups import registry
     from damage_control.profile import dump_profile
 
-    from agentwire.safety import host_profile
+    from agentwire import safety_ext
 
     # The recorder's HOME is a nonexistent directory, so there is no policy file and the install
     # is UNDECIDED. Since #1209 M5 an undecided install loads only the host's default packs, so
@@ -364,7 +364,7 @@ def profile_manifest() -> Path:
     # pack -- by making them all the host defaults. The decided path (a ``packs:`` list in the
     # policy) is proven equal by tests/unit/test_dc_policy_packs.py.
     every_pack = tuple(sorted(e.name for e in registry().values() if e.kind == "pack"))
-    profile = host_profile.build_profile()._replace(default_packs=every_pack)
+    profile = safety_ext.build_profile()._replace(default_packs=every_pack)
     path = Path(tempfile.mkdtemp(prefix="golden-profile-")) / "damagecontrol-profile.json"
     path.write_text(dump_profile(profile))
     return path

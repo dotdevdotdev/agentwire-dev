@@ -162,3 +162,58 @@ def write_flag(path: Path, key: str, value: bool) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text("\n".join(lines) + "\n")
     tmp.replace(path)
+
+
+def _file_source(overlay: Optional[Path], name: str) -> str:
+    """``bundled``, or ``overridden`` when the host's overlay holds a file of the same name."""
+    return "overridden" if overlay and any((overlay / name).with_suffix(ext).exists() for ext in (".yaml", ".json")) else "bundled"
+
+
+def overview(policy: Path, rules_overlay: Optional[Path], tooldefs_overlay: Optional[Path]) -> List[Dict[str, Any]]:
+    """One row per registry entry: kind, whether it is on, its files, and whether to suggest it."""
+    import shutil
+
+    state = effective_state(policy)
+    rows = []
+    for e in registry().values():
+        files = [
+            {"section": section, "file": f, "source": _file_source(overlay, f)}
+            for section, overlay in (("rules", rules_overlay), ("tooldefs", tooldefs_overlay))
+            for f in e.files(section)
+        ]
+        found = [b for b in e.binaries if shutil.which(b)]
+        enabled = entry_active(e, state)
+        rows.append({
+            "name": e.name, "kind": e.kind, "description": e.description,
+            "kernel": e.kernel, "enabled": enabled, "files": files,
+            "binaries_found": found,
+            "suggest_enable": e.kind == "pack" and not enabled and bool(found),
+        })
+    return rows
+
+
+class MembershipError(ValueError):
+    """A refused pack/group change; the message says why."""
+
+
+def set_enabled(policy: Path, kind: str, name: str, enable: bool) -> None:
+    """Enable or disable one pack/group in ``policy``. Raises :class:`MembershipError` when refused.
+
+    The caller owns the human-only gate. Writing is refused over an unparseable policy file.
+    """
+    entry = registry().get(name)
+    if entry is None or entry.kind != kind:
+        known = ", ".join(sorted(n for n, x in registry().items() if x.kind == kind))
+        other = f" (that is a {entry.kind})" if entry else ""
+        raise MembershipError(f"unknown {kind} {name!r}{other}; known: {known}")
+    if entry.kernel and not enable:
+        raise MembershipError(f"{name} is part of the always-on kernel and cannot be disabled")
+    state = read_state(policy)
+    if state["broken"]:
+        raise MembershipError(f"refusing to write: {state['broken']}; fix the file by hand first")
+    if kind == "pack":
+        current = set(effective_state(policy)[PACKS_KEY] or [])
+        write_state(policy, packs=sorted(current | {name} if enable else current - {name}))
+    else:
+        current = set(state[GROUPS_KEY])
+        write_state(policy, disabled_groups=sorted(current - {name} if enable else current | {name}))

@@ -570,6 +570,15 @@ def cmd_rebuild(args) -> int:
             print(f"  {line}" if line else "", file=sys.stderr)
         return 1
 
+    # ...and the same question for each package it installs (#1209 M6): the damage-control
+    # engine is a second distribution, so a missing or worktree-resident sibling is the
+    # #936 hazard on the package that actually runs on every tool call.
+    package_refusal = prov.rebuild_package_refusal_lines(project_root)
+    if package_refusal and not getattr(args, "allow_foreign_source", False):
+        for line in package_refusal:
+            print(f"  {line}", file=sys.stderr)
+        return 1
+
     # Git-drift guard: rebuild is otherwise git-blind and will happily reinstall
     # stale code when local main was never pulled after a remote merge. Refuse
     # (unless --force) so the fix happens before the reinstall, not after.

@@ -381,20 +381,20 @@ def _report_delete_recursive(allowed_entries) -> int:
 
 
 def _repair_damage_control() -> None:
-    """``doctor --fix``: re-register the hooks, rewrite the profile and break-glass, retire stale copies.
+    """``doctor --fix``: re-register the hooks and rewrite the profile (the package's ``init``).
 
-    The same heal as ``agentwire hooks install`` and the same provenance guard, runnable from an
+    The same install as ``agentwire hooks install`` and the same provenance guard, runnable from an
     ordinary terminal. It can only help while ``agentwire`` itself runs; when the venv is broken
     too, the way out is the stdlib-only break-glass script (see the dead-interpreter report).
     """
-    from .safety_commands import heal_damage_control
+    from . import safety_ext
 
     print("  Repairing damage control (agentwire hooks install, damage-control part)...")
-    summary = heal_damage_control()
-    if summary["refused"]:
+    outcome = safety_ext.install()
+    if outcome.refused:
         print("  [!!] Refused: run this from the canonically installed agentwire, not a checkout.")
-    elif summary["selftest_failures"]:
-        print("  [!!] The hooks failed their selftest, so the registration was NOT changed.")
+    elif outcome.code:
+        print("  [!!] The install was refused or failed its self-test, so the registration was NOT changed.")
 
 
 def _render_damage_control_section(fix: bool = False) -> int:
@@ -462,69 +462,68 @@ def _render_damage_control_section(fix: bool = False) -> int:
         print(f"  [..] Could not load safety module: {e}")
         return issues
 
-    # Which package is doctor speaking for? Every drift verdict below compares
-    # the machine against `Path(__file__).parent`, so from a worktree checkout
-    # they describe that branch, not the installed tool (#936).
+    # Which packages is doctor speaking for? Every drift verdict below compares the machine
+    # against the RUNNING packages, so from a worktree checkout they describe that branch, not
+    # the installed tool (#936) - and there are two packages to ask about (#1209 M6).
     try:
         from .safety import provenance as prov
-        state, canonical, running = prov.install_provenance()
+        rows = prov.all_provenance()
     except Exception as e:
         print(f"  [..] Could not resolve install provenance: {e}")
     else:
-        if state in prov.REFUSING_STATES:
-            print("  [!!] Running from a NON-CANONICAL package — installs are refused")
-            print(f"       running from : {running}")
-            print(f"       installed at : {canonical or '(none — this is a git worktree)'}")
-            print("       Drift verdicts below compare the machine against THIS checkout.")
-            issues += 1
-        elif state == prov.BOOTSTRAP:
-            print("  [..] No canonical agentwire install found (bootstrap/dev checkout)")
+        for package, state, canonical, running in rows:
+            if state in prov.REFUSING_STATES:
+                print(f"  [!!] Running {package} from a NON-CANONICAL package - installs are refused")
+                print(f"       running from : {running}")
+                print(f"       installed at : {canonical or '(none - this is a git worktree)'}")
+                print("       Drift verdicts below compare the machine against THIS checkout.")
+                issues += 1
+            elif state == prov.BOOTSTRAP:
+                print(f"  [..] No canonical {package} install found (bootstrap/dev checkout)")
 
-    # The hooks are `<interpreter> -I -m damage_control.hook <kind>` (#1209 M4), registered in
-    # exec form with onFailure:block. The failure that matters is no longer a stale script but
-    # a DEAD interpreter: every tool call is then refused, including the ones that repair it.
-    interp = safety_commands.interpreter_state()
-    if interp["state"] == "dead":
-        print(f"  [!!] The hooks' interpreter is DEAD: {interp['interpreter']}")
-        print("       With onFailure:block, Claude Code is refusing EVERY tool call until this is fixed.")
-        print("       From a normal terminal (not through Claude Code):")
-        print(f"         python3 {safety_commands.BREAKGLASS_DIR / 'damage-control-breakglass'} unregister   # unblock; damage control is OFF")
-        print("         uv tool install --force --reinstall agentwire-dev && agentwire hooks install")
-        issues += 1
-    elif interp["state"] == "unrecorded":
-        print("  [!!] Damage-control hooks are not installed (no install record)")
-        print("       Fix: agentwire hooks install   (or: agentwire doctor --fix)")
-        issues += 1
+    # Registration, matchers, timeouts, fail-closed, interpreter, ruleset and the self-test: the
+    # package's own verdict (`damage-control-dev doctor --json`) under AgentWire's profile. A DEAD
+    # interpreter is the failure that matters: with onFailure:block every tool call is refused,
+    # including the ones that repair it.
+    try:
+        from . import safety_ext
+        package_status = safety_ext.status(deep=True)
+    except Exception as e:
+        print(f"  [..] Could not read the damage-control package status: {e}")
     else:
-        print(f"  [ok] Hook interpreter runs and imports damage_control ({interp['interpreter']})")
+        print(f"  [..] damage-control-dev {package_status['version']}, profile '{package_status['profile']}'")
+        for finding in package_status["findings"]:
+            mark = {"ok": "ok", "info": "..", "bad": "!!"}[finding["level"]]
+            print(f"  [{mark}] {finding['message']}")
+            if finding["level"] == "bad":
+                issues += 1
+        if not package_status["ok"]:
+            print("       Fix: agentwire hooks install   (or: agentwire doctor --fix)")
+            print("       Blocked outright? From a normal terminal (not through Claude Code):")
+            print("         python3 ~/.agentwire/bin/damage-control-breakglass unregister   # unblock; damage control is OFF")
 
-    legacy_registered = safety_commands.legacy_registrations()
+    from . import safety_migrate
+
+    legacy_registered = safety_migrate.legacy_registrations(safety_migrate.read_user_settings())
     if legacy_registered:
         print(f"  [!!] Matchers still registered with the pre-package hook scripts: {', '.join(legacy_registered)}")
-        print("       Fix: agentwire hooks install   (or: agentwire doctor --fix)")
+        print("       Fix: agentwire safety migrate")
         issues += 1
-    legacy_files = safety_commands.legacy_hook_files()
+    legacy_files = safety_migrate.legacy_files()
     if legacy_files and not legacy_registered:
         print(f"  [..] Leftover pre-package hook scripts: {', '.join(p.name for p in legacy_files)}")
-        print("       Fix: agentwire hooks install   (removes them once the package hooks are proven)")
-
-    registration_drift = safety_commands.damage_control_registration_drift()
-    if registration_drift:
-        print(f"  [!!] Registered hooks differ from what this install writes (interpreter or arguments): "
-              f"{', '.join(registration_drift)}")
-        print("       Fix: agentwire hooks install   (or: agentwire doctor --fix)")
-        issues += 1
+        print("       Fix: agentwire safety migrate")
 
     try:
         from damage_control.profile import dump_profile
 
-        from .safety import host_profile
-        manifest = host_profile.manifest_path()
+        from . import safety_ext
+        manifest = safety_ext.manifest_path()
         if not manifest.exists():
             print(f"  [!!] Damage-control profile missing: {manifest}")
             print("       Every hook blocks without it. Fix: agentwire hooks install")
             issues += 1
-        elif manifest.read_text() != dump_profile(host_profile.build_profile()):
+        elif manifest.read_text() != dump_profile(safety_ext.build_profile()):
             print(f"  [!!] Damage-control profile differs from this install's: {manifest}")
             print("       Fix: agentwire hooks install")
             issues += 1
@@ -533,19 +532,13 @@ def _render_damage_control_section(fix: bool = False) -> int:
     except Exception as e:
         print(f"  [..] Could not check the damage-control profile: {e}")
 
-    breakglass = safety_commands.BREAKGLASS_DIR / "damage-control-breakglass"
-    if breakglass.exists():
-        print(f"  [ok] Break-glass in place: python3 {breakglass} unregister")
-    else:
-        print("  [!!] Break-glass script missing (the way out when the venv breaks)")
-        print("       Fix: agentwire hooks install")
-        issues += 1
-
     # Rules and tooldefs ship inside the package; what lives on the machine is the host's
     # own overlay. A file there REPLACES the bundled one of the same name, so name each.
-    for section, stems in safety_commands.shadowed_bundled_files().items():
-        if stems:
-            print(f"  [..] Your {section} overlay replaces bundled files: {', '.join(stems)}")
+    for section, groups in safety_migrate.classify().items():
+        named = groups["pristine"] + groups["edited"]
+        if named:
+            print(f"  [..] Your {section} overlay replaces bundled files: {', '.join(named)}")
+            print("       Fix: agentwire safety migrate   (removes pristine copies, keeps your edits)")
 
     # Rule groups and packs (#1141): informational only, never scored — a
     # disabled pack is a choice, not drift.
@@ -611,50 +604,6 @@ def _render_damage_control_section(fix: bool = False) -> int:
         issues += 1
     else:
         print("  [ok] Every rule, tooldef and policy file parses")
-
-    # Matcher presence in ~/.claude/settings.json.
-    missing_matchers = safety_commands.missing_damage_control_matchers()
-    if missing_matchers:
-        print(f"  [!!] PreToolUse matchers not registered: {', '.join(missing_matchers)}")
-        print("       Fix: agentwire safety install --yes")
-        issues += 1
-    else:
-        print("  [ok] PreToolUse damage-control matchers registered")
-
-    # A hook that outlives its timeout is killed and the call RUNS (#1108).
-    timeout_drift = safety_commands.damage_control_timeout_drift()
-    if timeout_drift:
-        print(f"  [!!] Damage-control hooks registered without timeout {safety_commands.HOOK_TIMEOUT_SECONDS}s: "
-              f"{', '.join(timeout_drift)}")
-        print("       Fix: agentwire hooks install")
-        issues += 1
-    else:
-        print("  [ok] Damage-control hook timeouts match the scan budget")
-
-    # Fail-open vs fail-closed (#1219): Claude Code runs the tool call anyway when
-    # a hook crashes, times out or cannot start, unless the registration says
-    # onFailure:block (Claude Code >= 2.1.295).
-    cc_version = safety_commands.claude_code_version()
-    cc_text = safety_commands._version_text(cc_version)
-    supported = safety_commands.onfailure_supported(cc_version)
-    if supported is False:
-        print(f"  [!!] Claude Code {cc_text} predates onFailure:block (>= "
-              f"{safety_commands._version_text(safety_commands.ONFAILURE_MIN_CLAUDE_VERSION)}): "
-              "damage-control FAILS OPEN on a hook crash, timeout or missing interpreter")
-        print("       Fix: upgrade Claude Code")
-        issues += 1
-    elif supported is None:
-        print("  [..] Claude Code version unknown (`claude --version` failed); cannot confirm onFailure support")
-    else:
-        print(f"  [ok] Claude Code {cc_text} supports onFailure:block")
-    onfailure_drift = safety_commands.damage_control_onfailure_drift()
-    if onfailure_drift:
-        print(f"  [!!] Damage-control hooks registered WITHOUT onFailure:block (fail open): "
-              f"{', '.join(onfailure_drift)}")
-        print("       Fix: agentwire hooks install")
-        issues += 1
-    else:
-        print("  [ok] Damage-control hooks fail closed (onFailure:block)")
 
     # Built-in unattended grants that name no live rule (#914 / #916). These
     # read as working policy and are inert — the whole `DEFAULT_UNATTENDED_ALLOW`

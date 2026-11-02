@@ -1,5 +1,5 @@
 {
-  "_comment": "sha256 of every version of each bundled rule/tooldef file that has ever shipped on the main line. Used by heal_damage_control to tell a pristine older release (safe to update) from a hand-customized file (never touched). Regenerate with scripts/gen_rule_baselines.py (#916).",
+  "_comment": "sha256 of every version of each bundled rule/tooldef file that has ever shipped on the main line. Used once, by `agentwire safety migrate`, to tell a pristine older release (safe to delete) from a hand-customized file (kept). Regenerate with scripts/gen_rule_baselines.py (#916).",
   "rules": {
     "agentwire-control-plane.yaml": [
       "f6c7d559058cfe8a18e682efcab9941df5070cb85577dd9b6865580b70c00160"

@@ -330,7 +330,7 @@ def test_secrets_stay_blocked_wherever_home_is(cfg, monkeypatch):
 def test_every_content_reading_tool_is_policed():
     """Each native content-reading tool must route to the read-tool hook, or a
     secret could be exfiltrated without traversing damage control."""
-    from agentwire.safety_commands import DAMAGE_CONTROL_MATCHERS
+    from damage_control.claude_code import MATCHERS as DAMAGE_CONTROL_MATCHERS
 
     for tool in ("Read", "Grep", "Glob"):
         assert DAMAGE_CONTROL_MATCHERS.get(tool) == "read", (
