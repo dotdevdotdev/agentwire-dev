@@ -24,9 +24,11 @@ classifiers = [
     "Topic :: Software Development :: User Interfaces",
 ]
 dependencies = [
-    # The damage-control engine (#1209 M4): a workspace member under packages/, so one
-    # `uv sync` / `uv tool install .` installs both; plain `pip install .` from a checkout must also name ./packages/damage-control-dev. Hooks run `python -I -m damage_control.hook`.
-    "damage-control-dev",
+    # The damage-control engine (#1209), published on PyPI as damage-control-dev. A checkout
+    # builds it from the workspace member under packages/ (see [tool.uv.sources]); a wheel
+    # resolves this range from PyPI. tests/unit/test_damage_control_pin.py keeps the two
+    # in step. Hooks run `python -I -m damage_control.hook`.
+    "damage-control-dev>=0.1.0,<0.2",
     "aiohttp>=3.13.4",  # >=3.13.4 clears CVE-2026-34515 + CVE-2026-34513 (portal-facing)
     "aiohttp-jinja2>=1.6",
     "jinja2>=3.1.0",
@@ -84,6 +86,7 @@ dev = [
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
     "jsonschema>=4.0",
+    "packaging>=23.0",
 ]
 # STT shim server dependencies. Moonshine (the default engine) ships in the
 # base install — see dependencies[] above — so the standalone `agentwire stt
@@ -190,7 +193,7 @@ exclude = [
 [tool.hatch.version]
 path = "agentwire/__init__.py"
 
-# damage-control-dev lives in this repo until it gets its own (#1209 M7/M8).
+# Checkout builds use the workspace copy of damage-control-dev; published wheels use PyPI.
 [tool.uv.workspace]
 members = ["packages/*"]
 
