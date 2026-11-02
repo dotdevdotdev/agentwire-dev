@@ -1701,7 +1701,8 @@ def resolve_sources(safety: Optional[Dict[str, Any]] = None) -> RuleSources:
     The bundle is immutable and always the base: the host's overlay replaces a bundled file
     of the same name or adds its own, and never drops the rest. Groups and packs the policy
     switched off are skipped here, at load time, not by removing files; an absent ``packs:``
-    key means undecided and loads every pack (see :func:`damage_control.groups.skipped_stems`).
+    key means undecided and loads only the host's default packs (an UNREADABLE policy loads every pack)
+    (see :func:`damage_control.groups.skipped_stems`).
     """
     from damage_control import groups
 
@@ -2900,6 +2901,8 @@ def load_safety_config(
                                   "are not applied (kill switch stays on, nothing is disabled)")
             with open(global_config_path, "r") as f:
                 gdata = yaml.safe_load(f) or {}
+            if not isinstance(gdata, dict):
+                raise ValueError("the policy file is not a mapping")
             genabled = _absorb(gdata)
             if genabled is not None:
                 enabled = genabled
@@ -2910,6 +2913,11 @@ def load_safety_config(
                     disabled_groups = [str(g) for g in gdata["disabled_groups"]]
     except Exception as exc:
         _record_load_failure(global_config_path, exc, None)
+        # An UNREADABLE policy is not an undecided one: the packs this machine decided are
+        # unknowable, so fail toward protection and load all of them (doctor flags the file).
+        from damage_control import groups
+
+        packs = [e.name for e in groups.entries() if e.kind == "pack"]
 
     if cwd is None:
         cwd = safe_cwd()
@@ -2940,7 +2948,7 @@ def load_safety_config(
         "disabled_rules": sorted(set(disabled_rules)),
         "unattended_allow": sorted(set(unattended_allow)),
         # Pack/group state (#1141). ``packs`` None = the key is absent: undecided, which
-        # loads every bundled pack (the most protective reading; see ``enabled_rule_files``).
+        # loads the default groups and only the host's default packs. Unreadable = all packs.
         "packs": packs,
         "disabled_groups": sorted(set(disabled_groups)),
     }

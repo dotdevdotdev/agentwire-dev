@@ -368,13 +368,20 @@ import agentwire.safety  # noqa: E402,F401  (activates AgentWire's damage-contro
 
 
 def _profile_manifest(directory: Path) -> Path:
-    """AgentWire's profile as a hook loads it: a JSON file named on the command line."""
+    """AgentWire's profile as a hook loads it: a JSON file named on the command line.
+
+    The test HOMEs have no policy file, i.e. an UNDECIDED install, which since #1209 M5 loads only
+    the host's default packs. These tests model a machine that has decided to run every pack (the
+    owner's), so every pack is made a host default; same as ``scripts/golden_snapshot.py``.
+    """
+    from damage_control.groups import registry
     from damage_control.profile import dump_profile
 
     from agentwire.safety import host_profile
 
+    every_pack = tuple(sorted(e.name for e in registry().values() if e.kind == "pack"))
     path = directory / "damagecontrol-profile.json"
-    path.write_text(dump_profile(host_profile.build_profile()))
+    path.write_text(dump_profile(host_profile.build_profile()._replace(default_packs=every_pack)))
     return path
 
 

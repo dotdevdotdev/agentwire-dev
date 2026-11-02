@@ -16,6 +16,9 @@ classifiers = [
 # bundled rules ship as JSON, so a hook with no PyYAML still enforces every bundled rule.
 dependencies = ["pyyaml>=6.0"]
 
+[project.scripts]
+damage-control-dev = "damage_control.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

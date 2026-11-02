@@ -1586,7 +1586,7 @@ Damage control used to install every bundled rule and tooldef everywhere, so an 
 
 **Surfaces.** `doctor` prints enabled packs, available packs, vendor CLIs found with the pack off, and opted-out groups — `[..]`, informational, never scored. `agentwire init` lists packs and suggests those whose CLI is on `PATH`.
 
-**An unparseable policy file is read protectively and never written.** `read_state` catches `yaml.YAMLError`; a broken file means every pack/group is on, nothing is removed, no migration is written over it, `packs|groups enable|disable` refuse, and `doctor` reports `[!!] ... does not parse`.
+**An unparseable policy file fails toward protection and is never written (#1209 M5).** `read_state` catches `yaml.YAMLError`; a broken file means every group AND every pack is on (the hook cannot know which packs the owner decided, and a typo must not drop them). This differs deliberately from an *absent* `packs:` key, which is genuinely undecided and loads the default groups plus only the host's default packs (epic section 4.5 wording: a failure to read the policy never means "everything off"; here it means "everything on"). No migration is written over it, `packs|groups enable|disable` refuse, and `doctor` reports `[!!] ... does not parse`.
 
 **Disabled group vs typo.** `DEFAULT_UNATTENDED_ALLOW` ids (`git.*`, `gh.*`, `uv.*`, `outbound.*`) stop existing when their group is disabled. `doctor` and `tasks review` say "group 'git' disabled", never "names no rule / typo" (`lint.split_missing_ids`).
 
@@ -1826,8 +1826,19 @@ venv, registers against it, deletes it and drives the script with another interp
 
 **Rules.** Authored as YAML, committed beside generated JSON (`build_rules_json.py`; drift fails
 `test_rules_json_in_sync.py`). The hook reads JSON. Packs and groups are read from `damagecontrol.yml` on
-every call, so `packs enable|disable` needs no heal; an absent `packs:` key means undecided and loads every
-pack (M5 revisits that default).
+every call, so `packs enable|disable` needs no heal; an absent `packs:` key means undecided and loads the default groups plus only the host's `default_packs`
+(none for the generic profile; AgentWire's is `tmux`). #1209 M5 flipped this from "every pack"; a machine that has
+decided its packs is unaffected.
+
+**Installer (M5).** `damage-control-dev init|status|doctor|uninstall` (module `damage_control.cli`) registers the
+exec-form hooks through `harness_config.edit_json_config` (parse, structural merge keyed on the package module name,
+atomic write, re-read verify, concurrent-writer detection; unparseable input is refused byte-identical). `init`
+refuses below Claude Code 2.1.295 (no `onFailure`), a downgrade, a dev/ephemeral source without `--allow-dev-source`,
+and entries another installer owns (a different `--profile`); it self-tests the registered command before writing and
+records `<config>/state/install.json` (interpreter, ruleset digest by stable id, per-scope `written_sha256` so
+`uninstall` restores the original bytes only while the file is still exactly what init wrote). `init --refresh` prints
+the ruleset diff by id; a removed rule, a lowered tier, a new allow-path or a new default grant is marked `!!`.
+State lives under the profile's config dir (`~/.damage-control/state/` for the generic profile; `$DAMAGE_CONTROL_HOME/state/` when set), not XDG. agentwire's own `hooks install` is unchanged until M6.
 
 ## Troubleshooting
 
