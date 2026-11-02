@@ -25,7 +25,7 @@ classifiers = [
 ]
 dependencies = [
     # The damage-control engine (#1209 M4): a workspace member under packages/, so one
-    # `uv sync` / `uv tool install .` installs both. Hooks run `python -I -m damage_control.hook`.
+    # `uv sync` / `uv tool install .` installs both; plain `pip install .` from a checkout must also name ./packages/damage-control-dev. Hooks run `python -I -m damage_control.hook`.
     "damage-control-dev",
     "aiohttp>=3.13.4",  # >=3.13.4 clears CVE-2026-34515 + CVE-2026-34513 (portal-facing)
     "aiohttp-jinja2>=1.6",

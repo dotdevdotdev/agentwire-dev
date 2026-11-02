@@ -40,7 +40,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install base package
-        run: pip install .
+        run: pip install ./packages/damage-control-dev .
       - name: Import kokoro engine without torch
         # Windows is scoped to this import only — the portal/CLI use
         # fcntl/pty and don't support Windows; the kokoro path must still
@@ -91,7 +91,7 @@ jobs:
           path: ~/.cache/kokoro_onnx
           key: kokoro-model-files-v1.0-fp16
       - name: Install base package
-        run: pip install .
+        run: pip install ./packages/damage-control-dev .
       - name: Synthesize a sentence
         run: |
           python - <<'EOF'

@@ -37,21 +37,24 @@ from .roles import inject_soul, load_roles, resolve_roles
 
 
 def _clean_uv_cache_for_agentwire() -> None:
-    """Drop only agentwire-dev's entries from the uv cache.
+    """Drop only agentwire-dev's and damage-control-dev's entries from the uv cache.
 
     The uv cache (~/.cache/uv) is shared by every uv tool and project on the
     machine — never rmtree it wholesale. `uv cache clean <package>` evicts just
-    this package's wheels/sdists so the next install rebuilds from source.
+    that package's wheels/sdists so the next install rebuilds from source.
+    damage-control-dev is the workspace sibling the hooks run from, so a stale
+    cached wheel of it would ship old rules just as a stale agentwire wheel would.
     """
-    result = subprocess.run(
-        ["uv", "cache", "clean", "agentwire-dev"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        print("  ✓ Cleared agentwire-dev entries from uv cache")
-    else:
-        print(f"  - uv cache clean skipped: {result.stderr.strip() or 'unknown error'}")
+    for package in ("agentwire-dev", "damage-control-dev"):
+        result = subprocess.run(
+            ["uv", "cache", "clean", package],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print(f"  ✓ Cleared {package} entries from uv cache")
+        else:
+            print(f"  - uv cache clean {package} skipped: {result.stderr.strip() or 'unknown error'}")
 
 
 # === Dev Command ===
