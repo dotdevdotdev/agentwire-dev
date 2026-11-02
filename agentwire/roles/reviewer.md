@@ -27,3 +27,5 @@ When your review reaches a conclusion, `notify_parent` with a structured verdict
 - **blocked** — you can't finish the review (missing context, can't reproduce, PR is in a broken state) — say what's blocking you
 
 Silence is not a verdict. If you're still working, say so before you go idle.
+
+**No report path?** If `notify-parent` (or `notify_parent`) reports no target, you were spawned without a parent. State that explicitly as the LAST line of your final message and stop — do not guess a session name, and never `msg send --to parent` (there is no session by that name; it dead-letters and emails the owner).

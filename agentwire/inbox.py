@@ -65,6 +65,13 @@ PASSIVE_KINDS = ("ingest",)
 # Broadcast token: deliver to every live agent session except the sender.
 BROADCAST_TOKEN = "@all"
 
+# Words a role prompt or a worker's own phrasing uses for "the session that
+# spawned me". They are never session names; sent to one that isn't actually
+# running, the message just dead-letters ~5 min later (#1259). Deliberately NOT
+# the kind words (orchestrator/worker/reviewer): `agentwire orchestrator`
+# names a session "orchestrator" by default, so those are real addresses.
+ROLE_WORDS = frozenset({"parent", "creator"})
+
 # After this many failed/deferred delivery attempts a message is dead-lettered
 # rather than retried forever (40 * 60s watchdog tick ≈ 40 min of a session
 # being permanently busy/typed-in).
@@ -709,6 +716,13 @@ def resolve_targets(to: str, sender: "str | None") -> list[str]:
             s for s in _live_agent_sessions()
             if s != sender and not is_service_session(s)
         ]
+    if to in ROLE_WORDS and to not in (live_sessions() or set()):
+        raise ValueError(
+            f"{to!r} is a role word, not a session name — no such session is "
+            "running, so the message would dead-letter. Address a real session; "
+            "if you have no parent to report to, state that explicitly as the "
+            "LAST line of your final message and stop. Do not guess a session name."
+        )
     return [_validate_session(to)]
 
 
