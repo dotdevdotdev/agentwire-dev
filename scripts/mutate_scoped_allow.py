@@ -23,8 +23,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from damage_control import engine
+
 REPO = Path(__file__).resolve().parent.parent
-CORE = REPO / "packages" / "damage-control-dev" / "src" / "damage_control" / "engine.py"
+# The engine is the installed damage-control-dev. Mutating it in place is only safe in this
+# checkout's own venv (a shared tool install would stay corrupted if the run died), so main()
+# refuses anything else. To mutation-test the engine itself, do it in the engine's repo.
+CORE = Path(engine.__file__)
 TESTS = "tests/unit/test_unattended_scoped_allow.py"
 
 
@@ -186,6 +191,9 @@ def main() -> int:
             print(f"{m.name}: {m.property_broken}")
         return 0
 
+    if not CORE.is_relative_to(REPO / ".venv"):
+        print(f"refusing to mutate {CORE}: not inside {REPO / '.venv'} (run via `uv run` in this checkout)")
+        return 2
     original = CORE.read_text()
     code, output = run_tests()
     if code != 0:

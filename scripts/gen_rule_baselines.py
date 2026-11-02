@@ -42,35 +42,21 @@ from typing import Dict, List
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = REPO_ROOT / "agentwire" / "safety" / "rule_baselines.json"
 
-PACKAGE = Path("packages/damage-control-dev/src/damage_control")
+SECTIONS = ("rules", "tooldefs")
 
-# (manifest section, repo-relative dir)
-SECTIONS = {
-    "rules": [
-        PACKAGE / "rules",
-        Path("agentwire/safety/rules"),
-    ],
-    "tooldefs": [PACKAGE / "tooldefs"],
-}
+# Only AgentWire's own rules layer is regenerated. Every other manifest entry (the engine's
+# files) is FROZEN at the last release that vendored them: since #1209 M8 the engine ships
+# from the damage-control-dev wheel and nothing copies its rules into ~/.agentwire, so
+# `safety migrate` only meets copies written by pre-package releases. Those hashes came from
+# git history and are carried over unchanged from the existing manifest.
+OWN_RULES_DIR = Path("agentwire/safety/rules")
 
-# Where these files lived before the package (#1209 M4). `git log --follow` loses a rename
-# that also edited the file, so every pre-move location is hashed explicitly: a pristine
-# older install of a moved file must still read as "outdated", not "unknown".
-LEGACY_DIRS = {
-    "rules": [
-        Path("agentwire/hooks/damage-control/rules"),
-        Path("agentwire/hooks/damage-control/agentwire-rules"),
-    ],
-    "tooldefs": [Path("agentwire/tooldefs")],
-}
-
-# Files removed from the bundle. Their history stays in the manifest so doctor can
-# tell a pristine leftover copy ("shipped once, yours now") from a hand-written
-# file of the same name. Heal never deletes either (#1137).
-RETIRED = {
-    "rules": ["gws.yaml"],
-    "tooldefs": ["gws.yaml"],
-}
+# Where AgentWire's own rules lived before the package (#1209 M4). `git log --follow` loses a
+# rename that also edited the file, so the pre-move location is hashed explicitly.
+LEGACY_OWN_DIRS = (
+    Path("agentwire/hooks/damage-control/rules"),
+    Path("agentwire/hooks/damage-control/agentwire-rules"),
+)
 
 HEADER = (
     "sha256 of every version of each bundled rule/tooldef file that has ever "
@@ -112,24 +98,24 @@ def _historical_hashes(relpath: str) -> List[str]:
 
 
 def build_manifest() -> Dict[str, object]:
+    existing = json.loads(MANIFEST_PATH.read_text())
+    own = sorted((REPO_ROOT / OWN_RULES_DIR).glob("*.yaml"))
+    own_names = {p.name for p in own}
     manifest: Dict[str, object] = {"_comment": HEADER}
-    for section, reldirs in SECTIONS.items():
-        entries: Dict[str, List[str]] = {}
-        for reldir in reldirs:
-            for src in sorted((REPO_ROOT / reldir).glob("*.yaml")):
-                if src.name in entries:
-                    raise SystemExit(f"{section}/{src.name} exists in two source dirs (the overlay is flat)")
-                hashes = set(_historical_hashes(str(reldir / src.name)))
-                for old in LEGACY_DIRS[section]:
+    for section in SECTIONS:
+        entries: Dict[str, List[str]] = {
+            name: hashes for name, hashes in existing[section].items() if name not in own_names
+        }
+        if section == "rules":
+            for src in own:
+                hashes = set(_historical_hashes(str(OWN_RULES_DIR / src.name)))
+                for old in LEGACY_OWN_DIRS:
                     hashes.update(_historical_hashes(str(old / src.name)))
                 # The working-tree content always counts as shipped: this script is
                 # run in the same commit that changes a rule, before that content
                 # exists in history.
                 hashes.add(hashlib.sha256(src.read_bytes()).hexdigest())
                 entries[src.name] = sorted(hashes)
-        for name in RETIRED.get(section, []):
-            if name not in entries:
-                entries[name] = sorted({h for d in LEGACY_DIRS[section] for h in _historical_hashes(str(d / name))})
         manifest[section] = dict(sorted(entries.items()))
     return manifest
 

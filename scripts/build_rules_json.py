@@ -1,17 +1,19 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""Build the per-file JSON form of the bundled rule and tooldef YAML sources.
+"""Build the per-file JSON form of AgentWire's own damage-control rules layer.
 
 YAML stays the authored form; the hook reads the JSON, so a hook process never imports
-PyYAML (and never pays ~45 ms to parse 26 files) just to learn its own rules. The JSON is
-committed next to its source so an editable checkout, an sdist and a wheel all carry it with
-no build hook, and ``--check`` (run by the test suite) fails loudly if the two drift.
+PyYAML just to learn its rules. The JSON is committed beside its source, and ``--check``
+(run by the test suite and CI) fails loudly if the two drift.
 
-    build_rules_json.py DIR [DIR ...]           # write DIR/<stem>.json for every DIR/<stem>.yaml
-    build_rules_json.py --check DIR [DIR ...]   # exit 1 if any JSON is missing, stale or orphaned
+The generic rules ship from the damage-control-dev wheel with their own JSON (checked in that
+repo); this tool covers only ``agentwire/safety/rules`` (#1209 M8).
+
+    scripts/build_rules_json.py               # write agentwire/safety/rules/<stem>.json
+    scripts/build_rules_json.py --check       # exit 1 if any JSON is missing, stale or orphaned
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ import json
 import sys
 from pathlib import Path
 from typing import Any, List
+
+RULES_DIR = Path(__file__).resolve().parent.parent / "agentwire" / "safety" / "rules"
 
 
 def render(yaml_path: Path) -> str:
@@ -56,14 +60,13 @@ def sync(directories: List[Path], check: bool) -> List[str]:
 
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("dirs", nargs="+", type=Path)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
-    problems = sync(args.dirs, args.check)
+    problems = sync([RULES_DIR], args.check)
     for problem in problems:
         print(problem, file=sys.stderr if args.check else sys.stdout)
     if args.check and problems:
-        print("run: packages/damage-control-dev/tools/build_rules_json.py <dirs>", file=sys.stderr)
+        print("run: scripts/build_rules_json.py", file=sys.stderr)
         return 1
     return 0
 

@@ -8,8 +8,7 @@ change that merge. This script prints it in a canonical, order-insensitive form
 dropped because it is *where* an entry lives, not *what* it does, and ``reason`` is
 prose shown to a human, not a decision).
 
-    scripts/effective_rules.py                 # bundled rules in this tree
-    scripts/effective_rules.py --ref <git>     # the bundled rules as of a git ref
+    scripts/effective_rules.py                 # the INSTALLED engine's rules + agentwire/safety/rules
     scripts/effective_rules.py --check         # exit 1 if differs from the golden
     scripts/effective_rules.py --write         # re-record corpus/golden/effective_rules.json
 
@@ -20,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -28,13 +26,7 @@ from typing import Any, Dict, List
 
 REPO = Path(__file__).resolve().parent.parent
 GOLDEN = REPO / "corpus" / "golden" / "effective_rules.json"
-PACKAGE = "packages/damage-control-dev/src/damage_control"
-# Two layouts, because `--ref` reads history: the package layout (#1209 M4) and the one before it.
-LAYOUTS = (
-    {"rules": (f"{PACKAGE}/rules", "agentwire/safety/rules"), "tooldefs": f"{PACKAGE}/tooldefs"},
-    {"rules": ("agentwire/hooks/damage-control/rules", "agentwire/hooks/damage-control/agentwire-rules"),
-     "tooldefs": "agentwire/tooldefs"},
-)
+RULES_LAYER = REPO / "agentwire" / "safety" / "rules"
 
 
 def canonical(merged: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -51,57 +43,28 @@ def canonical(merged: Dict[str, Any]) -> Dict[str, List[str]]:
     return dict(sorted(out.items()))
 
 
-def load(rules_dirs: List[Path], tooldefs: Path) -> Dict[str, List[str]]:
-    sys.path.insert(0, str(REPO))
-    from damage_control.engine import load_config
+def current() -> Dict[str, List[str]]:
+    """The installed engine's bundled rules + tooldefs, merged with AgentWire's rules layer."""
+    from damage_control.engine import bundled_rules_dir, bundled_tooldefs_dir, load_config
 
     with tempfile.TemporaryDirectory() as tmp:
         flat = Path(tmp)
-        for d in rules_dirs:
+        for d in (bundled_rules_dir(), RULES_LAYER):
             for f in d.glob("*.yaml"):
                 (flat / f.name).write_bytes(f.read_bytes())
-        merged = load_config(flat, tooldefs)
+        merged = load_config(flat, bundled_tooldefs_dir())
     bad = merged.get("_parse_failures") or merged.get("_duplicate_rule_ids")
     if bad:
         raise SystemExit(f"rule set does not load cleanly: {bad}")
     return canonical(merged)
 
 
-def _load_root(root: Path) -> Dict[str, List[str]]:
-    """Load whichever layout ``root`` holds (a dir that does not exist is simply absent)."""
-    for layout in LAYOUTS:
-        dirs = [root / d for d in layout["rules"] if (root / d).is_dir()]
-        if dirs:
-            return load(dirs, root / layout["tooldefs"])
-    raise SystemExit(f"no rule directories found under {root}")
-
-
-def _extract(ref: str, rel: str, dest: str) -> None:
-    """Unpack ``rel`` as of ``ref`` into ``dest``; a path that does not exist at the ref is simply absent."""
-    archive = subprocess.run(["git", "-C", str(REPO), "archive", ref, rel], capture_output=True)
-    if archive.returncode == 0:
-        subprocess.run(["tar", "-x", "-C", dest], input=archive.stdout, check=True)
-
-
-def at_ref(ref: str) -> Dict[str, List[str]]:
-    with tempfile.TemporaryDirectory() as tmp:
-        for layout in LAYOUTS:
-            for rel in (*layout["rules"], layout["tooldefs"]):
-                _extract(ref, rel, tmp)
-        return _load_root(Path(tmp))
-
-
-def current() -> Dict[str, List[str]]:
-    return _load_root(REPO)
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--ref")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--write", action="store_true")
     args = ap.parse_args()
-    data = at_ref(args.ref) if args.ref else current()
+    data = current()
     text = json.dumps(data, indent=1, sort_keys=True) + "\n"
     if args.write:
         GOLDEN.write_text(text)

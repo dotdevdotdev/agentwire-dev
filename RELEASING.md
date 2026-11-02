@@ -4,14 +4,18 @@ This project publishes the CLI and web app to PyPI as `agentwire-dev`. Packaging
 
 Every release does **both** a PyPI publish and a GitHub release. The **GitHub release is the changelog** — there is no `CHANGELOG.md`; release notes are built from the commits since the last tag (step 5).
 
-## Release order (two packages)
+## The engine is a separate project (single source)
 
-`agentwire-dev` depends on `damage-control-dev` (its own PyPI project, engine source in `packages/damage-control-dev/`). `pyproject.toml` pins it to a range — currently `damage-control-dev>=0.1.3,<0.2` — and `tests/unit/test_damage_control_pin.py` fails if the workspace version leaves that range. A checkout resolves the engine from the workspace; a PyPI install resolves it from PyPI. Order matters, because an `agentwire-dev` that names a version PyPI doesn't have yet is uninstallable:
+The damage-control engine has exactly one source: the `damage-control-dev` repo (<https://github.com/dotdevdotdev/damage-control-dev>), published on PyPI. `agentwire-dev` only *consumes* it through the range in `pyproject.toml` (currently `damage-control-dev>=0.1.3,<0.2`); a checkout and a PyPI install both resolve it from PyPI. There is no copy of the engine in this repo and nothing to release from here. `tests/unit/test_damage_control_pin.py` checks that the declared floor/ceiling parse and that the installed engine satisfies them.
 
-1. **Engine changed?** Bump `__version__` in `packages/damage-control-dev/src/damage_control/__init__.py`, merge, then build and publish it **first** (commands in step 3). Skip entirely when the engine didn't change — the existing pin keeps resolving.
-2. **Pin still admits the engine?** A patch/minor bump inside the range needs no `agentwire-dev` change. A bump outside it (e.g. `0.2.0`) requires widening the range in `pyproject.toml` (`>=0.2.0,<0.3`) in the agentwire PR — the pin test enforces this.
-3. **Verify against the published wheel** before releasing agentwire: in a scratch venv, install the agentwire wheel plus `damage-control-dev=={DC_VERSION}` from PyPI (not the workspace), then run `scripts/golden_snapshot.py check`, the fast suite, `agentwire doctor` and a hook subprocess smoke under a temp `HOME`. Diff the PyPI wheel's tree against `uv build --package damage-control-dev --wheel` at HEAD; code and JSON rules must be identical.
+To ship an engine change:
+
+1. **Land it in the damage-control-dev repo**, tag and release it there (its own release flow). Do not tag or release from this repo.
+2. **Raise the floor here** in a normal agentwire PR: bump the `>=` in `pyproject.toml` (and the `<` ceiling too if the engine crossed it, e.g. `>=0.2.0,<0.3`), run `uv lock`, and re-run `scripts/golden_snapshot.py check` and `scripts/effective_rules.py --check` — re-record the golden only if the behavior change is intended, in that same PR.
+3. **Verify against the published wheel** before releasing agentwire: in a scratch venv, install the agentwire wheel (it pulls the engine from PyPI), then run the fast suite, `agentwire doctor` and a hook subprocess smoke under a temp `HOME`.
 4. **Then** bump and publish `agentwire-dev` (steps below), then the GitHub release.
+
+An `agentwire-dev` whose floor names an engine version PyPI doesn't have yet is uninstallable, so step 1 always completes (published) before step 2 merges.
 
 ## Steps
 
@@ -34,13 +38,6 @@ uv build
 ```
 
 Produces `dist/agentwire_dev-{VERSION}-py3-none-any.whl` and `dist/agentwire_dev-{VERSION}.tar.gz`.
-
-When the engine's version is new (see [Release order](#release-order-two-packages)), build and publish `damage-control-dev` **before** agentwire. Its version lives in `packages/damage-control-dev/src/damage_control/__init__.py`:
-
-```bash
-uv build --package damage-control-dev     # -> dist/damage_control_dev-{DC_VERSION}*
-uv publish --token "$(grep '^PYPI_TOKEN=' ~/.agentwire/.env | cut -d= -f2-)" dist/damage_control_dev-{DC_VERSION}*
-```
 
 Optional sanity check — confirm `agentwire/templates/` and `agentwire/static/` are bundled:
 

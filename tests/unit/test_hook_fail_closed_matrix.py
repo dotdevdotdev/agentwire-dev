@@ -24,10 +24,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import damage_control
 import pytest
 from damage_control.engine import MAX_HOOK_INPUT_CHARS
 
-PACKAGE_SRC = Path(__file__).resolve().parents[2] / "packages" / "damage-control-dev" / "src"
+PACKAGE_DIR = Path(damage_control.__file__).resolve().parent  # the INSTALLED damage-control-dev
 FAKE_HOME = "/golden/home"
 
 
@@ -80,7 +81,7 @@ def _bash(command):
 def broken_copy(tmp_path):
     """A throwaway copy of the package that a test can damage."""
     root = tmp_path / "copy"
-    shutil.copytree(PACKAGE_SRC / "damage_control", root / "damage_control",
+    shutil.copytree(PACKAGE_DIR, root / "damage_control",
                     ignore=shutil.ignore_patterns("__pycache__"))
     return root
 

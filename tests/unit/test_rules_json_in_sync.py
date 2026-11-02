@@ -12,7 +12,7 @@ from pathlib import Path
 from damage_control import engine
 
 REPO = Path(__file__).resolve().parent.parent.parent
-TOOL = REPO / "packages" / "damage-control-dev" / "tools" / "build_rules_json.py"
+TOOL = REPO / "scripts" / "build_rules_json.py"
 
 
 def _tool():
@@ -22,10 +22,10 @@ def _tool():
     return module
 
 
-def test_every_rule_and_tooldef_json_matches_its_yaml_source():
-    dirs = [engine.bundled_rules_dir(), engine.bundled_tooldefs_dir(), REPO / "agentwire" / "safety" / "rules"]
-    problems = _tool().sync(dirs, check=True)
-    assert not problems, f"{problems}\nrun: uv run --script packages/damage-control-dev/tools/build_rules_json.py {' '.join(map(str, dirs))}"
+def test_every_agentwire_rule_json_matches_its_yaml_source():
+    """AgentWire's own layer only: the engine's JSON is checked in the damage-control-dev repo (#1209 M8)."""
+    problems = _tool().sync([REPO / "agentwire" / "safety" / "rules"], check=True)
+    assert not problems, f"{problems}\nrun: uv run python scripts/build_rules_json.py"
 
 
 def test_the_check_bites_on_a_stale_json_a_missing_json_and_an_orphan(tmp_path):

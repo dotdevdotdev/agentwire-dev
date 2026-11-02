@@ -182,28 +182,23 @@ def rebuild_refusal_lines(repo_root: Path) -> List[str]:
 
 
 def rebuild_package_refusal_lines(repo_root: Path) -> List[str]:
-    """Refusal when either package ``rebuild`` would install is not wholly inside a primary checkout.
+    """Refusal when the ``agentwire`` package ``rebuild`` would install is not wholly inside a primary checkout.
 
-    ``rebuild`` installs agentwire AND its damage-control sibling from one checkout. The
-    worktree check above covers the checkout; this covers the packages themselves — a missing
-    sibling would install an agentwire whose hooks cannot start (``onFailure: block`` then
-    refuses every tool call), and one that resolves into a linked worktree would make that
-    worktree canonical for the engine alone.
+    The worktree check above covers the checkout; this covers the package itself — a missing
+    one would install nothing runnable, and one that resolves (e.g. through a symlink) into a
+    linked worktree would make that worktree canonical. The damage-control engine is no longer
+    built from the checkout (#1209 M8): it comes from PyPI, and its own provenance (a copy
+    running out of a worktree venv) is still judged by ``install_provenance`` over ``PACKAGES``.
     """
-    sources = {
-        "agentwire": repo_root / "agentwire",
-        "damage_control": repo_root / "packages" / "damage-control-dev" / "src" / "damage_control",
-    }
-    for package, path in sources.items():
-        if not path.is_dir():
-            return [f"REFUSED: rebuild would install without the {package} package.",
-                    f"  expected : {path}",
-                    "  An install missing it registers hooks that cannot start."]
-        worktree = _enclosing_worktree(path.resolve())
-        if worktree is not None:
-            return [f"REFUSED: rebuild would install the {package} package from the linked worktree {worktree}.",
-                    "  The worktree would BECOME canonical for that package (#936, doubled by #1209).",
-                    "  Fix: rebuild from the primary checkout, or pass --allow-foreign-source."]
+    path = repo_root / "agentwire"
+    if not path.is_dir():
+        return ["REFUSED: rebuild would install without the agentwire package.",
+                f"  expected : {path}"]
+    worktree = _enclosing_worktree(path.resolve())
+    if worktree is not None:
+        return [f"REFUSED: rebuild would install the agentwire package from the linked worktree {worktree}.",
+                "  The worktree would BECOME canonical for that package (#936).",
+                "  Fix: rebuild from the primary checkout, or pass --allow-foreign-source."]
     return []
 
 
