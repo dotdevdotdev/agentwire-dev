@@ -37,3 +37,5 @@ When the task is done:
    `agentwire msg` queues the message and delivers it only when their input box is empty; `notify-parent` / `session_send` paste + Enter **immediately** and overwrite any uncommitted draft — reserve those for something that genuinely can't wait.
 
 Don't merge the PR yourself — your creator or a reviewer handles merge and worktree cleanup.
+
+**No report path?** If `notify-parent` (or `notify_parent`) reports no target, you were spawned without a parent. State that explicitly as the LAST line of your final message and stop — do not guess a session name, and never `msg send --to parent` (there is no session by that name; it dead-letters and emails the owner).

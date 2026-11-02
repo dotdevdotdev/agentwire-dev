@@ -41,6 +41,7 @@ from .core import (
     record_session_launch,
     resolve_default_created_by,
     tmux_session_exists,
+    unparented_delegation_warning,
 )
 from .project_config import (
     DEFAULT_POSTURE,
@@ -530,6 +531,10 @@ def cmd_new(args) -> int:
         created_by = ''
     elif created_by is None:
         created_by = resolve_default_created_by(caller, session_path)
+    orphan_warning = unparented_delegation_warning(
+        session_name, caller, created_by, first_message)
+    if orphan_warning and not json_mode:
+        print(f"WARNING: {orphan_warning}", file=sys.stderr)
 
     # Build agent command
     model_override = getattr(args, 'model', None)
@@ -717,6 +722,8 @@ def cmd_new(args) -> int:
             "branch": branch,
             "machine": None,
         }
+        if orphan_warning:
+            result["warning"] = orphan_warning
         if first_message:
             result["first_message_delivered"] = bool(first_message_delivered)
             # Present whenever the straight verified paste didn't carry the

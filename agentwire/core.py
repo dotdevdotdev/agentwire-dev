@@ -978,6 +978,43 @@ def resolve_default_created_by(caller: str | None, target_path: Path) -> str | N
     return caller if _same_project(caller_path, target_path) else None
 
 
+NO_REPORT_PATH_HINT = (
+    "state explicitly, as the LAST line of your final message, that you have no "
+    "parent session to report to, then stop. Do not guess a session name."
+)
+
+
+def unparented_delegation_warning(
+    session_name: str,
+    caller: str | None,
+    created_by: str | None,
+    first_message: str | None,
+) -> str | None:
+    """Warn when a delegated task was spawned with no parent to report to (#1259).
+
+    A cross-project spawn deliberately records no parent (#715), but a spawn
+    that carries a task prompt is clearly delegated work: the child's
+    ``notify-parent`` has no target and its completion is invisible. The
+    spawner is the only party that can fix that, and only at spawn time.
+    ``created_by == ''`` is an explicit rootless request (orchestrators,
+    ``--created-by ''``) and never warns; services are not spawners.
+    """
+    if not first_message or created_by is not None or not caller:
+        return None
+    if caller == session_name:
+        return None
+    from .services import is_service_session
+
+    if is_service_session(caller):
+        return None
+    return (
+        f"session '{session_name}' was given a task but has NO parent "
+        f"(cross-project spawns are standalone roots, #715): it cannot "
+        f"notify-parent and its completion will not reach you. "
+        f"Re-spawn with --created-by {caller} to make it report back to you."
+    )
+
+
 def tmux_session_has_agent(name: str) -> bool:
     """Check if a tmux session has an agent running (not just a bare shell).
 

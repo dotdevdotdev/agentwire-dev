@@ -37,3 +37,5 @@ complete | incomplete | error
 After writing the summary, stop. The system detects idle and auto-exits your pane.
 
 **If you're a standalone session** (your own tmux session, no separate worktree — no pane to auto-reap): there is no automatic idle-kill. Send the same summary content as your final message to the parent/creator instead (`agentwire msg send --to <parent> --kind done "..."`), then stop and wait — whoever created you is responsible for noticing you're idle and cleaning up.
+
+**No report path?** If `notify-parent` (or `notify_parent`) reports no target, you were spawned without a parent. State that explicitly as the LAST line of your final message and stop — do not guess a session name, and never `msg send --to parent` (there is no session by that name; it dead-letters and emails the owner).

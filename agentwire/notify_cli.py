@@ -14,6 +14,7 @@ import urllib.request
 
 from . import pane_manager
 from .core import (
+    NO_REPORT_PATH_HINT,
     _get_portal_url,
     _output_json,
     _output_result,
@@ -108,7 +109,9 @@ def cmd_notify_parent(args) -> int:
     else:
         return _output_result(
             False, json_mode,
-            "No target session (set 'parent' in .agentwire.yml or use --to)")
+            "No target session: this session has no recorded parent (set "
+            "'parent' in .agentwire.yml or use --to <real session name>). "
+            f"If you were delegated this task, {NO_REPORT_PATH_HINT}")
 
     # --queued (#667): route through the polite msg inbox (kind=done) instead
     # of a direct paste. The drain owns everything the direct path lacks — the
