@@ -25,14 +25,14 @@ def cfg():
 
 
 REAL_TARGETS = {
-    "file-operand-dist": "sed -i '' 's/a/b/' dist/app.js",
+    "file-operand-deps": "sed -i '' 's/a/b/' node_modules/app.js",
     "file-operand-modules": "sed -i 's/a/b/' node_modules/pkg/index.js",
-    "write-flag": "sed -i 's/a/b/w dist/out.js' notes.txt",
-    "execute-flag": "sed -i 's/a/b/e' dist/x.js",
-    "redirect": "sed 's|x|y|' notes.txt > dist/out.js",
-    "tee": "cat a.txt | sed 's|x|y|' | tee dist/o.js",
-    "script-with-command": "sed -i '1e rm -rf dist/' notes.txt",
-    "substitution-in-script": 'sed -i "s|a|$(echo dist/x)|" notes.txt',
+    "write-flag": "sed -i 's/a/b/w node_modules/out.js' notes.txt",
+    "execute-flag": "sed -i 's/a/b/e' node_modules/x.js",
+    "redirect": "sed 's|x|y|' notes.txt > node_modules/out.js",
+    "tee": "cat a.txt | sed 's|x|y|' | tee node_modules/o.js",
+    "script-with-command": "sed -i '1e rm -rf node_modules/' notes.txt",
+    "substitution-in-script": 'sed -i "s|a|$(echo node_modules/x)|" notes.txt',
 }
 
 

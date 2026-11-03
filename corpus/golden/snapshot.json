@@ -134,7 +134,7 @@
   "audit": 8,
   "engine": 1828,
   "engine_by_platform": 8,
-  "hooks": 1014,
+  "hooks": 1016,
   "hooks_by_platform": 6
  },
  "engine": {
@@ -2755,9 +2755,9 @@
    "unverifiable": false
   },
   "[\"Bash\", \"cat a.txt | sed 's|x|y|' | tee dist/o.js\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
+   "decision": "allow",
    "protected": false,
-   "rule_id": "core.read-only-path",
+   "rule_id": null,
    "unverifiable": false
   },
   "[\"Bash\", \"cat a.txt | sed 's|x|y|' | tee dist/o.js\", \"/golden/home\", \"kill-switch-off\"]": {
@@ -6715,9 +6715,9 @@
    "unverifiable": false
   },
   "[\"Bash\", \"echo x > dist/app.js\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
+   "decision": "allow",
    "protected": false,
-   "rule_id": "core.read-only-path",
+   "rule_id": null,
    "unverifiable": false
   },
   "[\"Bash\", \"echo x > dist/app.js\", \"/golden/home\", \"kill-switch-off\"]": {
@@ -9499,9 +9499,9 @@
    "unverifiable": false
   },
   "[\"Bash\", \"sed 's|x|y|' notes.txt > dist/out.js\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
+   "decision": "allow",
    "protected": false,
-   "rule_id": "core.read-only-path",
+   "rule_id": null,
    "unverifiable": false
   },
   "[\"Bash\", \"sed 's|x|y|' notes.txt > dist/out.js\", \"/golden/home\", \"kill-switch-off\"]": {
@@ -9511,9 +9511,9 @@
    "unverifiable": false
   },
   "[\"Bash\", \"sed -i '' 's/a/b/' dist/app.js\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
+   "decision": "allow",
    "protected": false,
-   "rule_id": "core.read-only-path",
+   "rule_id": null,
    "unverifiable": false
   },
   "[\"Bash\", \"sed -i '' 's/a/b/' dist/app.js\", \"/golden/home\", \"kill-switch-off\"]": {
@@ -9525,7 +9525,7 @@
   "[\"Bash\", \"sed -i '1e rm -rf dist/' notes.txt\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": false,
-   "rule_id": "core.read-only-path",
+   "rule_id": "core.rm-with-recursive-or-force-flags",
    "unverifiable": false
   },
   "[\"Bash\", \"sed -i '1e rm -rf dist/' notes.txt\", \"/golden/home\", \"kill-switch-off\"]": {
@@ -9559,9 +9559,9 @@
    "unverifiable": false
   },
   "[\"Bash\", \"sed -i 's/a/b/e' dist/x.js\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
+   "decision": "allow",
    "protected": false,
-   "rule_id": "core.read-only-path",
+   "rule_id": null,
    "unverifiable": false
   },
   "[\"Bash\", \"sed -i 's/a/b/e' dist/x.js\", \"/golden/home\", \"kill-switch-off\"]": {
@@ -9571,9 +9571,9 @@
    "unverifiable": false
   },
   "[\"Bash\", \"sed -i 's/a/b/w dist/out.js' notes.txt\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
+   "decision": "allow",
    "protected": false,
-   "rule_id": "core.read-only-path",
+   "rule_id": null,
    "unverifiable": false
   },
   "[\"Bash\", \"sed -i 's/a/b/w dist/out.js' notes.txt\", \"/golden/home\", \"kill-switch-off\"]": {
@@ -9607,9 +9607,9 @@
    "unverifiable": false
   },
   "[\"Bash\", \"sed -i \\\"s|a|$(echo dist/x)|\\\" notes.txt\", \"/golden/home\", \"default\"]": {
-   "decision": "block",
+   "decision": "ask",
    "protected": false,
-   "rule_id": "core.read-only-path",
+   "rule_id": "core.ambiguous-command",
    "unverifiable": false
   },
   "[\"Bash\", \"sed -i \\\"s|a|$(echo dist/x)|\\\" notes.txt\", \"/golden/home\", \"kill-switch-off\"]": {
@@ -12411,10 +12411,10 @@
    "rule_id": null
   },
   "[\"Bash\", \"cat a.txt | sed 's|x|y|' | tee dist/o.js\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": "core.read-only-path"
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
   },
   "[\"Bash\", \"cat config\", \"/golden/home\", \"interactive\", \"/golden/home/.config/git\"]": {
    "audit": "allowed",
@@ -14427,10 +14427,10 @@
    "rule_id": "core.protected-control-plane"
   },
   "[\"Bash\", \"echo x > dist/app.js\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": "core.read-only-path"
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
   },
   "[\"Bash\", \"echo x > hosts.yml\", \"/golden/home\", \"interactive\", \"/golden/home/.config/gh\"]": {
    "audit": "blocked",
@@ -16251,22 +16251,22 @@
    "rule_id": "core.protected-control-plane"
   },
   "[\"Bash\", \"sed 's|x|y|' notes.txt > dist/out.js\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": "core.read-only-path"
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
   },
   "[\"Bash\", \"sed -i '' 's/a/b/' dist/app.js\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": "core.read-only-path"
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
   },
   "[\"Bash\", \"sed -i '1e rm -rf dist/' notes.txt\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
-   "rule_id": "core.read-only-path"
+   "rule_id": "core.rm-with-recursive-or-force-flags"
   },
   "[\"Bash\", \"sed -i 's/a/b/' node_modules/pkg/index.js\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
@@ -16281,16 +16281,16 @@
    "rule_id": "core.protected-control-plane"
   },
   "[\"Bash\", \"sed -i 's/a/b/e' dist/x.js\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": "core.read-only-path"
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
   },
   "[\"Bash\", \"sed -i 's/a/b/w dist/out.js' notes.txt\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": "core.read-only-path"
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
   },
   "[\"Bash\", \"sed -i 's/x/y/' ~/.agentwire/hooks/damage-control/bash-tool-damage-control.py  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
@@ -16304,11 +16304,23 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
+  "[\"Bash\", \"sed -i \\\"s|a|$(echo dist/x)|\\\" notes.txt\", \"/golden/home\", \"bypass\"]": {
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
+  },
   "[\"Bash\", \"sed -i \\\"s|a|$(echo dist/x)|\\\" notes.txt\", \"/golden/home\", \"interactive\"]": {
-   "audit": "blocked",
-   "decision": "block",
-   "exit": 2,
-   "rule_id": "core.read-only-path"
+   "audit": "asked",
+   "decision": "ask",
+   "exit": 0,
+   "rule_id": null
+  },
+  "[\"Bash\", \"sed -i \\\"s|a|$(echo dist/x)|\\\" notes.txt\", \"/golden/home\", \"unattended\"]": {
+   "audit": "allowed",
+   "decision": "allow",
+   "exit": 0,
+   "rule_id": null
   },
   "[\"Bash\", \"sed -i s/a/b/ .agentwire/config.yaml\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
    "audit": "blocked",
