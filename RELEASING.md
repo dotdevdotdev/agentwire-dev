@@ -6,7 +6,7 @@ Every release does **both** a PyPI publish and a GitHub release. The **GitHub re
 
 ## The engine is a separate project (single source)
 
-The damage-control engine has exactly one source: the `damage-control-dev` repo (<https://github.com/dotdevdotdev/damage-control-dev>), published on PyPI. `agentwire-dev` only *consumes* it through the range in `pyproject.toml` (currently `damage-control-dev>=0.1.4,<0.2`); a checkout and a PyPI install both resolve it from PyPI. There is no copy of the engine in this repo and nothing to release from here. `tests/unit/test_damage_control_pin.py` checks that the declared floor/ceiling parse and that the installed engine satisfies them.
+The damage-control engine has exactly one source: the `damage-control-dev` repo (<https://github.com/dotdevdotdev/damage-control-dev>), published on PyPI. `agentwire-dev` only *consumes* it through the range in `pyproject.toml` (currently `damage-control-dev>=0.1.5,<0.2`); a checkout and a PyPI install both resolve it from PyPI. There is no copy of the engine in this repo and nothing to release from here. `tests/unit/test_damage_control_pin.py` checks that the declared floor/ceiling parse and that the installed engine satisfies them.
 
 To ship an engine change:
 
