@@ -466,7 +466,7 @@ _AUDIT_SHAPES: List[Tuple[str, Dict[str, Any]]] = [
     ("log_asked", {"tool": "Bash", "command": "x", "reason": "r", "pattern": "p"}),
     ("log_allowed", {"tool": "Bash", "command": "ls", "user_approved": False}),
     ("log_allowed", {"tool": "Bash", "command": "ls", "user_approved": False, "allowed_by": "allowedPaths"}),
-    ("log_escape", {"tool": "Bash", "command": "x # allow: why", "escape_reason": "why"}),
+    ("log_asked", {"tool": "Bash", "command": "x # ask: why", "reason": "r", "escape_reason": "why", "escalated_from": "block"}),
     ("log_disabled", {"tool": "Bash", "command": "x"}),
     ("log_blocked", {"tool": "Edit", "command": "/golden/home/.agentwire/damagecontrol.yml", "reason": "control-plane"}),
 ]

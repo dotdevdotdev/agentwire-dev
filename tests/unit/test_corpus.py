@@ -33,7 +33,7 @@ LEGACY_TABLES = {
         "PROSE_MENTIONS", "INTERPRETER_REAL_WRITES",
     ],
 }
-HATCH = "  # allow: I really want to"
+ASK_SUFFIX = "  # ask: I really want to"
 
 
 def _legacy_module(rel):
@@ -45,8 +45,8 @@ def _legacy_module(rel):
 
 def _base_input(case):
     text = case["input"]
-    if "variant:hatch" in case["tags"] and text.endswith(HATCH):
-        text = text[: -len(HATCH)]
+    if "variant:ask" in case["tags"] and text.endswith(ASK_SUFFIX):
+        text = text[: -len(ASK_SUFFIX)]
     return os.path.expanduser(text) if case["tool"] != "Bash" else text
 
 

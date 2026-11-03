@@ -1352,3 +1352,26 @@
   - secrets
   - home
   source: tests/unit/test_damage_control_bypass.py::test_secrets_stay_blocked_wherever_home_is
+- id: ask-comment-001
+  tool: Bash
+  input: 'git reset --hard origin/main  # ask: sync to remote'
+  context:
+    ruleset: full
+  expect:
+    decision: ask
+  class: ask-comment
+  tags:
+  - ask-comment
+  source: tests/unit/test_damage_control_bypass.py::test_ask_comment_turns_a_block_into_an_undemotable_human_confirmation
+- id: ask-comment-002
+  tool: Bash
+  input: 'git reset --hard origin/main  # allow: sync to remote'
+  context:
+    ruleset: full
+  expect:
+    decision: block
+  class: ask-comment
+  tags:
+  - ask-comment
+  - removed-escape
+  source: tests/unit/test_damage_control_bypass.py::test_the_old_allow_comment_has_no_effect

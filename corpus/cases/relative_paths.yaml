@@ -223,7 +223,7 @@
   source: tests/unit/test_relative_path_operands.py::CASES
 - id: relative-path-operand-020
   tool: Bash
-  input: 'echo x > .claude/settings.json  # allow: because'
+  input: 'echo x > .claude/settings.json  # ask: because'
   context:
     cwd: /golden/elsewhere
   expect:
@@ -284,7 +284,7 @@
   source: tests/unit/test_relative_path_operands.py::CASES
 - id: relative-path-operand-025
   tool: Bash
-  input: 'echo x > .claude/settings.json  # allow: because'
+  input: 'echo x > .claude/settings.json  # ask: because'
   context:
     cwd: /golden/home
   expect:
@@ -292,5 +292,5 @@
     protected: true
   class: relative-path-operand
   tags:
-  - escape-hatch
+  - ask-comment
   source: tests/unit/test_relative_path_operands.py::CASES

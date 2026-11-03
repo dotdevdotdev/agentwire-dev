@@ -142,11 +142,22 @@ def test_the_directory_a_scoped_grant_is_measured_from_is_the_hook_cwd_then_safe
     assert [k["cwd"] for k in engine.calls.grant_kwargs] == ["/proj", "/safe-cwd"]
 
 
-def test_escape_and_disabled_findings_allow_with_their_own_audit_event():
-    for flag, event in (("escape", "escape"), ("disabled", "disabled")):
-        finding = {"decision": "allow", "reason": "", "id": None, flag: True, "escape_reason": "because"}
-        v = guard(make_engine(finding)).decide(shell(), Context())
-        assert (v.decision, getattr(v, flag), v.audit[0]) == (ALLOW, True, event), flag
+def test_disabled_finding_allows_with_its_own_audit_event():
+    finding = {"decision": "allow", "reason": "", "id": None, "disabled": True}
+    v = guard(make_engine(finding)).decide(shell(), Context())
+    assert (v.decision, v.disabled, v.audit[0]) == (ALLOW, True, "disabled")
+
+
+def test_a_requested_ask_is_not_demoted_by_bypass_nor_granted_unattended():
+    finding = {"decision": "ask", "reason": "r", "id": "git.push", "escape_ask": True}
+    wrong = []
+    for mode, unattended, granted in itertools.product(("default", "bypass"), (False, True), (False, True)):
+        engine = make_engine(finding, grants=("git.push",) if granted else ())
+        v = guard(engine).decide(shell(), Context(mode=mode, unattended=unattended))
+        want = BLOCK if unattended else ASK
+        if v.decision != want or (not unattended and not v.escape_ask):
+            wrong.append((mode, unattended, granted, v.decision))
+    assert not wrong, wrong
 
 
 def test_the_allow_row_carries_the_rule_that_allowed_it_for_shell_only():

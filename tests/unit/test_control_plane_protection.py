@@ -2,7 +2,7 @@
 
 The damage-control control plane — the kill-switch/rule files, the hook scripts,
 the rule YAMLs, and the Claude Code hook registration — must be unwritable by the
-policed agent, EVEN with the ``# allow:`` escape hatch and EVEN when the kill
+policed agent, EVEN with a ``# ask:`` comment and EVEN when the kill
 switch is off. Only the user's host-side ``allowedPaths`` allowlist re-permits a
 path. Loosening is always a human, host-side act.
 
@@ -172,9 +172,9 @@ def test_indirect_writers_to_the_control_plane_are_blocked(cfg):
     assert not leaked, leaked
 
 
-def test_escape_hatch_and_kill_switch_cannot_reopen_the_control_plane(cfg, off):
+def test_ask_comment_and_kill_switch_cannot_reopen_the_control_plane(cfg, off):
     sample = BASH_WRITES[:5] + INDIRECT_WRITES[::4]
-    leaked = _not_protected_block([c + "  # allow: I really want to" for c in sample], cfg)
+    leaked = _not_protected_block([c + "  # ask: I really want to" for c in sample], cfg)
     leaked += _not_protected_block(sample, off)
     assert not leaked, leaked
 
@@ -211,11 +211,11 @@ PROMOTE_COMMANDS = [
 ]
 
 
-def test_promote_is_blocked_whatever_the_wrapper_hatch_switch_or_allowlist(cfg, off):
+def test_promote_is_blocked_whatever_the_wrapper_ask_switch_or_allowlist(cfg, off):
     """A protected COMMAND has no escape valve at all — not even the allowlist."""
     allow_all = dict(cfg, allowedPaths=[{"path": "*", "allow": "all"}])
     leaked = _not_protected_block(PROMOTE_COMMANDS, cfg)
-    leaked += _not_protected_block([c + "  # allow: I really want to" for c in PROMOTE_COMMANDS], cfg)
+    leaked += _not_protected_block([c + "  # ask: I really want to" for c in PROMOTE_COMMANDS], cfg)
     leaked += _not_protected_block(PROMOTE_COMMANDS, off)
     leaked += _not_protected_block(PROMOTE_COMMANDS, allow_all)
     assert not leaked, leaked

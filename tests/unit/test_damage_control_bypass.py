@@ -275,12 +275,19 @@ def test_kill_switch_off_allows_and_on_blocks(cfg):
     assert check_command("rm " + _RF + " /", cfg)["decision"] == "block"
 
 
-def test_escape_hatch_needs_a_reason_and_overrides_a_block(cfg):
+def test_ask_comment_turns_a_block_into_an_undemotable_human_confirmation(cfg):
+    cmd = "git reset --hard origin/main"
+    result = check_command(cmd + "  # ask: sync to remote", cfg)
+    assert result["decision"] == "ask"
+    assert result["escape_ask"] is True and result["escape_reason"] == "sync to remote"
+    # no reason, or not the last thing in the command → still a block
+    assert check_command(cmd + "  # ask:  ", cfg)["decision"] == "block"
+    assert check_command(cmd + "  # ask: sync\necho hi", cfg)["decision"] == "block"
+
+
+def test_the_old_allow_comment_has_no_effect(cfg):
     result = check_command("git reset --hard origin/main  # allow: sync to remote", cfg)
-    assert result["decision"] == "allow"
-    assert result["escape_reason"] == "sync to remote"
-    # no reason → no escape
-    assert check_command("git reset --hard origin/main  # allow:  ", cfg)["decision"] == "block"
+    assert result["decision"] == "block" and "escape_reason" not in result
 
 
 def test_disabled_rule_skips_only_that_rule(cfg):
