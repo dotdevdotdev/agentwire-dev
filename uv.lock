@@ -71,7 +71,7 @@ requires-dist = [
     { name = "av", specifier = ">=12.0.0" },
     { name = "certifi", specifier = ">=2026.10.23" },
     { name = "chatterbox-tts", marker = "python_full_version >= '3.13' and extra == 'tts'", specifier = ">=0.1.6" },
-    { name = "damage-control-dev", specifier = ">=0.1.3,<0.2" },
+    { name = "damage-control-dev", specifier = ">=0.1.5,<0.2" },
     { name = "fastapi", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'stt'", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'tts'", specifier = ">=0.104.0" },
@@ -1076,14 +1076,14 @@ wheels = [
 
 [[package]]
 name = "damage-control-dev"
-version = "0.1.3"
+version = "0.1.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b6/bd/489e2924734c2a3a4ea30c38f7c8cb59da63f63d67465bb41da974502238/damage_control_dev-0.1.3.tar.gz", hash = "sha256:fc056c36f1dc37b9be9c6a4aec041ef594483a4ec4745807cf1f38880f18a2d6", size = 223351, upload-time = "2026-11-02T14:22:03.29Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/95/a9/b692c79d6185a9f313da90889f4839d7a4f43414f10770733ae65ff289d9/damage_control_dev-0.1.5.tar.gz", hash = "sha256:87147d514c872ea8c2f3064bf253a8057e742d0a6700d05ffc94a313d3f7cdfd", size = 240952, upload-time = "2026-11-03T00:17:09.74Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/9e/d938315495e780f0522f0db2ad293c173aa98e34b7ca6485a1b4d68edb2c/damage_control_dev-0.1.3-py3-none-any.whl", hash = "sha256:39e4164465ba78fa86eb38a0a0d5168b6fabe45edd65c6a271159ee99d7499b6", size = 252545, upload-time = "2026-11-02T14:22:01.96Z" },
+    { url = "https://files.pythonhosted.org/packages/23/30/85b9b6991cb3c5efb8de12a38c75495056869409fbcd7471fe5dc1d0ff3e/damage_control_dev-0.1.5-py3-none-any.whl", hash = "sha256:ce8c2d22fc2e8c5cd8c7edd97c2d5afda52590161eb90a8d11d3a74bd1a3f4b1", size = 269243, upload-time = "2026-11-03T00:17:07.991Z" },
 ]
 
 [[package]]

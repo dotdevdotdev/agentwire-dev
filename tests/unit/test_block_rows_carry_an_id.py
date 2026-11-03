@@ -15,7 +15,7 @@ pytestmark = pytest.mark.real_agentwire_home
 BLOCKS = {
     "zero-access": "cat server.key",
     "zero-access-env": "grep -c TOKEN .env",
-    "read-only": "echo x > dist/app.js",
+    "read-only": "echo x > node_modules/app.js",
     "control-plane": "echo x > ~/.agentwire/damagecontrol.yml",
     "protected-command": "agentwire tasks promote x",
     "no-delete": "truncate -s0 CLAUDE.md",
