@@ -81,13 +81,14 @@
    "tool_use_id": null,
    "user_approved": null
   },
-  "05:log_escape:{\"command\": \"x # allow: why\", \"escape_reason\": \"why\", \"tool\": \"Bash\"}": {
+  "05:log_asked:{\"command\": \"x # ask: why\", \"escalated_from\": \"block\", \"escape_reason\": \"why\", \"reason\": \"r\", \"tool\": \"Bash\"}": {
    "agent_id": "main",
-   "blocked_by": "Escape hatch: why",
-   "command": "x # allow: why",
+   "blocked_by": "r",
+   "command": "x # ask: why",
    "conversation_id": "00000000-0000-0000-0000-000000000000",
    "cwd": "/golden/home/project",
-   "decision": "allowed_by_escape",
+   "decision": "asked",
+   "escalated_from": "block",
    "escape_reason": "why",
    "pattern_matched": null,
    "permission_mode": null,
@@ -132,9 +133,9 @@
  },
  "counts": {
   "audit": 8,
-  "engine": 1828,
+  "engine": 1830,
   "engine_by_platform": 8,
-  "hooks": 1016,
+  "hooks": 1019,
   "hooks_by_platform": 6
  },
  "engine": {
@@ -702,25 +703,25 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"agentwire tasks promote  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"agentwire tasks promote  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-command",
    "unverifiable": false
   },
-  "[\"Bash\", \"agentwire tasks promote  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"agentwire tasks promote  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-command",
    "unverifiable": false
   },
-  "[\"Bash\", \"agentwire tasks promote --yes  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"agentwire tasks promote --yes  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-command",
    "unverifiable": false
   },
-  "[\"Bash\", \"agentwire tasks promote --yes  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"agentwire tasks promote --yes  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-command",
@@ -5190,13 +5191,13 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"echo 'enabled: false' > .damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"echo 'enabled: false' > .damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"echo 'enabled: false' > .damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"echo 'enabled: false' > .damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -5214,13 +5215,13 @@
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"echo 'enabled: false' > ~/.agentwire/damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"echo 'enabled: false' > ~/.agentwire/damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"echo 'enabled: false' > ~/.agentwire/damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"echo 'enabled: false' > ~/.agentwire/damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -5322,13 +5323,13 @@
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"echo '{}' > ~/.claude/settings.json  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"echo '{}' > ~/.claude/settings.json  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"echo '{}' > ~/.claude/settings.json  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"echo '{}' > ~/.claude/settings.json  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -6366,25 +6367,25 @@
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"default\", \"/golden/elsewhere\"]": {
+  "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"default\", \"/golden/elsewhere\"]": {
    "decision": "allow",
    "protected": false,
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"default\", \"/golden/home\"]": {
+  "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"default\", \"/golden/home\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"kill-switch-off\", \"/golden/elsewhere\"]": {
+  "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"kill-switch-off\", \"/golden/elsewhere\"]": {
    "decision": "allow",
    "protected": false,
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
+  "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -7038,13 +7039,13 @@
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"echo x >| ~/.agentwire/damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"echo x >| ~/.agentwire/damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"echo x >| ~/.agentwire/damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"echo x >| ~/.agentwire/damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -7650,13 +7651,13 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"echo x | tee ~/.agentwire/config.yaml /tmp/my-app.log  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"echo x | tee ~/.agentwire/config.yaml /tmp/my-app.log  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"echo x | tee ~/.agentwire/config.yaml /tmp/my-app.log  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"echo x | tee ~/.agentwire/config.yaml /tmp/my-app.log  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -8514,25 +8515,37 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"git reset --hard origin/main  # allow:  \", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"git reset --hard origin/main  # allow: sync to remote\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": false,
    "rule_id": "git.git-reset-hard-use-soft-or-stash",
    "unverifiable": false
   },
-  "[\"Bash\", \"git reset --hard origin/main  # allow:  \", \"/golden/home\", \"kill-switch-off\"]": {
-   "decision": "allow",
-   "protected": false,
-   "rule_id": null,
-   "unverifiable": false
-  },
-  "[\"Bash\", \"git reset --hard origin/main  # allow: sync to remote\", \"/golden/home\", \"default\"]": {
-   "decision": "allow",
-   "protected": false,
-   "rule_id": null,
-   "unverifiable": false
-  },
   "[\"Bash\", \"git reset --hard origin/main  # allow: sync to remote\", \"/golden/home\", \"kill-switch-off\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"git reset --hard origin/main  # ask:  \", \"/golden/home\", \"default\"]": {
+   "decision": "block",
+   "protected": false,
+   "rule_id": "git.git-reset-hard-use-soft-or-stash",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"git reset --hard origin/main  # ask:  \", \"/golden/home\", \"kill-switch-off\"]": {
+   "decision": "allow",
+   "protected": false,
+   "rule_id": null,
+   "unverifiable": false
+  },
+  "[\"Bash\", \"git reset --hard origin/main  # ask: sync to remote\", \"/golden/home\", \"default\"]": {
+   "decision": "ask",
+   "protected": false,
+   "rule_id": "git.git-reset-hard-use-soft-or-stash",
+   "unverifiable": false
+  },
+  "[\"Bash\", \"git reset --hard origin/main  # ask: sync to remote\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "allow",
    "protected": false,
    "rule_id": null,
@@ -8766,13 +8779,13 @@
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"ln -sf /tmp/x ~/.agentwire/damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"ln -sf /tmp/x ~/.agentwire/damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"ln -sf /tmp/x ~/.agentwire/damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"ln -sf /tmp/x ~/.agentwire/damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -9006,13 +9019,13 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"patch ~/.claude/settings.json /tmp/p.diff  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"patch ~/.claude/settings.json /tmp/p.diff  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"patch ~/.claude/settings.json /tmp/p.diff  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"patch ~/.claude/settings.json /tmp/p.diff  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -9078,13 +9091,13 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"printf 'rm %s' ~/.claude/settings.json | sh  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"printf 'rm %s' ~/.claude/settings.json | sh  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"printf 'rm %s' ~/.claude/settings.json | sh  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"printf 'rm %s' ~/.claude/settings.json | sh  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -9330,13 +9343,13 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"python3 -m agentwire tasks promote --yes  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"python3 -m agentwire tasks promote --yes  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-command",
    "unverifiable": false
   },
-  "[\"Bash\", \"python3 -m agentwire tasks promote --yes  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"python3 -m agentwire tasks promote --yes  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-command",
@@ -9474,13 +9487,13 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"rm ~/.agentwire/damage-control/core.yaml  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"rm ~/.agentwire/damage-control/core.yaml  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"rm ~/.agentwire/damage-control/core.yaml  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"rm ~/.agentwire/damage-control/core.yaml  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -9582,13 +9595,13 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"sed -i 's/x/y/' ~/.agentwire/hooks/damage-control/bash-tool-damage-control.py  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"sed -i 's/x/y/' ~/.agentwire/hooks/damage-control/bash-tool-damage-control.py  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"sed -i 's/x/y/' ~/.agentwire/hooks/damage-control/bash-tool-damage-control.py  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"sed -i 's/x/y/' ~/.agentwire/hooks/damage-control/bash-tool-damage-control.py  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -9702,13 +9715,13 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"tar xf /tmp/a.tar -C ~/.claude/hooks  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"tar xf /tmp/a.tar -C ~/.claude/hooks  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
    "unverifiable": false
   },
-  "[\"Bash\", \"tar xf /tmp/a.tar -C ~/.claude/hooks  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"tar xf /tmp/a.tar -C ~/.claude/hooks  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-control-plane",
@@ -10278,13 +10291,13 @@
    "rule_id": null,
    "unverifiable": false
   },
-  "[\"Bash\", \"uv run agentwire tasks promote --yes  # allow: I really want to\", \"/golden/home\", \"default\"]": {
+  "[\"Bash\", \"uv run agentwire tasks promote --yes  # ask: I really want to\", \"/golden/home\", \"default\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-command",
    "unverifiable": false
   },
-  "[\"Bash\", \"uv run agentwire tasks promote --yes  # allow: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
+  "[\"Bash\", \"uv run agentwire tasks promote --yes  # ask: I really want to\", \"/golden/home\", \"kill-switch-off\"]": {
    "decision": "block",
    "protected": true,
    "rule_id": "core.protected-command",
@@ -11384,13 +11397,13 @@
    "exit": 0,
    "rule_id": null
   },
-  "[\"Bash\", \"agentwire tasks promote  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"agentwire tasks promote  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
    "rule_id": "core.protected-command"
   },
-  "[\"Bash\", \"agentwire tasks promote --yes  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"agentwire tasks promote --yes  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -13640,7 +13653,7 @@
    "exit": 2,
    "rule_id": "core.rm-with-recursive-or-force-flags"
   },
-  "[\"Bash\", \"echo 'enabled: false' > .damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"echo 'enabled: false' > .damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -13652,7 +13665,7 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
-  "[\"Bash\", \"echo 'enabled: false' > ~/.agentwire/damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"echo 'enabled: false' > ~/.agentwire/damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -13706,7 +13719,7 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
-  "[\"Bash\", \"echo '{}' > ~/.claude/settings.json  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"echo '{}' > ~/.claude/settings.json  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -14252,13 +14265,13 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
-  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"interactive\", \"/golden/elsewhere\"]": {
-   "audit": "allowed_by_escape",
+  "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"interactive\", \"/golden/elsewhere\"]": {
+   "audit": "allowed",
    "decision": "allow",
    "exit": 0,
    "rule_id": null
   },
-  "[\"Bash\", \"echo x > .claude/settings.json  # allow: because\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+  "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -14588,7 +14601,7 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
-  "[\"Bash\", \"echo x >| ~/.agentwire/damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"echo x >| ~/.agentwire/damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -14894,7 +14907,7 @@
    "exit": 2,
    "rule_id": "core.read-only-path"
   },
-  "[\"Bash\", \"echo x | tee ~/.agentwire/config.yaml /tmp/my-app.log  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"echo x | tee ~/.agentwire/config.yaml /tmp/my-app.log  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -15698,17 +15711,35 @@
    "exit": 2,
    "rule_id": "git.git-reset-hard-use-soft-or-stash"
   },
-  "[\"Bash\", \"git reset --hard origin/main  # allow:  \", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"git reset --hard origin/main  # allow: sync to remote\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
    "rule_id": "git.git-reset-hard-use-soft-or-stash"
   },
-  "[\"Bash\", \"git reset --hard origin/main  # allow: sync to remote\", \"/golden/home\", \"interactive\"]": {
-   "audit": "allowed_by_escape",
-   "decision": "allow",
+  "[\"Bash\", \"git reset --hard origin/main  # ask:  \", \"/golden/home\", \"interactive\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "git.git-reset-hard-use-soft-or-stash"
+  },
+  "[\"Bash\", \"git reset --hard origin/main  # ask: sync to remote\", \"/golden/home\", \"bypass\"]": {
+   "audit": "asked",
+   "decision": "ask",
    "exit": 0,
-   "rule_id": null
+   "rule_id": "git.git-reset-hard-use-soft-or-stash"
+  },
+  "[\"Bash\", \"git reset --hard origin/main  # ask: sync to remote\", \"/golden/home\", \"interactive\"]": {
+   "audit": "asked",
+   "decision": "ask",
+   "exit": 0,
+   "rule_id": "git.git-reset-hard-use-soft-or-stash"
+  },
+  "[\"Bash\", \"git reset --hard origin/main  # ask: sync to remote\", \"/golden/home\", \"unattended\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "git.git-reset-hard-use-soft-or-stash"
   },
   "[\"Bash\", \"git reset --hard origin/main\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
@@ -15824,7 +15855,7 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
-  "[\"Bash\", \"ln -sf /tmp/x ~/.agentwire/damagecontrol.yml  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"ln -sf /tmp/x ~/.agentwire/damagecontrol.yml  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -15980,7 +16011,7 @@
    "exit": 2,
    "rule_id": "registry.npm-unpublish-removes-package-from-registry"
   },
-  "[\"Bash\", \"patch ~/.claude/settings.json /tmp/p.diff  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"patch ~/.claude/settings.json /tmp/p.diff  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -16016,7 +16047,7 @@
    "exit": 2,
    "rule_id": "core.perl-unlink-delete-use-git-clean-or-manual-cleanup"
   },
-  "[\"Bash\", \"printf 'rm %s' ~/.claude/settings.json | sh  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"printf 'rm %s' ~/.claude/settings.json | sh  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -16166,7 +16197,7 @@
    "exit": 0,
    "rule_id": null
   },
-  "[\"Bash\", \"python3 -m agentwire tasks promote --yes  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"python3 -m agentwire tasks promote --yes  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -16238,7 +16269,7 @@
    "exit": 2,
    "rule_id": "core.no-delete-path"
   },
-  "[\"Bash\", \"rm ~/.agentwire/damage-control/core.yaml  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"rm ~/.agentwire/damage-control/core.yaml  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -16292,7 +16323,7 @@
    "exit": 0,
    "rule_id": null
   },
-  "[\"Bash\", \"sed -i 's/x/y/' ~/.agentwire/hooks/damage-control/bash-tool-damage-control.py  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"sed -i 's/x/y/' ~/.agentwire/hooks/damage-control/bash-tool-damage-control.py  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -16376,7 +16407,7 @@
    "exit": 2,
    "rule_id": "core.rm-with-recursive-or-force-flags"
   },
-  "[\"Bash\", \"tar xf /tmp/a.tar -C ~/.claude/hooks  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"tar xf /tmp/a.tar -C ~/.claude/hooks  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,
@@ -16688,7 +16719,7 @@
    "exit": 0,
    "rule_id": null
   },
-  "[\"Bash\", \"uv run agentwire tasks promote --yes  # allow: I really want to\", \"/golden/home\", \"interactive\"]": {
+  "[\"Bash\", \"uv run agentwire tasks promote --yes  # ask: I really want to\", \"/golden/home\", \"interactive\"]": {
    "audit": "blocked",
    "decision": "block",
    "exit": 2,

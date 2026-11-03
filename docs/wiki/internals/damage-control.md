@@ -104,11 +104,15 @@ check, so leaving it in the agent-writable `.agentwire.yml` would let an agent
 allowlist a control-plane path and re-permit its own write. `agentwire safety
 install` scaffolds the global file with `enabled: true` if missing.
 
-### The protected control plane (escape-hatch- AND kill-switch-exempt)
+### The `# ask: <reason>` comment (damage-control-dev 0.2.0)
+
+An agent can no longer talk its way past a block. The old agent-writable `# allow: <reason>` escape comment is removed and has **no effect**. Its replacement, a `# ask: <reason>` comment as the very last thing in a command (unquoted, final line, outside any substitution or heredoc, non-empty reason), turns a would-be **block** into a human **ask**. That ask is never demoted by `bypassPermissions`/`auto`, is a block when unattended, and is ignored for the protected control plane (below). Mid-command or quoted `# ask:` is data.
+
+### The protected control plane (`# ask:`- AND kill-switch-exempt)
 
 Any write / edit / delete / move / chmod targeting one of these paths is
-**BLOCKED**, and — unlike every other rule — the `# allow:` escape hatch and the
-`enabled: false` kill switch **do NOT override it**:
+**BLOCKED**, and — unlike every other rule — a trailing `# ask: <reason>` comment (which turns an ordinary block into a human confirmation) and the
+`enabled: false` kill switch **do NOT soften it**:
 
 - `~/.agentwire/damagecontrol.yml`, any `.damagecontrol.yml`
 - `~/.claude/settings.json` (the PreToolUse hook registration)
@@ -122,7 +126,7 @@ preset; it can never expand its own freedom by editing a file.** The one
 override is the user's `allowedPaths` allowlist — a human, host-side opt-in (the
 agent can't add to it without editing a protected file, which is itself blocked).
 The mechanism is `check_protected_command` / `check_protected_path` in
-`damage_control/engine.py` (in the damage-control-dev package), which run **before** `detect_escape_hatch` and the kill switch.
+`damage_control/engine.py` (in the damage-control-dev package), which run **before** `escalate_requested_ask` and the kill switch.
 
 #### Flagless and indirect writers (#1095)
 
@@ -450,9 +454,9 @@ window (see [Closed, fail-closed, user-owned](#closed-fail-closed-user-owned-106
 `tests/unit/test_damage_control_bypass.py` (must-block per verb *and* must-allow
 siblings).
 
-The same escape-hatch-/kill-switch-exempt tier also covers specific COMMANDS,
+The same `# ask:`-/kill-switch-exempt tier also covers specific COMMANDS,
 not just paths — `PROTECTED_COMMAND_PATTERNS` (`check_protected_bash_command`,
-also checked before `detect_escape_hatch`) for operations that are dangerous
+also checked before `escalate_requested_ask`) for operations that are dangerous
 regardless of which file they touch. See [Task-execution config
 split](#task-execution-config-split-agentwiretasksyml-720) below for the first
 entry (`agentwire tasks promote`).
@@ -492,8 +496,8 @@ Bash-pattern-only block; all three are closed):
 
 1. **`PROTECTED_COMMAND_PATTERNS`** (`damage_control/engine.py`) blocks the command
    text at the SAME tier as the protected-control-plane path check —
-   escape-hatch- and kill-switch-EXEMPT, evaluated before
-   `detect_escape_hatch`. Unlike an ordinary `bashToolPatterns` rule, `# allow:`
+   `# ask:`- and kill-switch-EXEMPT, evaluated before
+   `escalate_requested_ask`. Unlike an ordinary `bashToolPatterns` rule, `# ask:`
    and `enabled: false` cannot reopen it, and there's no allowlist override at
    all (there's no legitimate reason for an agent to ever run this command).
 2. **`cmd_tasks_promote` itself refuses to run** outside a genuine host

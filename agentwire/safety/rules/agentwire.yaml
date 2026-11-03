@@ -42,6 +42,6 @@ bashToolPatterns:
 
   # Note: `agentwire tasks promote` (#720/#721) is blocked via
   # safety/_core.py's PROTECTED_COMMAND_PATTERNS instead of an ordinary
-  # bashToolPatterns entry here — it needs escape-hatch/kill-switch immunity,
+  # bashToolPatterns entry here — it needs `# ask:`/kill-switch immunity,
   # which only the code-level protected-command check provides (a rule in
-  # this file would still be overridable by `# allow:`).
+  # this file would still be softened by `# ask:`).
