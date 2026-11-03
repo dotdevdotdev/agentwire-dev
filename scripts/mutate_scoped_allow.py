@@ -51,7 +51,7 @@ MUTATIONS = [
     Mutation(
         name="scope-is-a-string-prefix",
         property_broken="a sibling sharing the scope's prefix is out of scope",
-        old='            if re.fullmatch(regex + r"(?:/.*)?", normalized):\n                return True',
+        old='            if _rx(regex + r"(?:/.*)?", 0).fullmatch(normalized):\n                return True',
         new="            if normalized.startswith(variant):\n                return True",
     ),
     Mutation(

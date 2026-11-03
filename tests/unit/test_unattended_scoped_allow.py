@@ -18,7 +18,9 @@ from damage_control.engine import (
     bundled_rule_sources,
     bundled_tooldefs_dir,
     check_command,
+    encode_unattended_allow,
     load_config,
+    parse_unattended_allow,
     resolve_unattended_grants,
     unattended_grant_allows,
 )
@@ -136,3 +138,75 @@ def test_a_grant_never_downgrades_a_hard_block(bundled_config):
     weak = [c for c in ("git -C /repo push --force origin main", "git reset --hard origin/main")
             if check_command(c, granted)["decision"] != "block"]
     assert not weak, weak
+
+
+def test_a_cd_not_joined_by_and_is_unresolvable(bundled_config, store):
+    """`cd X ; cmd` runs cmd even if the cd failed, so it cannot be pinned to X —
+    even when X is in scope."""
+    s, _other, scope = store
+    ok, why = _grant(f"cd {s} ; git commit -m x", s, {"git.commit": [[scope]]}, bundled_config)
+    assert not ok and "not statically knowable" in why
+    ok, why = _grant(f"cd {s} && git commit -m x", s, {"git.commit": [[scope]]}, bundled_config)
+    assert ok, why
+
+
+def test_scoped_entries_survive_the_env_wire_format():
+    """A spawned child inherits the SCOPE through AGENTWIRE_UNATTENDED_ALLOW,
+    not a bare grant."""
+    entries = [{"id": "git.commit", "paths": ["/x/*/memory/"]}]
+    grants, errors = parse_unattended_allow(json.loads(encode_unattended_allow(entries)))
+    assert not errors and grants == {"git.commit": [["/x/*/memory/"]]}
+
+
+def test_a_scope_rooted_behind_a_symlink_admits_its_contents(bundled_config, tmp_path):
+    """The candidate is realpath'd, so the scope's literal prefix must be too, or
+    a scope under a symlinked directory rejects its own legitimate contents."""
+    real = tmp_path.resolve() / "real"
+    mem = real / "projects" / "proj-a" / "memory"
+    mem.mkdir(parents=True)
+    (tmp_path.resolve() / "link").symlink_to(real)
+    scope = f"{tmp_path.resolve()}/link/projects/*/memory/"
+    ok, why = _grant("git commit -m x", mem, {"git.commit": [[scope]]}, bundled_config)
+    assert ok, why
+
+
+def test_the_dash_c_chain_and_git_dir_resolve_against_the_previous_hop(bundled_config, store):
+    """Real git: each `-C` is relative to the previous one, and `--git-dir` is
+    relative to the `-C` result — never to the session cwd."""
+    s, _other, scope = store
+    grants = {"git.commit": [[scope]]}
+    spellings = [
+        "git -C sub1 -C ../sub2 commit -m x",
+        "git -C sub1 --git-dir=../.git commit -m x",
+        "git -C sub1 --work-tree=../sub2 commit -m x",
+    ]
+    refused = {c: why for c in spellings
+               for ok, why in [_grant(c, s, grants, bundled_config)] if not ok}
+    assert not refused, refused
+
+
+def test_substitution_is_judged_by_position_not_presence(bundled_config, store):
+    """#942/#943: a substitution in the message does not decide a directory
+    (granted); one that decides the `-C` target does (refused)."""
+    s, _other, scope = store
+    grants = {"git.commit": [[scope]]}
+    ok, why = _grant('git commit -m "$(date +%F)"', s, grants, bundled_config)
+    assert ok, why
+    ok, why = _grant('git -C "$(pwd)" commit -m x', s, grants, bundled_config)
+    assert not ok and "command substitution" in why
+
+
+def test_inline_git_config_cannot_redirect_the_worktree(bundled_config, store):
+    """#927: `-c core.worktree=<elsewhere>` redirects like the config two-step."""
+    s, other, scope = store
+    ok, why = _grant(f"git -c core.worktree={other} commit -m x", s, {"git.commit": [[scope]]}, bundled_config)
+    assert not ok and "core.worktree" in why
+
+
+def test_a_scoped_grant_refuses_an_action_with_no_filesystem_target():
+    """An MCP-synthesized command touches no directory; measuring the scope
+    against the session cwd would be meaningless, so it refuses."""
+    ok, why = unattended_grant_allows(
+        "git.commit", "agentwire email --to x", {"git.commit": [["/x/"]]}, "/x", scopeable=False
+    )
+    assert not ok and "no filesystem target" in why
