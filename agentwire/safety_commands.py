@@ -606,16 +606,18 @@ def safety_install_cmd(
     assume_yes: bool = False,
     force: bool = False,
     allow_foreign: bool = False,
+    refresh: bool = False,
 ) -> int:
     """CLI command: ``agentwire safety install``: the package's ``init`` under AgentWire's profile.
 
-    Without ``--yes`` it asks once first. Returns non-zero on any refusal, so a script can never
-    read a refusal as success (the whole of #936's operator picture).
+    Without ``--yes`` it asks once first (``--refresh`` only prints and acknowledges the ruleset
+    diff, so it does not ask). Returns non-zero on any refusal, so a script can never read a
+    refusal as success (the whole of #936's operator picture).
     """
-    if not assume_yes:
+    if not assume_yes and not refresh:
         print("This registers the damage-control hooks (damage-control-dev) in Claude Code's user settings:")
         print(f"  {sys.executable} -I -m damage_control.hook <bash|edit|write|read|mcp>")
         if input("Proceed with installation? [y/N] ").strip().lower() != "y":
             print("Installation cancelled.")
             return 0
-    return safety_ext.install(force=force, allow_foreign=allow_foreign).code
+    return safety_ext.install(force=force, allow_foreign=allow_foreign, refresh=refresh).code
