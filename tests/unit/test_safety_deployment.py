@@ -151,7 +151,7 @@ class TestRetiringStaleCopies:
         target.write_text(OLD_RELEASE)  # deliberately NOT registered as a shipped baseline
         baselines("rules", "core.yaml", b"# some other release\n")  # the NAME is known; these bytes are not
 
-        assert safety_migrate.classify()["rules"] == {"pristine": [], "edited": ["core.yaml"]}
+        assert safety_migrate.classify()["rules"] == {"pristine": [], "edited": ["core.yaml"], "unbundled": []}
         assert safety_migrate.migrate(log=lambda *_: None) == 0
 
         assert target.read_text() == OLD_RELEASE
@@ -172,7 +172,8 @@ class TestDoctorNamesShadowing:
 
         _render_damage_control_section()
         out = capsys.readouterr().out
-        assert "overlay replaces bundled files: cloud-hosting.yaml" in out
+        assert "overlay replaces or adds to the bundle: cloud-hosting.yaml" in out
+        assert "Fix: agentwire safety migrate" not in out
 
 
 # ===========================================================================

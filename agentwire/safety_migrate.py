@@ -6,7 +6,9 @@ REPLACES the bundled file of the same name (a stale copy is not protection, it i
 a script registration runs code that no longer ships. This command classifies what is on the
 machine with ``rule_baselines.json`` (the sha256 of every version we ever shipped):
 
-* an overlay file matching a shipped hash holds nothing the bundle lacks, so it is deleted;
+* an overlay file matching a shipped hash whose name the bundle still ships holds nothing the
+  bundle lacks, so it is deleted;
+* a shipped-hash file the bundle no longer ships (``gws.yaml``, #1143) stays: it may be the only copy;
 * any other overlay file is a human's edit, so it stays (and is named; it still overrides by name);
 * pack decisions that the old always-on files implied are recorded (``packs:`` in the policy);
 * registrations of the old scripts, and the scripts, are removed once the package hooks are
@@ -27,7 +29,12 @@ from typing import Any, Callable, Dict, List, Optional
 from damage_control import harness_config as hc
 from damage_control import install as dc_install
 from damage_control import packs
-from damage_control.engine import config_override_dir, policy_file_path
+from damage_control.engine import (
+    bundled_rule_sources,
+    bundled_tooldefs_dir,
+    config_override_dir,
+    policy_file_path,
+)
 
 from . import safety_ext
 
@@ -62,27 +69,72 @@ def _sha256(path: Path) -> Optional[str]:
 
 
 def _dirs() -> Dict[str, Path]:
+    safety_ext.activate()  # judge by AgentWire's profile: without it config_override_dir() is ~/.damage-control (#1268)
     base = config_override_dir()
     return {"rules": base / "damage-control", "tooldefs": base / "tooldefs"}
 
 
 def _legacy_dir() -> Path:
+    safety_ext.activate()
     return config_override_dir() / "hooks" / "damage-control"
 
 
+def bundled_names() -> Dict[str, set]:
+    """File names the CURRENT bundle provides: the engine's plus AgentWire's rules layer (#1269)."""
+    rule_sources = [*bundled_rule_sources(), safety_ext.RULES_DIR]
+    return {
+        "rules": {p.name for d in rule_sources for p in d.glob("*.yaml")},
+        "tooldefs": {p.name for p in bundled_tooldefs_dir().glob("*.yaml")},
+    }
+
+
 def classify() -> Dict[str, Dict[str, List[str]]]:
-    """``{section: {"pristine": [...], "edited": [...]}}`` for the shipped-named files on the machine."""
+    """``{section: {"pristine", "edited", "unbundled"}}`` for the shipped-named files on the machine.
+
+    ``pristine`` is redundant: it matches a version we shipped AND the bundle still provides that
+    name. ``unbundled`` matches a shipped version but the bundle no longer ships the name (baselines
+    keep retired history), so the copy may be the only protection there is and is never retired
+    (#1269). ``edited`` is a human's change.
+    """
     out: Dict[str, Dict[str, List[str]]] = {}
     baselines = load_baselines()
+    bundled = bundled_names()
     for section, live in _dirs().items():
-        pristine: List[str] = []
-        edited: List[str] = []
+        groups: Dict[str, List[str]] = {"pristine": [], "edited": [], "unbundled": []}
         for name, hashes in sorted(baselines[section].items()):
             target = live / name
-            if target.is_file():
-                (pristine if _sha256(target) in hashes else edited).append(name)
-        out[section] = {"pristine": pristine, "edited": edited}
+            if not target.is_file():
+                continue
+            if _sha256(target) not in hashes:
+                groups["edited"].append(name)
+            elif name in bundled[section]:
+                groups["pristine"].append(name)
+            else:
+                groups["unbundled"].append(name)
+        out[section] = groups
     return out
+
+
+def overlay_report_lines(plan: Dict[str, Dict[str, List[str]]]) -> List[str]:
+    """Doctor's overlay lines. Only a pristine copy has a Fix (migrate retires it); edited and
+    unbundled files are information, because migrate deliberately keeps them (#1270)."""
+    lines: List[str] = []
+    for section, groups in plan.items():
+        if groups["pristine"]:
+            lines.append(f"  [..] Redundant {section} copies of bundled files: {', '.join(groups['pristine'])}")
+            lines.append("       Fix: agentwire safety migrate   (removes the pristine copies)")
+        kept = groups["edited"] + groups["unbundled"]
+        if kept:
+            lines.append(f"  [..] Your {section} overlay replaces or adds to the bundle: {', '.join(kept)}")
+    return lines
+
+
+def duplicate_ids_fix(plan: Dict[str, Dict[str, List[str]]]) -> str:
+    """Legacy overlay copies shadow the bundle and are what duplicate rule ids come from on a
+    pre-package install; ``install`` does not touch them, ``migrate`` does (#1270)."""
+    if any(groups["pristine"] for groups in plan.values()):
+        return "agentwire safety migrate   (retires the old overlay copies that duplicate the bundle)"
+    return "agentwire safety install --yes"
 
 
 def legacy_files() -> List[Path]:
@@ -170,6 +222,7 @@ def migrate(
     log: Callable[[str], None] = print,
 ) -> int:
     """Classify, install the package hooks, then retire what only the old install needed. Returns an exit code."""
+    safety_ext.activate()
     plan = classify()
     legacy = legacy_files()
     for section, groups in plan.items():
@@ -177,6 +230,8 @@ def migrate(
             log(f"{'would remove' if dry_run else 'remove'} {section[:-1]} copy {name} (the package ships it)")
         for name in groups["edited"]:
             log(f"keep {section[:-1]} {name}: edited, so it replaces the bundled file of that name")
+        for name in groups["unbundled"]:
+            log(f"keep {section[:-1]} {name}: the package no longer ships it, so this copy is the only one")
     for path in legacy:
         log(f"{'would remove' if dry_run else 'remove'} legacy hook script {path.name}")
     if dry_run:
