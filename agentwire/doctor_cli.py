@@ -497,6 +497,8 @@ def _render_damage_control_section(fix: bool = False) -> int:
             print(f"  [{mark}] {finding['message']}")
             if finding["level"] == "bad":
                 issues += 1
+            if finding["code"] == "stale-ruleset":
+                print("       Fix: agentwire safety install --refresh   (prints the diff and acknowledges it)")
         if not package_status["ok"]:
             print("       Fix: agentwire hooks install   (or: agentwire doctor --fix)")
             print("       Blocked outright? From a normal terminal (not through Claude Code):")
@@ -534,11 +536,9 @@ def _render_damage_control_section(fix: bool = False) -> int:
 
     # Rules and tooldefs ship inside the package; what lives on the machine is the host's
     # own overlay. A file there REPLACES the bundled one of the same name, so name each.
-    for section, groups in safety_migrate.classify().items():
-        named = groups["pristine"] + groups["edited"]
-        if named:
-            print(f"  [..] Your {section} overlay replaces bundled files: {', '.join(named)}")
-            print("       Fix: agentwire safety migrate   (removes pristine copies, keeps your edits)")
+    overlay_plan = safety_migrate.classify()
+    for line in safety_migrate.overlay_report_lines(overlay_plan):
+        print(line)
 
     # Rule groups and packs (#1141): informational only, never scored — a
     # disabled pack is a choice, not drift.
@@ -580,7 +580,7 @@ def _render_damage_control_section(fix: bool = False) -> int:
         print(f"  [!!] DUPLICATE rule ids in the loaded rule set: {', '.join(duplicates)}")
         print("       `disabled_rules` / `unattended_allow` naming one of these names")
         print("       BOTH rules. Usually a half-applied rule sync.")
-        print("       Fix: agentwire safety install --yes")
+        print(f"       Fix: {safety_migrate.duplicate_ids_fix(overlay_plan)}")
         issues += 1
     else:
         print("  [ok] Rule ids unique across the loaded rule set")

@@ -54,6 +54,7 @@ def cmd_safety_install(args) -> int:
         assume_yes=getattr(args, "yes", False),
         force=getattr(args, "force", False),
         allow_foreign=getattr(args, "allow_foreign_source", False),
+        refresh=getattr(args, "refresh", False),
     )
 
 
@@ -162,6 +163,10 @@ def register_safety_parser(subparsers) -> None:
     safety_install.add_argument(
         "--force", action="store_true",
         help="Override the downgrade refusal (this package is older than the recorded install)",
+    )
+    safety_install.add_argument(
+        "--refresh", action="store_true",
+        help="Print and acknowledge the ruleset diff since the last install (loosening is marked !!)",
     )
     safety_install.add_argument(
         "--allow-foreign-source", action="store_true",

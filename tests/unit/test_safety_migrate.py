@@ -77,3 +77,93 @@ def test_migrate_is_human_only(fake_env, monkeypatch, capsys):  # noqa: F811
     assert code == 1 and "human-only" in capsys.readouterr().err
     assert settings.read_bytes() == before and (legacy_dir / LEGACY_SCRIPT).exists()
     assert not safety_commands.RULES_DIR.exists() or not list(safety_commands.RULES_DIR.iterdir())
+
+
+FRESH_PROCESS_PROBE = """
+import json
+from agentwire import safety_migrate
+from damage_control.engine import policy_file_path
+lines = []
+code = safety_migrate.migrate(dry_run=True, log=lines.append)
+print(json.dumps({"code": code, "lines": lines, "policy": str(policy_file_path())}))
+"""
+
+
+def test_migrate_judges_by_agentwires_profile_in_a_fresh_process(tmp_path):
+    """#1268: only importing ``agentwire.safety`` activated the profile, so a bare ``migrate`` read ~/.damage-control.
+
+    A same-process test cannot see this (some earlier import has already activated the profile),
+    so the probe runs in a clean interpreter.
+    """
+    import os
+    import subprocess
+    import sys
+
+    home = tmp_path / "home"
+    overlay = home / ".agentwire" / "damage-control"
+    overlay.mkdir(parents=True)
+    bundled = safety_migrate.safety_ext.RULES_DIR / "agentwire.yaml"
+    (overlay / "agentwire.yaml").write_bytes(bundled.read_bytes())  # a pristine copy of a shipped version
+    env = {**os.environ, "HOME": str(home), "AGENTWIRE_DIR": str(home / ".agentwire")}
+    env.pop("DAMAGE_CONTROL_DIR", None)
+
+    run = subprocess.run([sys.executable, "-I", "-c", FRESH_PROCESS_PROBE], env=env, capture_output=True, text=True)
+
+    assert run.returncode == 0, run.stderr
+    out = json.loads(run.stdout.strip().splitlines()[-1])
+    assert any("agentwire.yaml" in line for line in out["lines"]), out
+    assert out["policy"].startswith(str(home / ".agentwire")), out
+    assert not (home / ".damage-control").exists()
+
+
+def test_a_pristine_copy_of_a_file_the_bundle_no_longer_ships_is_kept(fake_env, monkeypatch):  # noqa: F811
+    """#1269: baselines keep retired history, so a shipped hash alone must not retire a copy (gws.yaml, #1143)."""
+    overlay = fake_env / ".agentwire" / "damage-control"
+    overlay.mkdir(parents=True)
+    retired = overlay / "retired.yaml"
+    retired.write_text("rules: []\n")
+    redundant = overlay / "agentwire.yaml"
+    redundant.write_bytes((safety_migrate.safety_ext.RULES_DIR / "agentwire.yaml").read_bytes())
+    digest = lambda p: safety_migrate._sha256(p)  # noqa: E731
+    monkeypatch.setattr(safety_migrate, "load_baselines", lambda: {
+        "rules": {"retired.yaml": [digest(retired)], "agentwire.yaml": [digest(redundant)]},
+        "tooldefs": {},
+    })
+    lines = []
+
+    assert safety_migrate.migrate(log=lines.append) == 0
+
+    assert retired.exists(), "a retired-from-bundle file may be the only protection there is"
+    assert not redundant.exists(), "a pristine copy of a still-bundled file is redundant"
+    assert any("retired.yaml" in line and "keep" in line for line in lines), lines
+
+
+def test_doctor_names_unbundled_and_edited_overlays_without_a_fix_line():
+    """#1270: migrate keeps these on purpose, so a Fix line would never clear and invites the wrong action."""
+    plan = {"rules": {"pristine": [], "edited": ["a.yaml"], "unbundled": ["gws.yaml"]},
+            "tooldefs": {"pristine": [], "edited": [], "unbundled": []}}
+
+    lines = safety_migrate.overlay_report_lines(plan)
+
+    assert any("a.yaml" in line and "gws.yaml" in line for line in lines), lines
+    assert not [line for line in lines if "Fix" in line], lines
+
+
+def test_doctor_offers_migrate_only_for_pristine_copies_and_for_their_duplicates():
+    clean = {"rules": {"pristine": [], "edited": [], "unbundled": []}}
+    legacy = {"rules": {"pristine": ["core.yaml"], "edited": [], "unbundled": []}}
+
+    assert any("Fix: agentwire safety migrate" in line for line in safety_migrate.overlay_report_lines(legacy))
+    assert "migrate" in safety_migrate.duplicate_ids_fix(legacy)
+    assert "migrate" not in safety_migrate.duplicate_ids_fix(clean)
+
+
+def test_install_refresh_reaches_the_package_without_prompting(fake_env, monkeypatch):  # noqa: F811
+    """#1270: ``--refresh`` must be passed through to ``safety_ext.install`` (and must not ask first)."""
+    seen = {}
+    monkeypatch.setattr(safety_commands.safety_ext, "install",
+                        lambda **kw: seen.update(kw) or SimpleNamespace(code=0))
+    monkeypatch.setattr("builtins.input", lambda *_: (_ for _ in ()).throw(AssertionError("prompted")))
+
+    assert safety_commands.safety_install_cmd(refresh=True) == 0
+    assert seen["refresh"] is True
