@@ -1550,6 +1550,40 @@ def record_session_launch(
     return metadata
 
 
+def record_conversation_change(session_name: str, conversation_id: str) -> bool:
+    """Make *conversation_id* the session's CURRENT conversation (#1271).
+
+    :func:`record_session_launch` writes the chain once, at launch. Claude
+    mints a new id inside a running session on ``/clear`` and switches ids on
+    ``/resume``, and nothing at launch can know — so the SessionStart hook
+    reports each change here, and ``restart``'s newest-first chain walk works
+    unchanged.
+
+    The id ends up LAST in the chain: a fresh id is appended, and an id already
+    recorded (a ``/resume`` back to an earlier conversation) is moved to the
+    tail, because the walk reads the tail as "what the session is in now".
+    Already-last is a no-op that writes nothing, so the hook is idempotent and
+    the launch's own record (which fires the same id) costs nothing.
+
+    Returns whether the record changed. A session with no launch record is left
+    alone (False) — this must never conjure a partial record that
+    ``recorded_sessions`` and ``doctor`` would then take for a launched
+    session. Raises ``OSError`` if the write doesn't land (see
+    :func:`store_session_metadata`); the hook decides what to do about that.
+    """
+    metadata = load_session_metadata(session_name)
+    if not metadata.get("cwd_at_launch"):
+        return False
+
+    chain = list(metadata.get("conversation_ids") or [])
+    if chain and chain[-1] == conversation_id:
+        return False
+
+    metadata["conversation_ids"] = [c for c in chain if c != conversation_id] + [conversation_id]
+    store_session_metadata(session_name, metadata)
+    return True
+
+
 def notify_portal_session_created(session_name: str, parent: str | None, role: str | None) -> None:
     """Tell the portal a session was just created, with topology context (#747).
 
