@@ -109,6 +109,8 @@ class TestInstallHooks:
                    for e in events["PermissionRequest"] for h in e["hooks"])
         assert any(h["command"].endswith("idle-handler.sh")
                    for e in events["Notification"] for h in e["hooks"])
+        assert any(h["command"].endswith("session-start-handler.sh")
+                   for e in events["SessionStart"] for h in e["hooks"])
 
 
     def test_stale_installed_copy_refreshed(self, env):

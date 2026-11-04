@@ -266,6 +266,43 @@ against the installed Claude Code, the same way #878 established tmux's
 mapping. Encoding only `/` (#892) produced a key no directory ever had for any
 path with a dot, underscore or space.
 
+## The chain follows the conversation, not just the launch (#1271)
+
+`record_session_launch` writes the chain **once**. Claude mints a new id inside
+a running session on `/clear` and switches ids on `/resume`, so a chain that
+only knew launches resumed a week-old conversation after six `/clear`s — the
+record named the id the session *started* with, not the one it was *in*. A
+single-launch test cannot see this; the bug only exists after a second step.
+
+A Claude Code `SessionStart` hook (`source`: `startup|resume|clear|compact`,
+carrying the new `session_id`) reports each change:
+
+- `hooks/session-start-handler.sh` is registered by `agentwire hooks install`
+  like the other managed hooks (drift checks in `hooks status` / `doctor`
+  included). It runs the work detached and exits 0 unconditionally — a hook
+  must never fail or slow a session start.
+- The body is `agentwire hooks session-start` (CLI is SSOT). It resolves the
+  owning session from `$TMUX_PANE` via `pane_manager`, **skips worker panes
+  (index > 0)** — a pane is not a session and must not write its owner's
+  chain, same rule as `spawn` — and calls `core.record_conversation_change`,
+  which uses the same atomic `store_session_metadata` write.
+- `record_conversation_change` puts the id **last** in the chain (an id already
+  present — `/resume` back to an earlier conversation — moves to the tail,
+  because the tail is what restart reads as "current"). Already-last is a no-op,
+  so it is idempotent and the launch's own id costs nothing. A session with no
+  launch record is left alone: the hook never conjures a partial record.
+- Errors are logged to `/tmp/claude-hook-debug.log`, never raised.
+
+`restart`'s newest-first walk is unchanged: a `/clear`ed conversation that
+never took a turn has no transcript yet (written lazily), so the walk falls
+back to the previous id that does.
+
+**Sessions that took a `/clear` before the hook was installed** have a chain
+frozen at launch. `doctor` states (never scores) live sessions whose history
+dir holds transcripts newer than the recorded head and absent from the chain.
+It cannot be certain — another session in the same directory writes transcripts
+that look identical — hence a note, not a fault.
+
 ## Restarting in place
 
 `agentwire restart -s <session>` is the verb the record exists for: `/exit`,

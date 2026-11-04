@@ -936,6 +936,56 @@ def scan_orphaned_history(sessions: list[str] | None = None) -> list[dict]:
     return findings
 
 
+def scan_unrecorded_transcripts(sessions: list[str] | None = None) -> list[dict]:
+    """Live sessions whose project dir holds transcripts newer than the recorded head (#1271).
+
+    The SessionStart hook keeps ``conversation_ids`` current across ``/clear``
+    and ``/resume``; a session that took one BEFORE the hook was installed has
+    a chain that stops at its launch id, and ``restart`` would resume that
+    stale conversation. The evidence is on disk: transcripts in the session's
+    history dir, absent from the chain, written after the head's own.
+
+    STATED, never scored, because it cannot be certain: the history dir is
+    keyed by cwd, so a second session sharing the directory writes transcripts
+    that look identical. The finding lists the candidates and says so. Live
+    sessions only — the ones you might actually restart.
+    """
+    from .core import load_session_metadata, recorded_sessions
+    from .history import claude_projects_dir, history_key_candidates
+
+    findings: list[dict] = []
+    for name in sessions if sessions is not None else recorded_sessions():
+        metadata = load_session_metadata(name)
+        ids = list(metadata.get("conversation_ids") or [])
+        cwd = metadata.get("cwd_at_launch")
+        if not ids or not cwd or not tmux_session_exists(name):
+            continue
+
+        for key in history_key_candidates(cwd):
+            project = claude_projects_dir() / key
+            try:
+                head = project / f"{ids[-1]}.jsonl"
+                baseline = head.stat().st_mtime if head.exists() else None
+                if baseline is None:
+                    continue  # no head transcript to be newer than
+                newer = sorted(
+                    (f for f in project.glob("*.jsonl")
+                     if f.stem not in ids and f.stat().st_mtime > baseline),
+                    key=lambda f: f.stat().st_mtime,
+                )
+            except OSError:
+                continue
+            if newer:
+                findings.append({
+                    "session": name,
+                    "head": ids[-1],
+                    "newer": [f.stem for f in newer],
+                    "project_dir": str(project),
+                })
+                break
+    return findings
+
+
 def _render_orphaned_history_section() -> int:
     """Doctor section: conversations a restart could not bring back (#871).
 
@@ -974,6 +1024,18 @@ def _render_orphaned_history_section() -> int:
                   f"(expected {f['expected_dir']}/)")
         print("       Not a fault. Restarting these keeps the role and starts a fresh "
               "conversation.")
+
+    unrecorded = scan_unrecorded_transcripts()
+    if unrecorded:
+        print(f"  [..] {len(unrecorded)} live session(s) with transcripts newer than the "
+              "recorded conversation:")
+        for f in unrecorded:
+            print(f"       - {f['session']}: recorded head {f['head'][:8]}, newer "
+                  f"{', '.join(c[:8] for c in f['newer'])}")
+        print("       Likely a /clear or /resume taken before the session-start hook was "
+              "installed (`agentwire hooks install`): `agentwire restart` would resume the "
+              "recorded head, not the newer conversation. Not scored — another session in "
+              "the same directory writes transcripts that look the same.")
 
     return len(orphaned)
 

@@ -382,6 +382,13 @@ def _managed_hook_files() -> list[ManagedHook]:
             ("PostToolUse", "PostToolUseFailure", "PermissionDenied"),
             "Outcome logger", True, "required for damage-control audit outcomes",
         ),
+        # Reports Claude's in-session conversation changes (/clear, /resume,
+        # compact) into the launch record so `restart` resumes the CURRENT one.
+        ManagedHook(
+            "session-start-handler.sh", claude_hooks_dir(), ("SessionStart",),
+            "Session-start hook", True,
+            "required for `agentwire restart` to resume after /clear or /resume",
+        ),
         ManagedHook(
             "queue-processor.sh", Path.home() / ".agentwire", (),
             "Queue processor", True, "required for notification queuing",
@@ -740,6 +747,54 @@ def cmd_hooks_status(args) -> int:
     return 0
 
 
+def record_session_start(payload: dict) -> str:
+    """Apply one SessionStart payload to the owning session's record (#1271).
+
+    Returns a one-line outcome for the hook log. The owning session is resolved
+    from the PANE, and only pane 0 counts: a worker pane (index > 0) is not a
+    session and its conversation must never overwrite its owner's chain — the
+    same rule ``spawn`` and prompt routing apply. Raises on a failed write;
+    :func:`cmd_hooks_session_start` is the one place that turns that into exit 0.
+    """
+    from . import pane_manager
+    from .core import record_conversation_change
+
+    conversation_id = payload.get("session_id")
+    if not isinstance(conversation_id, str) or not conversation_id:
+        return "skipped: payload has no session_id"
+
+    session = pane_manager.get_current_session()
+    pane_index = pane_manager.get_current_pane_index()
+    if not session or pane_index is None:
+        return "skipped: not in a tmux pane"
+    if pane_index > 0:
+        return f"skipped: worker pane {session}.{pane_index}"
+
+    source = payload.get("source", "?")
+    if record_conversation_change(session, conversation_id):
+        return f"recorded {conversation_id} for {session} (source={source})"
+    return f"unchanged: {session} already at {conversation_id} or has no launch record"
+
+
+def cmd_hooks_session_start(args) -> int:
+    """Claude Code SessionStart hook body: payload on stdin, ALWAYS exits 0.
+
+    A hook that can fail a session start is worse than a stale chain, so every
+    error — unreadable payload, tmux gone, store unwritable — is logged to
+    stderr (the hook script routes that to the debug log) and swallowed.
+    """
+    import sys
+
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        if not isinstance(payload, dict):
+            raise ValueError("payload is not a JSON object")
+        print(record_session_start(payload), file=sys.stderr)
+    except Exception as e:
+        print(f"session-start hook error: {type(e).__name__}: {e}", file=sys.stderr)
+    return 0
+
+
 def register_hooks_parser(subparsers) -> None:
     hooks_parser = subparsers.add_parser(
         "hooks", help="Manage agentwire hook files (permission, idle handler, queue processor)"
@@ -775,3 +830,10 @@ def register_hooks_parser(subparsers) -> None:
         "status", help="Check hook installation status"
     )
     hooks_status.set_defaults(func=cmd_hooks_status)
+
+    # hooks session-start (invoked by the SessionStart hook, not by humans)
+    hooks_session_start = hooks_subparsers.add_parser(
+        "session-start",
+        help="SessionStart hook body: record the new conversation id (reads the payload on stdin; always exits 0)",
+    )
+    hooks_session_start.set_defaults(func=cmd_hooks_session_start)
