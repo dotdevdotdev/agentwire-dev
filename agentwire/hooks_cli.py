@@ -757,7 +757,7 @@ def record_session_start(payload: dict) -> str:
     :func:`cmd_hooks_session_start` is the one place that turns that into exit 0.
     """
     from . import pane_manager
-    from .core import record_conversation_change
+    from .core import load_session_metadata, record_conversation_change, session_owns_cwd
 
     conversation_id = payload.get("session_id")
     if not isinstance(conversation_id, str) or not conversation_id:
@@ -771,6 +771,16 @@ def record_session_start(payload: dict) -> str:
         return f"skipped: worker pane {session}.{pane_index}"
 
     source = payload.get("source", "?")
+    # A headless `claude -p` started from this pane inherits $TMUX_PANE and fires
+    # this same hook with source=startup, indistinguishable from a real start
+    # except by its cwd (#1289).
+    payload_cwd = payload.get("cwd")
+    if not isinstance(payload_cwd, str) or not payload_cwd:
+        return f"ignored: payload has no cwd, cannot tell {session}'s conversation from a nested run"
+    metadata = load_session_metadata(session)
+    if metadata.get("cwd_at_launch") and not session_owns_cwd(metadata, payload_cwd):
+        return (f"ignored: {conversation_id} ran in {payload_cwd}, not {session}'s "
+                f"{metadata['cwd_at_launch']} (nested run, source={source})")
     if record_conversation_change(session, conversation_id):
         return f"recorded {conversation_id} for {session} (source={source})"
     return f"unchanged: {session} already at {conversation_id} or has no launch record"
