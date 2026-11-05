@@ -6,12 +6,12 @@ Every release does **both** a PyPI publish and a GitHub release. The **GitHub re
 
 ## The engine is a separate project (single source)
 
-The damage-control engine has exactly one source: the `damage-control-dev` repo (<https://github.com/dotdevdotdev/damage-control-dev>), published on PyPI. `agentwire-dev` only *consumes* it through the range in `pyproject.toml` (currently `damage-control-dev>=0.2.0,<0.3`); a checkout and a PyPI install both resolve it from PyPI. There is no copy of the engine in this repo and nothing to release from here. `tests/unit/test_damage_control_pin.py` checks that the declared floor/ceiling parse and that the installed engine satisfies them.
+The damage-control engine has exactly one source: the `damage-control-dev` repo (<https://github.com/dotdevdotdev/damage-control-dev>), published on PyPI. `agentwire-dev` only *consumes* it through the range in `pyproject.toml` (currently `damage-control-dev>=0.3.0,<0.4`); a checkout and a PyPI install both resolve it from PyPI. There is no copy of the engine in this repo and nothing to release from here. `tests/unit/test_damage_control_pin.py` checks that the declared floor/ceiling parse and that the installed engine satisfies them.
 
 To ship an engine change:
 
 1. **Land it in the damage-control-dev repo**, tag and release it there (its own release flow). Do not tag or release from this repo.
-2. **Raise the floor here** in a normal agentwire PR: bump the `>=` in `pyproject.toml` (and the `<` ceiling too if the engine crossed it, e.g. `>=0.2.0,<0.3`), run `uv lock`, and re-run `scripts/golden_snapshot.py check` and `scripts/effective_rules.py --check` — re-record the golden only if the behavior change is intended, in that same PR.
+2. **Raise the floor here** in a normal agentwire PR: bump the `>=` in `pyproject.toml` (and the `<` ceiling too if the engine crossed it, e.g. `>=0.3.0,<0.4`), run `uv lock`, and re-run `scripts/golden_snapshot.py check` and `scripts/effective_rules.py --check` — re-record the golden only if the behavior change is intended, in that same PR.
 3. **Verify against the published wheel** before releasing agentwire: in a scratch venv, install the agentwire wheel (it pulls the engine from PyPI), then run the fast suite, `agentwire doctor` and a hook subprocess smoke under a temp `HOME`.
 4. **Then** bump and publish `agentwire-dev` (steps below), then the GitHub release.
 

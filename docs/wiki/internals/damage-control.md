@@ -108,6 +108,18 @@ install` scaffolds the global file with `enabled: true` if missing.
 
 An agent can no longer talk its way past a block. The old agent-writable `# allow: <reason>` escape comment is removed and has **no effect**. Its replacement, a `# ask: <reason>` comment as the very last thing in a command (unquoted, final line, outside any substitution or heredoc, non-empty reason), turns a would-be **block** into a human **ask**. That ask is never demoted by `bypassPermissions`/`auto`, is a block when unattended, and is ignored for the protected control plane (below). Mid-command or quoted `# ask:` is data.
 
+### Upgrading to damage-control-dev 0.3.0 (agentwire 1.80.0)
+
+0.3.0 adds checks and removes none; the golden snapshot and effective rule set re-record byte-identical, so no existing corpus verdict moved. A few shapes of otherwise ordinary commands can now ASK (or block, unattended) where they used to pass. If a prompt you have not seen before appears after upgrading, it is most likely one of these:
+
+| New prompt | What triggered it | What to do |
+|---|---|---|
+| `Unverifiable command (a verb taken from a variable the command does not set)` (`core.indirect-verb`) | The command's verb is `$VAR` and the same command never assigns `VAR`, so nothing can say what runs. Not demoted by `bypassPermissions`/`auto`; a block when unattended. | Spell the verb out, or set the variable in the same command (`CMD=ls; $CMD`). |
+| A recipe ask for `make`, `npm run`, `just` | The recipe body is now read as a script and judged like a typed command. A recipe the scan cannot resolve (dynamic target, missing file) is an ask. `task` recipes are not read. | Judge the recipe text; fix the recipe if it holds a genuinely dangerous line. |
+| `Unverifiable command (base64-decode pipeline)` (`core.ambiguous-command`), or a block on what the payload decodes to | An encoded payload piped into a shell is decoded and re-scanned; one that cannot be decoded is an ask. | Run the decoded command directly. |
+
+Also new, and only ever stricter: `.` and `..` segments in paths are normalized before path rules apply (`./a/../.env` is judged as `.env`), and `$IFS` is resolved before verb matching (a command that reassigns `IFS` is an ask, `core.indirect-verb`). `damage-control-dev corpus run` replays the engine's conformance corpus through the real hook.
+
 ### The protected control plane (`# ask:`- AND kill-switch-exempt)
 
 Any write / edit / delete / move / chmod targeting one of these paths is
