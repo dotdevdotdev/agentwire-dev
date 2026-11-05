@@ -296,6 +296,27 @@ class AgentConfig:
 
 
 @dataclass
+class SandboxConfig:
+    """Allowances for ``agentwire new --sandbox`` (#1279). Opt-in; nothing here
+    applies to a session launched without the flag. Writes are otherwise
+    limited to the session's working directory; ``~/.agentwire`` stays
+    read-only except the message-passing paths below, so a sandboxed agent
+    cannot edit ``damagecontrol.yml`` or ``.env``."""
+
+    allow_write: list[str] = field(default_factory=lambda: [
+        "~/.cache/uv",  # uv run / uv sync
+        "~/.agentwire/inbox", "~/.agentwire/inbox-events.jsonl",  # msg send / notify-parent --queued
+        "~/.agentwire/sent-ledger",
+    ])
+    allowed_domains: list[str] = field(default_factory=lambda: [
+        "github.com", "api.github.com", "pypi.org", "files.pythonhosted.org",
+    ])
+    allow_unix_sockets: list[str] = field(default_factory=list)  # tmux socket is always added
+    excluded_commands: list[str] = field(default_factory=lambda: ["gh *"])  # Go TLS fails under the proxy on macOS
+    allow_local_binding: bool = True  # macOS: needed to reach the local portal API
+
+
+@dataclass
 class MachinesConfig:
     """Remote machines registry configuration."""
 
@@ -618,6 +639,7 @@ class Config:
     tts: TTSConfig = field(default_factory=TTSConfig)
     stt: STTConfig = field(default_factory=STTConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     machines: MachinesConfig = field(default_factory=MachinesConfig)
     uploads: UploadsConfig = field(default_factory=UploadsConfig)
     artifacts: ArtifactsConfig = field(default_factory=ArtifactsConfig)
@@ -774,6 +796,14 @@ def _dict_to_config(data: dict) -> Config:
     agent = AgentConfig(
         command=agent_data.get("command", _get_default_agent_command()),
     )
+
+    # Sandbox allowances (#1279) — a key that is absent keeps its default.
+    sandbox_data = data.get("sandbox") or {}
+    sandbox_defaults = SandboxConfig()
+    sandbox = SandboxConfig(**{
+        key: sandbox_data.get(key, getattr(sandbox_defaults, key))
+        for key in SandboxConfig.__dataclass_fields__
+    })
 
     # Machines
     machines_data = data.get("machines", {})
@@ -1017,6 +1047,7 @@ def _dict_to_config(data: dict) -> Config:
         tts=tts,
         stt=stt,
         agent=agent,
+        sandbox=sandbox,
         machines=machines,
         uploads=uploads,
         artifacts=artifacts,
