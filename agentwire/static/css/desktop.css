@@ -6418,6 +6418,22 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     .council-tile--pending::before { animation: none; display: none; }
 }
 
+/* ---------- Fleet sidebar section (#1277) ---------- */
+.fleet-parent { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.fleet-parent-name { font-weight: 600; font-size: 13px; }
+.fleet-child {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    background: var(--chrome); border: 1px solid var(--chrome-border); border-radius: 6px; padding: 5px 8px;
+}
+.fleet-child--gone { opacity: 0.7; }
+.fleet-child--flagged { border-color: var(--danger, #ff5555); }
+.fleet-child-name { font-size: 12px; font-weight: 600; }
+.fleet-child-meta, .fleet-section-empty { font-size: 11px; color: var(--text-muted); }
+.fleet-flag {
+    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+    border: 1px solid var(--danger, #ff5555); color: var(--danger, #ff5555);
+}
+
 /* ---------- Sidebar section launcher ---------- */
 .council-section-list { display: flex; flex-direction: column; gap: 6px; }
 .council-section-item {

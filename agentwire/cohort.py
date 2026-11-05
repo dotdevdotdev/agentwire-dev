@@ -132,19 +132,43 @@ def ledger_path(parent: str) -> Path:
     return path
 
 
+def read(parent: str) -> tuple[dict | None, str | None]:
+    """``(ledger, problem)`` — exactly one is None.
+
+    ``problem`` is ``"missing"`` (no file) or ``"corrupt: <why>"``. The
+    distinction is for read-only reporters (``agentwire fleet``); the guard
+    paths use :func:`load`, which deliberately collapses both to "no cohort".
+    """
+    try:
+        text = ledger_path(parent).read_text()
+    except FileNotFoundError:
+        return None, "missing"
+    except (OSError, ValueError) as e:  # ValueError: invalid session name / undecodable bytes
+        return None, f"corrupt: {e}"
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        return None, f"corrupt: {e}"
+    if not isinstance(data, dict) or not isinstance(data.get("children"), list):
+        return None, "corrupt: not a cohort ledger (no children list)"
+    return data, None
+
+
 def load(parent: str) -> dict | None:
     """The parent's ledger, or None when absent/unreadable/malformed.
 
     Fails open on purpose: a corrupt ledger reads as "no cohort", so the guard
     stops suppressing and the parent resumes normal idle handling.
     """
-    try:
-        data = json.loads(ledger_path(parent).read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or not isinstance(data.get("children"), list):
-        return None
-    return data
+    return read(parent)[0]
+
+
+def ledger_parents() -> list[str]:
+    """Every parent session that has a ledger file, sorted (worktree names nest)."""
+    if not COHORT_ROOT.exists():
+        return []
+    return sorted(str(p.relative_to(COHORT_ROOT))[: -len(".json")]
+                  for p in COHORT_ROOT.rglob("*.json"))
 
 
 def _save(parent: str, data: dict) -> None:
@@ -301,6 +325,7 @@ def _mark(data: dict, child: str, state: str, report: str | None = None) -> None
     for entry in data["children"]:
         if entry.get("session") == child:
             entry["state"] = state
+            entry["resolved_at"] = _now()
             if report is not None:
                 entry["report"] = report
 
@@ -344,6 +369,7 @@ def record_delivery(parent: str, messages: list) -> None:
                 else:
                     continue
                 entry["delivered"] = True
+                entry["resolved_at"] = _now()
                 changed = True
                 log_event("delivered_by_drain", parent=parent, child=entry["session"],
                           state=entry["state"])
