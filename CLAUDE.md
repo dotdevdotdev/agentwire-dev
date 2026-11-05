@@ -35,6 +35,7 @@ The PR gate has to stay fast or it gets bypassed. Rules for adding tests:
 - **A test must fail against the bug it guards.** Mutate the code it protects once and watch it go red; a pin that passes against the behavior it was written to forbid proves nothing.
 - **Test behavior, not text.** No tests that grep source files or docs prose for strings — they fail on refactors and pass on regressions.
 - **No real waits, no real tmux in the fast set.** Stub the probe or the clock. A test that genuinely needs a real tmux or real git process is marked `requires_tmux` / `slow`: PRs run `-m "not requires_tmux and not slow"` with no coverage; pushes to main run everything hermetic with coverage.
+- Upgrade safety is its own slow job (previous PyPI release upgraded in a fresh HOME, `-m upgrade`; not in the PR gate): [`docs/wiki/internals/upgrade-test.md`](docs/wiki/internals/upgrade-test.md).
 - The engine (`damage_control`, from the published `damage-control-dev`) compiles regexes through `_rx()` (memoized) — keep new dynamic patterns on it, or each `check_command` re-pays ~90 ms of compilation. Engine changes belong in the damage-control-dev repo, not here.
 
 ## CLI is the Single Source of Truth

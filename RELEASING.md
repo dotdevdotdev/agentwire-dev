@@ -17,6 +17,11 @@ To ship an engine change:
 
 An `agentwire-dev` whose floor names an engine version PyPI doesn't have yet is uninstallable, so step 1 always completes (published) before step 2 merges.
 
+## Pre-release checklist
+
+- The **`upgrade from previous release`** job in `.github/workflows/pytest.yml` is green on the commit you are about to tag (it runs on pushes to main and on PRs into a `release*` branch, not on ordinary PRs). It installs the previous release from PyPI, upgrades it to this checkout in a fresh `HOME`, then asserts `safety migrate` and `doctor` behave. Details: [`docs/wiki/internals/upgrade-test.md`](docs/wiki/internals/upgrade-test.md). Rerun it if the only failure is PyPI index lag.
+- Engine bumps: also follow step 3 of the engine section above.
+
 ## Steps
 
 ### 1. Bump version

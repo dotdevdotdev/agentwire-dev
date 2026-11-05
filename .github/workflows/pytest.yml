@@ -48,7 +48,7 @@ jobs:
       - name: Run test suite (full) + coverage
         if: github.event_name != 'pull_request'
         run: >
-          uv run --no-sync pytest -q -m "not requires_tmux"
+          uv run --no-sync pytest -q -m "not requires_tmux and not upgrade"
           --cov=agentwire --cov-report=term-missing --cov-report=xml
 
       - name: Publish coverage summary (report-only)
@@ -69,6 +69,29 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           if-no-files-found: ignore
+
+  # Upgrade test (#1276): the previous release from PyPI, upgraded in place to this checkout, in a
+  # fresh HOME. Needs the network and builds two venvs, so it is NOT in the PR gate: it runs on
+  # pushes to main and on PRs into a release branch. Budget: ~10 min timeout, ~1 min typical.
+  # PyPI index lag is the one flake to rerun, not a reason to skip it.
+  upgrade:
+    name: upgrade from previous release
+    if: github.event_name == 'push' || startsWith(github.base_ref, 'release')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Upgrade test
+        run: uv run --no-sync pytest -q -m upgrade tests/integration/test_upgrade_from_release.py
 
   # The hook is `python -I -m damage_control.hook` and runs under whatever `python3` the user
   # has; the package's declared floor is 3.9 (#1223: a 3.10-only construct made the hooks crash
