@@ -173,3 +173,9 @@ Overriding a bundled lens's content works the same way — a user-level
 - **Soul replies rejected** — a soul gets one initial reply per prompt;
   after that only `--take` follow-ups are accepted (a second `--ack`/`--pass`
   errors by design).
+
+## Design notes moved from CLAUDE.md (#1280)
+
+Verbatim from the repo-root CLAUDE.md, which now keeps only the rule and a pointer.
+
+Multi-soul orchestrator sitting, **namespaced by `<name>`** so independent councils run concurrently: `agentwire-council-<name>` fans prompts out to lens sessions (`council-<name>-brain`, `council-<name>-conscience`, …), each replying take/ack/pass through a file inbox under `~/.agentwire/council/<name>/prompts/`; the orchestrator collects and synthesizes with attribution. Targeting: `--name` → cwd-repo-slug if it matches a live sitting → sole live sitting → else error+list; every command echoes which sitting it hit. The standard `soul` role self-excludes from any `council-*` session. `council minutes` renders a sitting's persisted record (question + attributed verbatim takes + optional `--synthesis`) into a self-contained HTML artifact at `~/.agentwire/artifacts/council-<name>-minutes/`; `council stop` renders it by default when any prompt exists (`--no-minutes` to skip). CLI under `agentwire council ...` (incl. `council list`), 7 MCP `council_*` tools. Full reference: [`docs/wiki/council.md`](council.md).

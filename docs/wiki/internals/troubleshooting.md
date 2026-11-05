@@ -618,3 +618,9 @@ When reporting issues, include:
 **Workaround:** nudge the session with `agentwire send -s name "continue"`. May need 2–3 nudges. Kill the session if its task is otherwise complete.
 
 This appears to be a Claude Code-side stall, not an agentwire issue.
+
+## Design notes moved from CLAUDE.md (#1280)
+
+Verbatim from the repo-root CLAUDE.md, which now keeps only the rule and a pointer.
+
+A turn can end with a background shell/monitor still running; the harness re-wakes the session when it reports. `idle-handler.sh` asks `agentwire idle-gate` (`agentwire/background_tasks.py`) first and **defers** that idle — for the parent notice, the worker-pane reap, and the scheduled-task summary/exit pass alike — so the idle that follows the last report is the real one (#1103). Pane turn-end line (live position only) is authoritative, transcript (`backgroundTaskId` / `<task-notification><status>`) the fallback. **Unknown means HOLD, never reap:** an unparsable "still running" or truncated footer reads as pending, so the worker-pane reap and scheduled-task `/exit` fail to keep; the 30-min bound releases only a qualified parent notice (hook, or the `idle_deferred` watchdog stage), never a kill; a gate crash on a reap path holds too (only the parent notice fails open to send). Behaves as before only when nothing is readable at all (a bare shell). Detail: [`docs/wiki/internals/troubleshooting.md`](troubleshooting.md#idle-notice-missing-while-a-background-task-runs-1103).
