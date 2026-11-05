@@ -243,6 +243,26 @@ def teardown_session_note(result: dict) -> str:
     return f" (NO live tmux session named '{session}' — nothing killed)"
 
 
+def teardown_record_note(result: dict) -> str:
+    """Clause saying what teardown left in the session-record store.
+
+    Teardown never deletes ``~/.agentwire/sessions/<name>`` — the record is
+    the only map from session name to conversation — so it states that it is
+    still there, and whether its chain has orphaned entries. Empty when there
+    was no record (or the teardown did not complete).
+    """
+    record = result.get("record_left")
+    if not record:
+        return ""
+    session = result.get("session") or "?"
+    orphaned = result.get("record_orphaned_ids") or []
+    note = f"session record left at {record}"
+    if orphaned:
+        note += (f" (chain has {len(orphaned)} orphaned conversation(s) — "
+                 f"`agentwire history migrate --session {session}`)")
+    return note + "; drop with `agentwire history prune --dead --yes`"
+
+
 def ensure_worktree(
     project_path: Path,
     branch: str,

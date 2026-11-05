@@ -448,6 +448,95 @@ def cmd_history_migrate(args) -> int:
     return 1 if failed else 0
 
 
+def dead_session_records(older_than_s: int | None = None, *, now: float | None = None) -> list[dict]:
+    """Session records whose tmux session is not running, oldest first.
+
+    ``age_s`` is the record's own mtime age (last launch/hook write), so
+    ``older_than_s`` spares a session torn down moments ago. Each entry says
+    whether its chain has orphaned conversations — the thing worth knowing
+    before deleting the only map from session name to conversation.
+    """
+    from .core import (
+        load_session_metadata,
+        recorded_sessions,
+        session_metadata_path,
+        tmux_session_exists,
+    )
+    from .history import survey_chain
+
+    now = time.time() if now is None else now
+    rows = []
+    for name in recorded_sessions():
+        if tmux_session_exists(name):
+            continue
+        path = session_metadata_path(name)
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if older_than_s is not None and age < older_than_s:
+            continue
+        metadata = load_session_metadata(name)
+        ids = list(metadata.get("conversation_ids") or [])
+        cwd = metadata.get("cwd_at_launch")
+        orphaned = [loc.conversation_id for loc in survey_chain(ids, cwd)[1]] if ids and cwd else []
+        rows.append({"session": name, "path": str(path.parent), "age_s": int(age),
+                     "orphaned_ids": orphaned})
+    return sorted(rows, key=lambda r: -r["age_s"])
+
+
+def _delete_record(session: str) -> None:
+    """Remove a session's record file, then its now-empty directories."""
+    from .core import session_metadata_path, sessions_dir
+
+    path = session_metadata_path(session)
+    path.unlink()
+    root = sessions_dir()
+    parent = path.parent
+    while parent != root:
+        try:
+            parent.rmdir()
+        except OSError:
+            break  # not empty — other files live here; leave them
+        parent = parent.parent
+
+
+def cmd_history_prune(args) -> int:
+    """List dead session records; delete them only with --yes."""
+    from .msg_cli import _parse_duration
+
+    if not args.dead:
+        return _output_result(False, args.json, "Usage: agentwire history prune --dead [--older-than 14d] [--yes]")
+    older = None
+    if args.older_than:
+        older = _parse_duration(args.older_than)
+        if older is None:
+            return _output_result(False, args.json, f"Bad --older-than {args.older_than!r} (use e.g. 14d, 12h)")
+
+    rows = dead_session_records(older)
+    deleted = []
+    if args.yes:
+        for r in rows:
+            _delete_record(r["session"])
+            deleted.append(r["session"])
+
+    if args.json:
+        return _output_json({"success": True, "deleted": deleted, "dead": rows,
+                             "applied": args.yes})
+    if not rows:
+        print("No dead session records.")
+        return 0
+    for r in rows:
+        flag = f"  [{len(r['orphaned_ids'])} orphaned conversation(s)]" if r["orphaned_ids"] else ""
+        print(f"{'deleted' if args.yes else 'dead'}: {r['session']} ({r['age_s'] // 86400}d old){flag}")
+    if args.yes:
+        print(f"\nDeleted {len(deleted)} record(s).")
+    else:
+        print(f"\n{len(rows)} dead record(s). Re-run with --yes to delete them "
+              "(a record is the only map from session name to conversation).")
+    return 0
+
+
 def register_history_parser(subparsers) -> None:
     history_parser = subparsers.add_parser("history", help="Claude Code session history")
     history_subparsers = history_parser.add_subparsers(dest="history_command")
@@ -503,3 +592,16 @@ def register_history_parser(subparsers) -> None:
                              help="Delete the old history dir, but only after the copy verifies")
     history_mig.add_argument("--json", action="store_true", help="JSON output")
     history_mig.set_defaults(func=cmd_history_migrate)
+
+    # history prune
+    history_prune = history_subparsers.add_parser(
+        "prune",
+        help="List (or with --yes delete) session records of sessions that are not running",
+    )
+    history_prune.add_argument("--dead", action="store_true",
+                               help="Target records whose tmux session is not running")
+    history_prune.add_argument("--older-than", help="Only records untouched for this long (e.g. 14d)")
+    history_prune.add_argument("--yes", action="store_true",
+                               help="Delete the listed records (default is list only)")
+    history_prune.add_argument("--json", action="store_true", help="JSON output")
+    history_prune.set_defaults(func=cmd_history_prune)

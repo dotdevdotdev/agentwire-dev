@@ -366,7 +366,24 @@ else `cwd_at_launch` — which is what catches the case where the record and the
 transcript still agree with each other and are both stale because the directory
 moved underneath them.
 
-It scores orphans only. A conversation with no history *anywhere* is stated for
+It scores orphans of **live** sessions only (#1292). A session that is not
+running keeps its record under `~/.agentwire/sessions/` after
+`worktree --remove`, so its orphaned chain would otherwise stay red forever;
+doctor lists those as information with the recover command and does not count
+them. Teardown (`worktree --remove`, `--prune --gc-merged`) never deletes the
+record — it is the only map from session name to conversation — but says in its
+output that it left one, and how many of its chain's conversations are
+orphaned. To clean up deliberately:
+
+```bash
+agentwire history prune --dead                    # list dead-session records (deletes nothing)
+agentwire history prune --dead --older-than 14d   # only records untouched that long
+agentwire history prune --dead --yes              # delete exactly what was listed
+```
+
+`doctor`, teardown and `prune` share one chain probe, `history.survey_chain`.
+
+Orphans aside, a conversation with no history *anywhere* is stated for
 live sessions and never counted, because this check cannot say why it's missing
 — never-prompted and Claude-evicted look identical from here — and because
 scoring it would flag hundreds of dead records. Calibration, measured on a real
