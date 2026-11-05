@@ -27,10 +27,25 @@ try:
 except Exception:
     pass" 2>/dev/null || true)
 
+# An escape-ask (a command whose last line ends in `# ask: <reason>`) is the
+# agent asking a human to decide a blocked command; the engine never demotes
+# it under bypass/auto, so this short-circuit must not auto-approve it either.
+# Deliberately a superset of the engine's parser: a false positive only costs
+# a human confirm, a false negative would approve what the human was owed.
+is_escape_ask=$(printf '%s' "$input" | python3 -c "import json,re,sys
+try:
+    c = (json.load(sys.stdin).get('tool_input') or {}).get('command', '')
+    last = [l for l in str(c).splitlines() if l.strip()][-1:]
+    print('1' if last and re.search(r'#\s*ask:', last[0], re.I) else '')
+except Exception:
+    pass" 2>/dev/null || true)
+
 case "$permission_mode" in
     bypassPermissions|auto)
-        echo '{"decision":"allow","message":"bypass mode: permission auto-approved"}'
-        exit 0
+        if [ -z "$is_escape_ask" ]; then
+            echo '{"decision":"allow","message":"bypass mode: permission auto-approved"}'
+            exit 0
+        fi
         ;;
 esac
 

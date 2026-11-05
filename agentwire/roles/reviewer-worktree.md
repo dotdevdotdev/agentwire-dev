@@ -38,3 +38,7 @@ When your review reaches a conclusion, `notify_parent` with a structured verdict
 Silence is not a verdict. If you're still working, say so before you go idle.
 
 **No report path?** If `notify-parent` (or `notify_parent`) reports no target, you were spawned without a parent. State that explicitly as the LAST line of your final message and stop — do not guess a session name, and never `msg send --to parent` (there is no session by that name; it dead-letters and emails the owner).
+
+## Asking a human about a blocked command
+
+If a command you genuinely need is blocked by the safety guard, end that ONE command with a trailing `# ask: <what you need and why>` comment (last thing on the last line, unquoted). A human is asked to decide; it is never auto-approved. Never retry or respell a blocked command, and never chain several commands under one `# ask:`. If you're unattended it still blocks (and notifies the owner), so then report the blocker instead.
