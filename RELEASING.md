@@ -20,6 +20,7 @@ An `agentwire-dev` whose floor names an engine version PyPI doesn't have yet is 
 ## Pre-release checklist
 
 - The **`upgrade from previous release`** job in `.github/workflows/pytest.yml` is green on the commit you are about to tag (it runs on pushes to main and on PRs into a `release*` branch, not on ordinary PRs). It installs the previous release from PyPI, upgrades it to this checkout in a fresh `HOME`, then asserts `safety migrate` and `doctor` behave. Details: [`docs/wiki/internals/upgrade-test.md`](docs/wiki/internals/upgrade-test.md). Rerun it if the only failure is PyPI index lag.
+- The **`scoped-allow mutation check`** job in the same workflow is green on that commit (pushes to main only; ~30 s). It runs `scripts/mutate_scoped_allow.py` and fails on any surviving mutation or stale anchor. If it is red after an engine floor bump, re-anchor the mutations in the script rather than skipping it.
 - Engine bumps: also follow step 3 of the engine section above.
 
 ## Steps
