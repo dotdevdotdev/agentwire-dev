@@ -91,3 +91,7 @@ Make email better.
 - Don't queue dependent tasks at the same priority
 - Don't let workers go unsupervised — check summaries
 - Don't make architectural decisions without discussing with the user first
+
+## Asking a human about a blocked command
+
+If a command you genuinely need is blocked by the safety guard, end that ONE command with a trailing `# ask: <what you need and why>` comment (last thing on the last line, unquoted). A human is asked to decide; it is never auto-approved. Never retry or respell a blocked command, and never chain several commands under one `# ask:`. If you're unattended it still blocks (and notifies the owner), so then report the blocker instead.
