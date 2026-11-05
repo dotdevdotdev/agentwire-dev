@@ -93,6 +93,31 @@ jobs:
       - name: Upgrade test
         run: uv run --no-sync pytest -q -m upgrade tests/integration/test_upgrade_from_release.py
 
+  # Scoped-allow mutation check (#1293): scripts/mutate_scoped_allow.py breaks each #914 safety
+  # property once and demands a red test. It exits 1 on any surviving mutation AND on a stale
+  # anchor (a skipped mutation counts as a survivor), so engine or source drift that silently
+  # detaches an anchor turns this job red. Pushes to main only, not the PR gate.
+  # Budget: ~10 min timeout, ~30 s typical (19 mutations x one test file).
+  mutation:
+    name: scoped-allow mutation check
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # The script mutates the engine inside this checkout's .venv, so it must exist.
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Mutation check
+        run: uv run --extra dev python scripts/mutate_scoped_allow.py
+
   # The hook is `python -I -m damage_control.hook` and runs under whatever `python3` the user
   # has; the package's declared floor is 3.9 (#1223: a 3.10-only construct made the hooks crash
   # non-blocking, i.e. fail OPEN). The main job runs 3.12 and cannot see that. agentwire itself
