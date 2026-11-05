@@ -71,7 +71,7 @@ requires-dist = [
     { name = "av", specifier = ">=12.0.0" },
     { name = "certifi", specifier = ">=2026.10.23" },
     { name = "chatterbox-tts", marker = "python_full_version >= '3.13' and extra == 'tts'", specifier = ">=0.1.6" },
-    { name = "damage-control-dev", specifier = ">=0.2.0,<0.3" },
+    { name = "damage-control-dev", specifier = ">=0.3.0,<0.4" },
     { name = "fastapi", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'stt'", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'tts'", specifier = ">=0.104.0" },
@@ -1076,14 +1076,14 @@ wheels = [
 
 [[package]]
 name = "damage-control-dev"
-version = "0.2.0"
+version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5b/ea/771f154f0d6ad0c0fe7d3d97181333232e5981f1d4f8f80d351ebc0fb76e/damage_control_dev-0.2.0.tar.gz", hash = "sha256:87e92f39c846689d9a102b86fe2004836ba6f1a94126cc0cddcc2a1ac52eea18", size = 242193, upload-time = "2026-11-03T13:58:14.211Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/33/e2a8d1dec8e5802c4435bb56c7b0435ee3f964918fe9cf71afa9c3e810e9/damage_control_dev-0.3.0.tar.gz", hash = "sha256:a4a28955870bcdcb63e9c1361dd87e7647f6948bca2266fdeb1ac46fa8737d44", size = 261118, upload-time = "2026-11-05T14:22:14.819Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/02/5c/339ba548a381b87ff4ad6a61ff85e164c5d64d24d99e2006bb29380dc09d/damage_control_dev-0.2.0-py3-none-any.whl", hash = "sha256:608ef67b86f3554bb6a26f2451f62e8d679cab6c157b0fc36c9bf92a64618183", size = 270499, upload-time = "2026-11-03T13:58:12.57Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/e1/5c749c6cfe3054010d779db0157f38ce9e2a5e34928faf38732fa62ad8ad/damage_control_dev-0.3.0-py3-none-any.whl", hash = "sha256:b3f0b2dfd143d95e7055d79a429c0fa1488508e0f2796c5b8c19f18721e9a73f", size = 290058, upload-time = "2026-11-05T14:22:13.012Z" },
 ]
 
 [[package]]
