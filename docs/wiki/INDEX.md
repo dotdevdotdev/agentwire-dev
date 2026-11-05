@@ -77,6 +77,7 @@ Running AgentWire across machines and exposing the portal.
 Recon notes and evaluations that inform direction (not yet implemented).
 
 - **[Orchestration transport alternatives](research/orchestration-transport-alternatives.md)** — the "we don't use SSH" competitor pitch, evaluated: claims-vs-reality on faster/more-secure, and why the cheap wins are SSH `ControlMaster` multiplexing + a Tailscale mesh underlay rather than a new transport ([#297](https://github.com/dotdevdotdev/agentwire-dev/issues/297))
+- **[How AgentWire differs](research/orchestrator-comparison.md)** — sourced survey of Claude Squad, Conductor, Sculptor, Claude Code agent teams and Multica (license, platforms, isolation, what each does that the other doesn't; unverified claims marked) plus suggested borrows ([#1294](https://github.com/dotdevdotdev/agentwire-dev/issues/1294))
 - **[Briefing Mode feasibility](research/briefing-mode-feasibility.md)** — asymmetric-verbosity orchestration evaluation that informed the shipped Briefing Mode
 
 ## Voice (TTS & STT)
