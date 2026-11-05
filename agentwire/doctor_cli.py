@@ -1426,6 +1426,28 @@ def _render_role_prompt_store_section(
     return 1, 1
 
 
+def _render_sandbox_section() -> int:
+    """Which recorded sessions run under the Claude Code sandbox (#1279).
+
+    Reads the launch record — the flag is recorded, not guessed from a pane —
+    and flags a machine where a sandboxed session could not (re)start, since
+    ``failIfUnavailable`` makes that a hard refusal, not a silent downgrade.
+    """
+    from . import sandbox
+
+    names = sandbox.sandboxed_sessions()
+    problem = sandbox.platform_problem()
+    if not names:
+        print("  [ok] No session was launched with --sandbox")
+        return 0
+    for name in names:
+        print(f"  [ok] {name}: sandboxed (launch record)")
+    if problem:
+        print(f"  [!!] sandbox cannot start on this machine: {problem}")
+        return 1
+    return 0
+
+
 def _render_blocked_prompt_section() -> int:
     """Doctor section: agent alive, but the pane sits on an unanswered menu (#905).
 
@@ -2250,6 +2272,12 @@ def cmd_doctor(args) -> int:
         issues_fixed += _rp_fixed
     except Exception as e:
         print(f"  [..] Could not check the role-prompt store: {e}")
+
+    print("\nChecking sandboxed sessions (#1279)...")
+    try:
+        issues_found += _render_sandbox_section()
+    except Exception as e:
+        print(f"  [..] Could not check sandboxed sessions: {e}")
 
     # 12c. Sessions blocked on an unanswered dialog (#905). The one state every
     # other check calls healthy: the agent process is running, so liveness

@@ -254,6 +254,7 @@ class AgentCommand:
     roles: list[str] = field(default_factory=list)  # Role NAMES, in merge order
     model: str | None = None  # --model override, if the launch chose one
     effort: str | None = None  # --effort override, if the launch chose one
+    sandbox: bool = False  # launched under Claude Code's sandbox (--sandbox, #1279)
 
 
 _UNATTENDED_ENV_KEYS = ("AGENTWIRE_UNATTENDED", "AGENTWIRE_UNATTENDED_ALLOW")
@@ -626,8 +627,12 @@ def build_agent_command(
     model: str | None = None,
     resume_session_id: str | None = None,
     effort: str | None = None,
+    sandbox: bool = False,
 ) -> AgentCommand:
     """Build the shell command + injected env for the given posture.
+
+    ``sandbox`` adds ``--settings`` enabling Claude Code's native sandbox with
+    the allowances from ``config.yaml`` (#1279; see :mod:`agentwire.sandbox`).
 
     The ONE flag-builder (#729): fresh sessions AND history resume both route
     through here, so a posture always launches with the same flags — no
@@ -687,6 +692,12 @@ def build_agent_command(
     if effort:
         parts.append(f"--effort {effort}")
 
+    if sandbox:
+        from . import sandbox as sandbox_mod
+        from .config import load_config as load_typed_config
+
+        parts.append(sandbox_mod.settings_flag(sandbox_mod.settings_for(load_typed_config())))
+
     # Role-based flags (merged roles always apply — no tool-locking posture left)
     role_prompt_path = None
     if merged:
@@ -712,6 +723,7 @@ def build_agent_command(
         roles=role_names,
         model=model,
         effort=effort,
+        sandbox=sandbox,
     )
 
 
@@ -1523,6 +1535,7 @@ def record_session_launch(
         # conversation back on a different model/effort than it was running on.
         "model": agent.model,
         "effort": agent.effort,
+        "sandbox": agent.sandbox,
         "role_prompt_path": agent.role_prompt_path,
         "launched_at": now,
         **({"repo": None, "branch": None, "worktree_path": None}

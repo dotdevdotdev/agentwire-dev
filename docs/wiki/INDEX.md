@@ -55,6 +55,7 @@ Headless and scheduled execution.
 - **[Remote-access hardening](security/remote-access-hardening.md)** — threat model for the any-device→tunnel→portal→shell path; network footprint map (what agentwire owns vs BYO tunnels); the portal auth boundary and the per-device / capability-scope / freeze-config hardening plan (#396, #420, #423–#425)
 - **[Damage control](internals/damage-control.md)** — safety hooks: rules, patterns, audit log
 - **[Damage-control matcher hardening](security/damage-control-hardening.md)** — consolidated note for the matcher hardening shipped in PR #500
+- **[Sandbox spike](security/sandbox-spike.md)** — workers under the Claude Code sandbox (`agentwire new --sandbox`, opt-in): settings keys, observed probe results, required allowances, residual gaps (#1279)
 - **[pip-audit](security/pip-audit.md)** — dependency CVE triage workflow
 
 ## Integrations

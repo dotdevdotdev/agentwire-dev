@@ -308,7 +308,8 @@ def cmd_new(args) -> int:
 
         # Build agent command
         agent = build_agent_command(posture, roles if roles else None, model=getattr(args, 'model', None),
-                                    effort=getattr(args, 'effort', None))
+                                    effort=getattr(args, 'effort', None),
+                                    sandbox=bool(getattr(args, 'sandbox', False)))
         agent.env.update(parse_env_args(getattr(args, 'env', None)))
 
         agent_cmd = agent.command
@@ -562,7 +563,8 @@ def cmd_new(args) -> int:
     # Build agent command
     model_override = getattr(args, 'model', None)
     agent = build_agent_command(posture, roles if roles else None, model=model_override,
-                                effort=getattr(args, 'effort', None))
+                                effort=getattr(args, 'effort', None),
+                                sandbox=bool(getattr(args, 'sandbox', False)))
     agent.env.update(parse_env_args(getattr(args, 'env', None)))
     _set_session_name_env(agent, session_name, created_by=created_by)
 
@@ -2565,6 +2567,10 @@ def register_session_parser(subparsers) -> None:
     new_parser.add_argument("--effort", choices=EFFORT_LEVELS,
                             help="Reasoning effort for this session only (claude --effort); "
                                  "recorded, so `agentwire restart` keeps it")
+    new_parser.add_argument("--sandbox", action="store_true",
+                            help="Run the agent under Claude Code's native sandbox (writes limited to the "
+                                 "working dir + `sandbox:` allowances in config.yaml, network allowlist, no "
+                                 "unsandboxed retry). Opt-in; recorded, so `agentwire restart` keeps it")
     new_parser.add_argument("--persist", action="store_true", help="Write the resolved posture/--roles to .agentwire.yml (default: session-level override only)")
     new_parser.add_argument("--env", action="append", metavar="KEY=VAL", help="Inject env var via `tmux set-environment` (repeatable, keeps secrets out of `ps`)")
     # Worktree-only flags (default None so they can be rejected unless the

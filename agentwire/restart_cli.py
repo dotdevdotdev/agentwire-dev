@@ -186,6 +186,7 @@ def cmd_restart(args) -> int:
         roles or None,
         model=metadata.get("model"),
         effort=metadata.get("effort"),
+        sandbox=bool(metadata.get("sandbox")),
         resume_session_id=resume_id,
     )
     _set_session_name_env(agent, session_name, created_by=metadata.get("created_by"))
