@@ -183,3 +183,14 @@ Defense in depth, three layers:
 - Defining a recurring task? → [Scheduled workloads](scheduling/scheduled-workloads.md).
 - Wiring a channel? → [Channels](communication/channels.md).
 - Debugging? → [Troubleshooting](internals/troubleshooting.md).
+
+## Design notes moved from CLAUDE.md (#1280)
+
+**CLI layout (#495):** the old `__main__.py` monolith is split per-domain. Shared
+helpers (machine config, SSH `_run_remote`, JSON output, session resolution, etc.)
+live in `agentwire/core.py`; each command group lives in its own `agentwire/<domain>_cli.py`
+module exposing a `register_<domain>_parser(subparsers)` registrar. `build_parser()`
+imports them and runs the `_REGISTRARS` loop — adding a command means writing a new
+`*_cli.py` + appending its registrar, not editing a god-file. Example: the portal git
+endpoints (`api_check_path` / `api_check_branches`) shell out to `agentwire repo-info`
+and `agentwire branches` (in `repo_cli.py`) rather than embedding their own git/SSH logic.

@@ -202,3 +202,11 @@ branch deletion demands a verified merge (integration).
 Related: [prompt routing](prompt-routing.md) (#276 guard shape),
 [polite messaging](messaging.md) (the inbox reports arrive through),
 [worktree sessions](worktree-sessions.md) (#756 teardown policy).
+
+## Design notes moved from CLAUDE.md (#1280)
+
+Verbatim from the repo-root CLAUDE.md, which now keeps only the rule and a pointer.
+
+**If you spawn child sessions, call `agentwire wait --children` (MCP `wait_children`) — never just "wait".** Idle ≠ done for a parent with outstanding children: the idle handler reads idle as done, prompts for a roll-up you can't write yet, and `/exit`s you while the children are still working (#852). Blocking inside the tool call isn't idle, so the hook never fires. Bounded (`--timeout`) and re-callable; exit 1 means children are still pending, so loop.
+
+Every `agentwire new` / `worktree` **auto-enrolls** in the caller's cohort ledger (`~/.agentwire/cohorts/<parent>.json`) — no bookkeeping to forget. Cohort is **not** rooting: `created_by` drops the parent link for a cross-project spawn (#715), but lifecycle membership survives it, or a fan-out would be silently half-protected. Opt out with `--no-cohort`; an explicit `--kind orchestrator` never enrolls (durable by definition). `wait` collects each report from the inbox and *then* kills the child — the reverse order dead-letters the report and emails the owner via `gc_sender`. Two backstops: the idle-handler guard (fails open on a missing/corrupt/expired ledger) and the watchdog sweeper (reaps a cohort whose parent died, marks children that exited). Teardown is session-only and **skips worktree children entirely** — they hold a branch/open PR (teardown follows merge verification, #756) and are where review fix-ups get sent; `wait` reports them under `left_alive`, and `worktree --dangling` still flags an abandoned one. Full reference: [`docs/wiki/sessions/fan-out-cohorts.md`](fan-out-cohorts.md). `agentwire fleet [--json]` is the read-only view of a fan-out's children and what is stuck ([`docs/wiki/sessions/fleet.md`](fleet.md)).

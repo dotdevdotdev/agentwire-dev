@@ -78,3 +78,9 @@ worktree_prune()             # GC stale registry entries after many spawn/teardo
 - **Inbox:** the passive `ingest` kind + typed `ref` field.
 
 Shipped across three phases (#430-group → #433 → #435 → #437).
+
+## Design notes moved from CLAUDE.md (#1280)
+
+Verbatim from the repo-root CLAUDE.md, which now keeps only the rule and a pointer.
+
+Asymmetric-verbosity orchestration: a terse, human-facing **`anchor`** (persona role; replaces orchestrator) fans out exhaustively-verbose **`correspondent`** worktrees (`worktree_create(roles="correspondent", prompt=…)`; stacks on the worker-worktree rail). Correspondents file deep reports into the dropbox (`agentwire research ensure` / `research_dir()` → `~/.agentwire/research/<anchor>/`) and signal **passively** — `msg send --kind ingest --ref <path>` is never auto-delivered, so it never drives the anchor. The anchor stays quiet until the human cues it, then `msg pull`s the pointers, reads the files, and **briefs across two channels in one call**: `say(text="<spoken headline>", display="<richer toast card>")` — different content per channel; the toast (`notify_user`) renders a safe markdown subset. Teardown via `worktree_remove` / `worktree_prune`. The notify-* family is split by target: `notify_user` (human toast), `notify_parent` (your orchestrator), `notify_event` (portal lifecycle). Full reference: [`docs/wiki/briefing-mode.md`](briefing-mode.md).
