@@ -245,6 +245,9 @@ markers = [
     "slow: marks tests as slow",
     "integration: requires subprocess mocking",
     "e2e: end-to-end portal tests",
+    # Installs a real older release from PyPI and upgrades it (#1276). Needs network; run by the
+    # `upgrade` CI job, deselected from the generic full run.
+    "upgrade: installs the previous release from PyPI and upgrades it in a fresh HOME (#1276)",
     # Spawns a real tmux binary (WS connect / speak paths PTY-pipe through tmux).
     # Deselected in the hermetic CI gate via `-m 'not requires_tmux'` (#323);
     # still runs locally where tmux is on PATH.
