@@ -27,22 +27,22 @@ try:
 except Exception:
     pass" 2>/dev/null || true)
 
-# An escape-ask (a command whose last line ends in `# ask: <reason>`) is the
-# agent asking a human to decide a blocked command; the engine never demotes
-# it under bypass/auto, so this short-circuit must not auto-approve it either.
-# Deliberately a superset of the engine's parser: a false positive only costs
-# a human confirm, a false negative would approve what the human was owed.
-is_escape_ask=$(printf '%s' "$input" | python3 -c "import json,re,sys
-try:
-    c = (json.load(sys.stdin).get('tool_input') or {}).get('command', '')
-    last = [l for l in str(c).splitlines() if l.strip()][-1:]
-    print('1' if last and re.search(r'#\s*ask:', last[0], re.I) else '')
-except Exception:
-    pass" 2>/dev/null || true)
+# Bypass/auto demote an engine ask to an allow EXCEPT the non-demotable ones
+# (escape-asks, unverifiable shapes): those stay a real human confirm, so this
+# short-circuit must not approve them either. The engine decides (CLI is SSOT,
+# never guess from command text); anything but a clean "0" — missing binary,
+# crash, timeout — holds for a human.
+needs_human() {
+    local bin="${AGENTWIRE_BIN:-$(command -v agentwire 2>/dev/null || echo "$HOME/.local/bin/agentwire")}"
+    local verdict
+    verdict=$(printf '%s' "$input" | "$bin" hooks needs-human 2>/dev/null) || return 0
+    [ "$verdict" = "0" ] && return 1
+    return 0
+}
 
 case "$permission_mode" in
     bypassPermissions|auto)
-        if [ -z "$is_escape_ask" ]; then
+        if ! needs_human; then
             echo '{"decision":"allow","message":"bypass mode: permission auto-approved"}'
             exit 0
         fi

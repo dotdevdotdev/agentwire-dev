@@ -8,6 +8,7 @@ its parent / the owner with the reason visible.
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -49,21 +50,41 @@ def _hook(command: str, mode: str, tmp_path: Path) -> subprocess.CompletedProces
     payload = '{"tool_name":"Bash","permission_mode":"%s","tool_input":{"command":%s}}' % (
         mode, __import__("json").dumps(command),
     )
-    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "PWD": str(tmp_path)}
+    env = {
+        "PATH": os.environ["PATH"], "HOME": str(tmp_path), "PWD": str(tmp_path),
+        "AGENTWIRE_BIN": str(Path(sys.executable).parent / "agentwire"),
+    }
     return subprocess.run(
         ["bash", str(HOOK)], input=payload, capture_output=True, text=True,
         env=env, cwd=tmp_path, timeout=30,
     )
 
 
-def test_permission_hook_never_auto_approves_an_escape_ask(tmp_path):
+def test_permission_hook_never_auto_approves_a_non_demotable_ask(tmp_path):
     # Not in tmux and outside ~/projects: anything past the bypass short-circuit
     # dies on "could not determine session" before touching the network.
+    cases = {
+        "plain": (BLOCKED, True),
+        "demotable-ask": ("docker compose up -d", True),
+        "escape": (ESCAPE, False),
+        "unverifiable": ('eval "$PAYLOAD"', False),
+    }
     got = {}
-    for label, cmd in (("plain", BLOCKED), ("escape", ESCAPE)):
-        proc = _hook(cmd, "bypassPermissions", tmp_path)
-        got[label] = '"decision":"allow"' in proc.stdout
-    assert got == {"plain": True, "escape": False}
+    for label, (cmd, _) in cases.items():
+        for mode in ("bypassPermissions", "auto"):
+            got[f"{label}/{mode}"] = '"decision":"allow"' in _hook(cmd, mode, tmp_path).stdout
+    want = {f"{label}/{mode}": allowed for label, (_, allowed) in cases.items()
+            for mode in ("bypassPermissions", "auto")}
+    assert got == want
+
+
+def test_permission_hook_holds_for_a_human_when_the_engine_check_is_unavailable(tmp_path):
+    payload = '{"tool_name":"Bash","permission_mode":"bypassPermissions","tool_input":{"command":"ls"}}'
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "PWD": str(tmp_path),
+           "AGENTWIRE_BIN": str(tmp_path / "missing")}
+    proc = subprocess.run(["bash", str(HOOK)], input=payload, capture_output=True, text=True,
+                          env=env, cwd=tmp_path, timeout=30)
+    assert '"decision":"allow"' not in proc.stdout
 
 
 @pytest.fixture

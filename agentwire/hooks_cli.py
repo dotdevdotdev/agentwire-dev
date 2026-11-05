@@ -795,6 +795,53 @@ def cmd_hooks_session_start(args) -> int:
     return 0
 
 
+def engine_requires_human(payload: dict) -> bool:
+    """True when the damage-control engine would put this call to a human under the payload's mode.
+
+    The engine is the SSOT for which asks bypass/auto may not demote (escape-asks,
+    unverifiable shapes); the permission hook asks it rather than guessing from the
+    command text. A bypass-mode ask is, by construction, a non-demotable one. Read-only:
+    the verdict's audit row is never written.
+    """
+    from damage_control import engine
+    from damage_control.adapter import HOOK_KINDS, hook_namespace, parse_payload
+    from damage_control.policy import Guard
+
+    from . import safety_ext
+
+    safety_ext.activate()
+    name = payload.get("tool_name", "")
+    kind = next(
+        (k for k, (tools, _) in HOOK_KINDS.items() if tools is not None and name in tools),
+        "mcp" if name.startswith("mcp__") else None,
+    )
+    if kind is None:
+        return False
+    tools, tooldefs = HOOK_KINDS[kind]
+    ns = hook_namespace()
+    call, ctx = parse_payload(payload, tools, ns)
+    if call is None:
+        return False
+    guard = Guard(engine.load_effective_config(tooldefs), ns)
+    return guard.decide(call, ctx).decision == "ask"
+
+
+def cmd_hooks_needs_human(args) -> int:
+    """Permission-hook helper: payload on stdin, prints ``1`` (human must decide) or ``0``.
+
+    Fails closed: any error prints ``1`` so a broken check can never become an auto-approve.
+    """
+    import sys
+
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        print("1" if engine_requires_human(payload) else "0")
+    except Exception as e:
+        print(f"needs-human error: {type(e).__name__}: {e}", file=sys.stderr)
+        print("1")
+    return 0
+
+
 def register_hooks_parser(subparsers) -> None:
     hooks_parser = subparsers.add_parser(
         "hooks", help="Manage agentwire hook files (permission, idle handler, queue processor)"
@@ -837,3 +884,10 @@ def register_hooks_parser(subparsers) -> None:
         help="SessionStart hook body: record the new conversation id (reads the payload on stdin; always exits 0)",
     )
     hooks_session_start.set_defaults(func=cmd_hooks_session_start)
+
+    # hooks needs-human (invoked by the permission hook, not by humans)
+    hooks_needs_human = hooks_subparsers.add_parser(
+        "needs-human",
+        help="Permission hook helper: does the engine keep this call a human confirm under the payload's mode? (stdin payload; prints 1/0, fails closed)",
+    )
+    hooks_needs_human.set_defaults(func=cmd_hooks_needs_human)
