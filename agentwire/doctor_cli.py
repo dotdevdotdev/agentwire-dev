@@ -1128,13 +1128,11 @@ def _render_cohort_section() -> int:
     from . import cohort
 
     suspects = []
-    if cohort.COHORT_ROOT.exists():
-        for path in sorted(cohort.COHORT_ROOT.rglob("*.json")):
-            parent = str(path.relative_to(cohort.COHORT_ROOT))[: -len(".json")]
-            data = cohort.load(parent)
-            reason = cohort.suspect_reason(parent, data) if data else None
-            if reason:
-                suspects.append((parent, reason))
+    for parent in cohort.ledger_parents():
+        data = cohort.load(parent)
+        reason = cohort.suspect_reason(parent, data) if data else None
+        if reason:
+            suspects.append((parent, reason))
     if not suspects:
         print("  [ok] No suspect cohort ledgers")
         return 0
@@ -1143,6 +1141,28 @@ def _render_cohort_section() -> int:
         print(f"       - {parent}: {reason}")
     print("       The sweep leaves these (and their children) alone. If the children are "
           "not a live fan-out, delete the ledger: rm ~/.agentwire/cohorts/<parent>.json")
+    return 1
+
+
+def _render_fleet_section() -> int:
+    """Doctor section: delegation problems from ``agentwire fleet`` (#1277).
+
+    Renders :func:`fleet.build_fleet` and nothing else — the flags are decided
+    there, so doctor, the CLI and the portal cannot disagree.
+    """
+    from . import fleet
+
+    data = fleet.build_fleet(None)
+    problems = len(data["flagged"]) + len(data["broken_ledgers"])
+    if not problems:
+        print("  [ok] No stuck or silent children in any fan-out")
+        return 0
+    print(f"  [!!] {problems} fleet problem(s):")
+    for b in data["broken_ledgers"]:
+        print(f"       - {b['parent']}: cohort ledger {b['ledger']}")
+    for f in data["flagged"]:
+        print(f"       - {f['session']} (child of {f['parent']}): {f['flag']}")
+    print("       Details: agentwire fleet --all")
     return 1
 
 
@@ -2164,6 +2184,12 @@ def cmd_doctor(args) -> int:
     # 10b2. Cohort ledgers that aren't fan-outs (#1087)
     print("\nChecking for suspect cohort ledgers...")
     issues_found += _render_cohort_section()
+
+    print("\nChecking the fleet (stuck or silent children)...")
+    try:
+        issues_found += _render_fleet_section()
+    except Exception as e:
+        print(f"  [..] Could not check the fleet: {e}")
 
     # 10c. Expired Claude login (#906) — the state that made #867 cost two
     # hours. Nothing else on this list would surface it: the pane is alive and

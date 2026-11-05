@@ -77,6 +77,25 @@ class SessionsRoutesMixin:
             logger.error(f"Failed to list worktrees: {e}")
             return web.json_response({"entries": []})
 
+    async def api_fleet(self, request: web.Request) -> web.Response:
+        """GET /api/fleet - Every orchestrator's children and what is stuck.
+
+        Thin wrapper over `agentwire fleet --all --json` (#1277); the CLI owns
+        the flags, so the portal panel only renders them. `?pr=0` skips the
+        GitHub lookup.
+        """
+        args = ["fleet", "--all"]
+        if request.query.get("pr") == "0":
+            args.append("--no-pr")
+        try:
+            success, result = await self.run_agentwire_cmd(args)
+        except Exception as e:
+            logger.error(f"Failed to read fleet: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+        if not success:
+            return web.json_response({"error": "fleet command failed"}, status=500)
+        return web.json_response(result)
+
     async def api_sessions_local(self, request: web.Request) -> web.Response:
         """Fast endpoint for local sessions only (no SSH checks)."""
         try:
@@ -152,4 +171,5 @@ def register_sessions_routes(server, app):
     app.router.add_get("/api/sessions/local", server.api_sessions_local)
     app.router.add_get("/api/sessions/remote", server.api_sessions_remote)
     app.router.add_get("/api/worktrees", server.api_worktrees)
+    app.router.add_get("/api/fleet", server.api_fleet)
     app.router.add_get("/api/sessions/{name:.+}/connections", server.api_session_connections)

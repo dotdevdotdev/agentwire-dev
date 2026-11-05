@@ -1735,6 +1735,29 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
     return 0
 
 
+def pr_for_branch(branch: str, project: "str | None") -> "dict | None":
+    """The PR (``{"state", "url"}``) for *branch*, or None when there is none.
+
+    None also covers "gh is absent / not a GitHub repo / unparsable output" —
+    this is a best-effort probe. The ONE ``gh pr view`` call, shared by the
+    dangling scan and ``agentwire fleet`` so the two cannot disagree about
+    what counts as an open PR.
+    """
+    if not shutil.which("gh"):
+        return None
+    result = subprocess.run(
+        ["gh", "pr", "view", branch, "--json", "state,url"],
+        cwd=project, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        pr = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return pr if isinstance(pr, dict) else None
+
+
 def scan_dangling_worktrees(rows: list[dict]) -> list[dict]:
     """Flag LIVE worker-kind registry entries with an OPEN PR and no live
     recorded parent — a PR nobody is positioned to review/merge (the
@@ -1787,17 +1810,8 @@ def scan_dangling_worktrees(rows: list[dict]) -> list[dict]:
         branch = r.get("branch")
         if not branch or not tmux_session_exists(session):
             continue
-        result = subprocess.run(
-            ["gh", "pr", "view", branch, "--json", "state,url"],
-            cwd=r.get("project"), capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            continue
-        try:
-            pr = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            continue
-        if str(pr.get("state", "")).upper() != "OPEN":
+        pr = pr_for_branch(branch, r.get("project"))
+        if not pr or str(pr.get("state", "")).upper() != "OPEN":
             continue
         parent = _display_parent(session, r.get("worktree_path", ""))
         if parent and tmux_session_exists(parent):
