@@ -297,6 +297,22 @@ def locate_conversation(
     )
 
 
+def survey_chain(
+    conversation_ids: list[str], cwd
+) -> tuple[list[ConversationLocation], list[ConversationLocation], ConversationLocation | None]:
+    """Probe EVERY link of a recorded chain, newest first.
+
+    Returns ``(located, orphans, resumable)``: all links, the orphaned ones,
+    and the newest resumable one. The one survey ``doctor`` and teardown share,
+    so "this chain has orphans" has a single answer (see
+    :func:`locate_conversation` for the per-link predicate).
+    """
+    located = [locate_conversation(cid, cwd) for cid in reversed(conversation_ids)]
+    orphans = [loc for loc in located if loc.status == "orphaned"]
+    resumable = next((loc for loc in located if loc.resumable), None)
+    return located, orphans, resumable
+
+
 def _get_machine_config(machine_id: str) -> dict | None:
     """Load machine config from machines.json.
 

@@ -882,7 +882,7 @@ def scan_orphaned_history(sessions: list[str] | None = None) -> list[dict]:
       flag hundreds of them, most of which nobody will ever relaunch.
     """
     from .core import load_session_metadata, recorded_sessions, tmux_session_cwd
-    from .history import locate_conversation
+    from .history import survey_chain
 
     findings: list[dict] = []
     for name in sessions if sessions is not None else recorded_sessions():
@@ -898,9 +898,7 @@ def scan_orphaned_history(sessions: list[str] | None = None) -> list[dict]:
         # Newest first, mirroring the order restart walks — so "the current
         # conversation" is the first link, and the orphans read in the order
         # anyone would care about them.
-        located = [locate_conversation(cid, running_in) for cid in reversed(ids)]
-        orphans = [loc for loc in located if loc.status == "orphaned"]
-        resumable = next((loc for loc in located if loc.resumable), None)
+        located, orphans, resumable = survey_chain(ids, running_in)
 
         common = {
             "session": name,
@@ -993,7 +991,9 @@ def _render_orphaned_history_section() -> int:
     :func:`scan_orphaned_history`).
     """
     findings = scan_orphaned_history()
-    orphaned = [f for f in findings if f["status"] == "orphaned"]
+    orphans_all = [f for f in findings if f["status"] == "orphaned"]
+    orphaned = [f for f in orphans_all if f["live"]]
+    dead_orphaned = [f for f in orphans_all if not f["live"]]
     gone = [f for f in findings if f["status"] == "gone"]
 
     if not orphaned:
@@ -1019,6 +1019,17 @@ def _render_orphaned_history_section() -> int:
               "intact, just keyed to the old path. Until then `agentwire restart` on a "
               "'current conversation' one starts FRESH (role intact) rather than "
               "failing, and never silences this line.")
+
+    if dead_orphaned:
+        print(f"  [..] {len(dead_orphaned)} session(s) not running with orphaned "
+              "conversation history (torn-down sessions keep their record; not scored):")
+        for f in dead_orphaned:
+            extra = len(f["orphaned_ids"]) - 1
+            print(f"       - {f['session']} conversation {f['conversation_id'][:8]}"
+                  + (f", +{extra} more orphaned" if extra > 0 else "")
+                  + f" — history: {f['found_at']}")
+        print("       Recover: `agentwire history migrate --session <name>` (add --apply), "
+              "or drop the dead records: `agentwire history prune --dead` (lists; --yes deletes).")
 
     if gone:
         print(f"  [..] {len(gone)} live session(s) with no conversation history on disk "

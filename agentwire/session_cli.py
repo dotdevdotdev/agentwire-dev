@@ -35,11 +35,13 @@ from .core import (
     _set_session_name_env,
     build_agent_command,
     load_config,
+    load_session_metadata,
     mirror_role_prompt_remote,
     notify_portal_session_created,
     parse_env_args,
     record_session_launch,
     resolve_default_created_by,
+    session_metadata_path,
     tmux_session_exists,
     unparented_delegation_warning,
 )
@@ -74,6 +76,7 @@ from .worktree import (
     register_worktree,
     remove_worktree,
     safe_worktree_name,
+    teardown_record_note,
     teardown_session_note,
     tmux_safe_name,
     worktree_session_name,
@@ -1686,6 +1689,7 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
     gc_merged_out = []
     gc_refused = []
     gc_orphaned_tabs = []
+    gc_records = []
     gc_merged = getattr(args, 'gc_merged', False)
     for e in list(worktree_registry.entries(project_path)):
         wt_path = Path(e.get("worktree_path", ""))
@@ -1709,6 +1713,12 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
                 )
                 if result["success"]:
                     gc_merged_out.append(e["session"])
+                    if result.get("record_left"):
+                        gc_records.append({
+                            "session": e["session"],
+                            "record_left": result["record_left"],
+                            "record_orphaned_ids": result["record_orphaned_ids"],
+                        })
                     for t in result.get("orphaned_tabs") or []:
                         gc_orphaned_tabs.append({**t, "session": e["session"]})
                 else:
@@ -1720,7 +1730,8 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
                    capture_output=True)
     if json_mode:
         _output_json({"success": True, "pruned": removed, "gc_merged": gc_merged_out,
-                      "gc_refused": gc_refused, "orphaned_tabs": gc_orphaned_tabs})
+                      "gc_refused": gc_refused, "orphaned_tabs": gc_orphaned_tabs,
+                      "records_left": gc_records})
     else:
         for r in gc_refused:
             print(f"SKIPPED {r['session']}: {r['error']}")
@@ -1732,6 +1743,8 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
                   f"{ids} — close via tabs_close_mcp")
         if gc_merged_out:
             print(f"GC'd {len(gc_merged_out)} merged worktree{'s' if len(gc_merged_out) != 1 else ''}: {', '.join(gc_merged_out)}")
+        for r in gc_records:
+            print(f"  {r['session']}: {teardown_record_note({**r})}")
         if not removed and not gc_merged_out and not gc_refused:
             print("Nothing to prune.")
     return 0
@@ -1961,6 +1974,29 @@ def _delete_branch_if_safe(
     return True, "merged" if not force else "forced"
 
 
+def _session_record_state(session_name: str) -> tuple[str | None, list[str]]:
+    """What teardown leaves behind: the record's path and its orphaned chain ids.
+
+    ``(None, [])`` when the session has no record. Read-only — teardown never
+    deletes the record (see ``agentwire history prune --dead``).
+    """
+    from .history import survey_chain
+
+    try:
+        path = session_metadata_path(session_name)
+    except ValueError:
+        return None, []
+    if not path.exists():
+        return None, []
+    metadata = load_session_metadata(session_name)
+    ids = list(metadata.get("conversation_ids") or [])
+    cwd = metadata.get("cwd_at_launch")
+    if not ids or not cwd:
+        return str(path.parent), []
+    _, orphans, _ = survey_chain(ids, cwd)
+    return str(path.parent), [loc.conversation_id for loc in orphans]
+
+
 def _teardown_entry(
     project_path: Path, worktree_dir: Path, session_name: str, worktree_path: Path,
     branch: str | None, base: str | None, *, keep_branch: bool = False, force_branch: bool = False,
@@ -2096,7 +2132,10 @@ def _teardown_entry(
     # that closed its own tabs and untracked them normally leaves nothing here.
     orphaned_tabs = chrome_tabs.clear(session_name)
 
+    record_left, record_orphaned_ids = _session_record_state(session_name)
+
     return {"success": True, "session": session_name, "path": str(worktree_path),
+            "record_left": record_left, "record_orphaned_ids": record_orphaned_ids,
             "killed": killed, "worktree_removed": worktree_existed,
             "worktree_existed": worktree_existed,
             "session_existed": session_existed,
@@ -2189,6 +2228,9 @@ def _worktree_remove(args, project_path: Path, worktree_dir: Path, json_mode: bo
             ids = ", ".join(t.get("tab_id", "?") for t in result["orphaned_tabs"])
             msg += (f"; WARNING: {len(result['orphaned_tabs'])} claude-in-chrome tab(s) never closed "
                     f"by this session: {ids} — close via tabs_close_mcp")
+        record_note = teardown_record_note(result)
+        if record_note:
+            msg += "; " + record_note
         print(msg)
     return 0 if result["success"] else 1
 

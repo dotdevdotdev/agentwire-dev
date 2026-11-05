@@ -5,7 +5,7 @@ from .mcp_core import (
     get_caller_session,
     mcp,
 )
-from .worktree import teardown_session_note
+from .worktree import teardown_record_note, teardown_session_note
 
 
 @mcp.tool()
@@ -304,7 +304,10 @@ def worktree_remove(
         branch_bit = (f" Branch '{data['branch']}' deleted." if data.get("branch_deleted")
                       else f" Branch '{data['branch']}' kept ({data.get('branch_note', 'not deleted')}).")
     tabs_bit = _orphaned_tabs_warning(data.get("orphaned_tabs"))
-    return f"Teardown '{name}' (session '{session}'){session_bit}; worktree deleted.{branch_bit}{tabs_bit}"
+    record_note = teardown_record_note(data)
+    record_bit = f" {record_note[0].upper()}{record_note[1:]}." if record_note else ""
+    return (f"Teardown '{name}' (session '{session}'){session_bit}; worktree deleted."
+            f"{branch_bit}{tabs_bit}{record_bit}")
 
 
 def _orphaned_tabs_warning(orphaned: list | None) -> str:

@@ -83,6 +83,101 @@ class TestScanOrphanedHistory:
         # The session itself works — this is stranded history beside it, not a
         # session that can't come back. The render says which.
         assert f["current"] is False
+        assert doctor_cli._render_orphaned_history_section() == 0  # not running: stated, not scored
+
+
+class TestLiveVersusDeadOrphans:
+    """#1292: a torn-down session's record keeps its orphaned chain forever;
+    scoring it would make doctor permanently red over sessions nobody runs."""
+
+    def _orphan(self, store, name):
+        write_history(store, store.root / "old", f"cid-{name}")
+        record(name, cwd=store.root / "new", ids=[f"cid-{name}"])
+
+    def test_live_orphan_is_scored_dead_orphan_is_listed_not_scored(self, store, monkeypatch, capsys):
+        self._orphan(store, "alive")
+        self._orphan(store, "gone-wt")
+        monkeypatch.setattr(doctor_cli, "tmux_session_exists", lambda n: n == "alive")
+
         assert doctor_cli._render_orphaned_history_section() == 1
+        out = capsys.readouterr().out
+        scored, _, info = out.partition("not running with orphaned")
+        assert "alive" in scored and "gone-wt" not in scored
+        assert "gone-wt" in info and "agentwire history migrate" in info
+
+    def test_only_dead_orphans_scores_zero_and_still_lists(self, store, capsys):
+        self._orphan(store, "gone-wt")
+        assert doctor_cli._render_orphaned_history_section() == 0
+        out = capsys.readouterr().out
+        assert "[ok]" in out and "gone-wt" in out
+
+
+class TestHistoryPrune:
+
+    def _dead(self, store, name, *, age_days=0):
+        import os
+        import time
+
+        from agentwire.core import session_metadata_path
+
+        record(name, cwd=store.root / "new", ids=["x"])
+        t = time.time() - age_days * 86400
+        os.utime(session_metadata_path(name), (t, t))
+
+    def _args(self, **kw):
+        return types.SimpleNamespace(**{"dead": True, "older_than": None, "yes": False,
+                                        "json": False, **kw})
+
+    def test_lists_by_default_deletes_only_with_yes(self, store, monkeypatch, capsys):
+        from agentwire import history_cli
+        from agentwire.core import recorded_sessions
+
+        monkeypatch.setattr("agentwire.core.tmux_session_exists", lambda n: n == "live")
+        self._dead(store, "proj/dead")
+        self._dead(store, "live")
+
+        assert history_cli.cmd_history_prune(self._args()) == 0
+        assert recorded_sessions() == ["live", "proj/dead"]  # listing deletes nothing
+        assert "proj/dead" in capsys.readouterr().out
+
+        assert history_cli.cmd_history_prune(self._args(yes=True)) == 0
+        assert recorded_sessions() == ["live"]  # live record untouched, dead one gone
+        assert not (store.root / "agentwire" / "sessions" / "proj").exists()  # empty parent swept
+
+    def test_older_than_spares_recent_records(self, store, monkeypatch):
+        from agentwire import history_cli
+        from agentwire.core import recorded_sessions
+
+        monkeypatch.setattr("agentwire.core.tmux_session_exists", lambda n: False)
+        self._dead(store, "old", age_days=30)
+        self._dead(store, "fresh", age_days=1)
+
+        history_cli.cmd_history_prune(types.SimpleNamespace(
+            dead=True, older_than="14d", yes=True, json=False))
+        assert recorded_sessions() == ["fresh"]
+
+
+class TestTeardownRecordNote:
+
+    def test_teardown_states_the_record_it_leaves_and_orphans(self, store):
+        from agentwire.session_cli import _session_record_state
+        from agentwire.worktree import teardown_record_note
+
+        write_history(store, store.root / "old", "cid")
+        record("sess", cwd=store.root / "new", ids=["cid"])
+
+        left, orphaned = _session_record_state("sess")
+        note = teardown_record_note({"session": "sess", "record_left": left,
+                                     "record_orphaned_ids": orphaned})
+        assert orphaned == ["cid"]
+        assert "session record left at" in note and "1 orphaned" in note
+        assert "history prune --dead" in note
+
+    def test_no_record_no_note(self, store):
+        from agentwire.session_cli import _session_record_state
+        from agentwire.worktree import teardown_record_note
+
+        assert _session_record_state("never-launched") == (None, [])
+        assert teardown_record_note({"session": "x", "record_left": None}) == ""
 
 
