@@ -1563,6 +1563,23 @@ def record_session_launch(
     return metadata
 
 
+def session_owns_cwd(metadata: dict, cwd: str) -> bool:
+    """Whether *cwd* is where the recorded session runs (#1289).
+
+    Compared as Claude keys history: the physical path through
+    ``history.encode_project_path``, against ``cwd_at_launch`` and
+    ``worktree_path``. A nested ``claude -p`` started from a pane in a scratch
+    directory fails this, which keeps its conversation out of the chain.
+    """
+    from .history import encode_project_path
+
+    def key(path: str) -> str:
+        return encode_project_path(os.path.realpath(path))
+
+    owned = {key(p) for p in (metadata.get("cwd_at_launch"), metadata.get("worktree_path")) if p}
+    return key(cwd) in owned
+
+
 def record_conversation_change(session_name: str, conversation_id: str) -> bool:
     """Make *conversation_id* the session's CURRENT conversation (#1271).
 

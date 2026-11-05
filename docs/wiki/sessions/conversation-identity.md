@@ -291,6 +291,19 @@ carrying the new `session_id`) reports each change:
   because the tail is what restart reads as "current"). Already-last is a no-op,
   so it is idempotent and the launch's own id costs nothing. A session with no
   launch record is left alone: the hook never conjures a partial record.
+- **Only the session's own conversations count (#1289).** A headless
+  `claude -p` run from a pane (a worker's comparison or spike in a scratch dir)
+  inherits `$TMUX_PANE` and fires the same hook. Verified payload shape:
+  `{session_id, transcript_path, cwd, hook_event_name, source}` — `cwd` is the
+  physical path, and a headless run reports `source: "startup"`, identical to a
+  real start, so **`source` is no signal**; `cwd` is. The hook records an id
+  only when `core.session_owns_cwd` says the payload `cwd` (through
+  `history.encode_project_path` of the realpath) equals the recorded
+  `cwd_at_launch` or `worktree_path`. A mismatch, or a payload with no `cwd`,
+  is ignored and the reason goes to the debug log. Chains polluted before this
+  fix keep their stray ids (`restart` skips ids with no transcript under the
+  launch cwd, so they are inert there); `doctor`'s orphaned-history output
+  names nested runs as the likely cause.
 - Errors are logged to `/tmp/claude-hook-debug.log`, never raised.
 
 `restart`'s newest-first walk is unchanged: a `/clear`ed conversation that

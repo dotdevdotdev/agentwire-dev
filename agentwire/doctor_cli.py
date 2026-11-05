@@ -1011,6 +1011,10 @@ def _render_orphaned_history_section() -> int:
                   + ("   [moved since launch]" if f["moved"] else ""))
             print(f"         history:  {f['found_at']}")
             print(f"         expected: {f['expected_dir']}/")
+        print("       Ids whose history sits under scratch directories are nested "
+              "`claude -p` runs a worker made from its pane: before #1289 the "
+              "session-start hook recorded them into the chain. The session's own "
+              "conversation is the one keyed to its launch cwd.")
         print("       Recover with `agentwire history migrate` — the transcripts are "
               "intact, just keyed to the old path. Until then `agentwire restart` on a "
               "'current conversation' one starts FRESH (role intact) rather than "

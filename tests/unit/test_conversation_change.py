@@ -24,6 +24,7 @@ def store(tmp_path, monkeypatch):
     cwd = tmp_path / "worktree"
     cwd.mkdir()
     (tmp_path / "projects").mkdir()
+    _STORE_CWD[0] = cwd
     return types.SimpleNamespace(root=tmp_path, cwd=cwd, projects=tmp_path / "projects")
 
 
@@ -51,8 +52,14 @@ def launch(store, session="sess"):
     return agent.conversation_id
 
 
-def session_start(cid, source="clear"):
-    return hooks_cli.record_session_start({"session_id": cid, "source": source})
+def session_start(cid, source="clear", cwd=None):
+    """The real SessionStart payload: session_id, transcript_path, cwd, source."""
+    return hooks_cli.record_session_start(
+        {"session_id": cid, "source": source, "cwd": str(cwd or _STORE_CWD[0])}
+    )
+
+
+_STORE_CWD: list = [None]
 
 
 def chain(session="sess"):
@@ -107,6 +114,28 @@ def test_the_hook_is_idempotent_and_resume_moves_an_old_id_to_the_tail(store, pa
     assert chain() == ["b", launched]
 
 
+def test_a_nested_headless_run_from_another_cwd_never_joins_the_chain(store, pane):
+    """#1289: `claude -p` in a scratch dir inherits $TMUX_PANE and fires the hook
+    with source=startup, same as a real start. Only its cwd differs."""
+    launched = launch(store)
+    scratch = store.root / "scratchpad-neutral"
+    scratch.mkdir()
+    link = store.root / "link-to-worktree"
+    link.symlink_to(store.cwd)
+
+    outcomes = [
+        session_start("nested", source="startup", cwd=scratch),
+        hooks_cli.record_session_start({"session_id": "no-cwd", "source": "startup"}),
+    ]
+    assert all(o.startswith("ignored") for o in outcomes), outcomes
+    assert "scratchpad-neutral" in outcomes[0]  # the reason is logged
+    assert chain() == [launched]
+
+    # The session's own /clear still lands, even reported through a symlink.
+    assert session_start("real-clear", cwd=link).startswith("recorded")
+    assert chain() == [launched, "real-clear"]
+
+
 def test_the_hook_never_writes_outside_its_own_session_record(store, pane):
     launch(store)
     before = chain()
@@ -135,7 +164,7 @@ def test_the_hook_command_exits_zero_on_every_bad_input(store, pane, monkeypatch
         raise OSError("read-only store")
 
     monkeypatch.setattr("agentwire.core.store_session_metadata", boom)
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "new"})))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "new", "cwd": str(store.cwd)})))
     codes.append(hooks_cli.cmd_hooks_session_start(types.SimpleNamespace()))
 
     assert codes == [0] * len(codes)
