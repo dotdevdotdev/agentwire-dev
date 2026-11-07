@@ -109,7 +109,7 @@ Both commands are **host-only by design** — and `promote` is **hard-gated**,
 not just discouraged: it's not exposed as an MCP tool (an MCP tool that
 shelled out to it would bypass the Bash-tool protection entirely — see
 [Outbound MCP tool gating](../../docs/wiki/internals/damage-control.md#outbound-mcp-tool-gating-457)),
-it's blocked as a Bash command even with a `# ask:` comment or the kill switch off
+it's blocked as a Bash command even with an `# ask:` comment or the kill switch off
 (`PROTECTED_COMMAND_PATTERNS` in `safety/_core.py`), and the function itself
 refuses to run under `AGENTWIRE_UNATTENDED=1` or without a genuine host signal
 (a real interactive terminal, or the explicit `AGENTWIRE_ALLOW_TASKS_PROMOTE=1`

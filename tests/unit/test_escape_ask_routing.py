@@ -1,9 +1,10 @@
 """Escape-asks (`# ask: <reason>`, damage-control-dev 0.2.0) end to end (#1278).
 
 An agent that expects a block ends the command with `# ask: <reason>`; a human
-must decide. That only works if (1) agents know the syntax, (2) the permission
-hook never auto-approves it under bypass/auto, and (3) a child's ask routes to
-its parent / the owner with the reason visible.
+must decide. Role prompts no longer teach the syntax (#1315); the engine and the
+permission hook still honour it for anyone who uses it: the hook never
+auto-approves it under bypass/auto, and a child's ask routes to its parent / the
+owner with the reason visible.
 """
 
 import os
@@ -22,19 +23,15 @@ ESCAPE = f"{BLOCKED} # ask: need to drop the bad rebase, branch is pushed"
 HOOK = Path(prompt_router.__file__).parent / "hooks" / "agentwire-permission.sh"
 
 
-def test_every_role_that_runs_commands_teaches_the_escape_ask():
-    missing = []
-    for kind in ("worker", "reviewer"):
+def test_no_role_teaches_the_escape_ask():
+    taught = []
+    for kind in ("worker", "reviewer", "orchestrator"):
         for worktree in (False, True):
-            names = resolve_roles(kind, worktree_topology=worktree)
-            roles, absent = load_roles(names)
+            roles, absent = load_roles(resolve_roles(kind, worktree_topology=worktree))
             assert not absent
-            if "# ask:" not in merge_roles(roles).instructions:
-                missing.append((kind, worktree))
-    roles, _ = load_roles(resolve_roles("orchestrator"))
-    if "# ask:" not in merge_roles(roles).instructions:
-        missing.append(("orchestrator", False))
-    assert not missing, missing
+            if "# ask:" in merge_roles(roles).instructions:
+                taught.append((kind, worktree))
+    assert not taught, taught
 
 
 def test_engine_asks_under_bypass_and_blocks_when_unattended(tmp_path):

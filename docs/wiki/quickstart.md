@@ -241,6 +241,6 @@ Pick the next thing based on what you want to do:
 
 - **Multi-agent work** — orchestrator/worker pattern, `pane_spawn`, role files. → [Concepts — orchestrator/worker](concepts.md#the-orchestratorworker-pattern), [CLAUDE.md](../../CLAUDE.md).
 - **Run agents on a remote box** — register a machine, address sessions as `name@machine`. → [Remote machines](deployment/remote-machines.md).
-- **Guard agent commands** — classifier-mode auto sessions; for hook-level command screening see the optional, separate project [`damage-control-dev`](https://pypi.org/project/damage-control-dev/); AgentWire does not manage or ship it as a feature. → [auto](sessions/claude-code-auto-mode.md).
+- **Guard agent commands** — AgentWire is not a guard and sessions default to `bypass`; for an approval step use `posture: prompted` or classifier-mode `auto`; for hook-level command screening see the optional, separate project [`damage-control-dev`](https://pypi.org/project/damage-control-dev/); AgentWire does not manage or ship it as a feature. → [auto](sessions/claude-code-auto-mode.md).
 - **Expose the portal to the public internet** — Cloudflare Tunnel + Zero Trust auth. → [Remote access](deployment/remote-access.md).
 - **Just look up a term** — [Glossary](glossary.md).
