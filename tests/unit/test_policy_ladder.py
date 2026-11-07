@@ -41,6 +41,7 @@ def make_engine(finding=None, grants=(), profile=GENERIC, **overrides):
         check_read_path=lambda path, config: (False, ""),
         check_path=lambda path, config: (False, ""),
         check_protected_path=lambda path, allowed: (False, ""),
+        _path_forms=lambda path: [path],
         check_mcp_tool=lambda name, config: {"decision": "allow", "reason": "", "id": None, "mutates": None},
         ScanBudgetExceeded=type("ScanBudgetExceeded", (BaseException,), {}),
     )

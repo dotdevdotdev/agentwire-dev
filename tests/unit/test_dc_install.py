@@ -448,6 +448,8 @@ def test_dry_run_writes_nothing(env, capsys):
     assert "+++" in capsys.readouterr().out
 
 
+@pytest.mark.xfail(strict=True, reason="damage-control-dev 0.5.0 break-glass unregisters only PreToolUse; the ConfigChange "
+                   "entry (onFailure: block) survives. Engine fix needed in damage-control-dev, then drop this marker.")
 def test_breakglass_unregisters_with_the_stdlib_only_script(env):
     assert run_cli("init") == 0
     script = env.home / ".damage-control/bin/damage-control-breakglass"

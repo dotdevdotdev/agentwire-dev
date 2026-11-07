@@ -71,7 +71,7 @@ requires-dist = [
     { name = "av", specifier = ">=12.0.0" },
     { name = "certifi", specifier = ">=2026.10.23" },
     { name = "chatterbox-tts", marker = "python_full_version >= '3.13' and extra == 'tts'", specifier = ">=0.1.6" },
-    { name = "damage-control-dev", specifier = ">=0.4.1,<0.5" },
+    { name = "damage-control-dev", specifier = ">=0.5.0,<0.6" },
     { name = "fastapi", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'stt'", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'tts'", specifier = ">=0.104.0" },
@@ -1076,14 +1076,14 @@ wheels = [
 
 [[package]]
 name = "damage-control-dev"
-version = "0.4.1"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/83/a5/3265846f73ce10b430c318f83169a7ff0cfe59d1aadc2a3081de6a244a29/damage_control_dev-0.4.1.tar.gz", hash = "sha256:2f9737cbf985a0cedde08fe8aa1580d7cb06e78bbcfa3215df4c70fe3254b0d7", size = 277876, upload-time = "2026-11-06T11:22:00.607Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/f1/ef4378ca0a724f63d632a8c9fa640be1135aacb7922955c5fd711efff9f6/damage_control_dev-0.5.0.tar.gz", hash = "sha256:f2900970d82401cfb6e0c496e9121af376f7da2197b0f76dd16268c848ec7b5e", size = 291553, upload-time = "2026-11-07T00:26:48.584Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/37/6863139cd2ef210e326d7b7c74b2882ccc787c4dc16ff538ef310155a437/damage_control_dev-0.4.1-py3-none-any.whl", hash = "sha256:a41a1bd2dbbef2ea4cf203257128da8df70a0ec18101a7ef0b9f3d8d1528274f", size = 309909, upload-time = "2026-11-06T11:21:58.903Z" },
+    { url = "https://files.pythonhosted.org/packages/97/ee/89b76c03956ec19825f50d1c8a5348946fae37a61315bae21d504686b48a/damage_control_dev-0.5.0-py3-none-any.whl", hash = "sha256:cb2d04a4233f522a584b227561127cf3b33a3ef3a367be3f7c1265e7fea970c8", size = 325103, upload-time = "2026-11-07T00:26:47.077Z" },
 ]
 
 [[package]]

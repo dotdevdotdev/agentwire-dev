@@ -4,6 +4,7 @@ The hooks read ``packs:`` / ``disabled_groups:`` from the policy file on every c
 enabling or disabling takes effect on the next tool call and touches no file on disk.
 """
 
+import hashlib
 import shutil
 from types import SimpleNamespace
 
@@ -46,15 +47,22 @@ def decisions():
 
 
 def install_old_layout():
-    """What every pre-package machine looks like: ALL bundled files copied into the overlay, no `packs:` key."""
+    """What every pre-package machine looks like: every bundled file copied into the overlay, no `packs:` key.
+
+    Only content a pre-package release could have shipped (a hash in the frozen baselines): the engine
+    keeps adding rule content (0.5.0's nested-claude rules), and no old machine holds a copy of that.
+    """
+    shipped = safety_migrate.load_baselines()
     sources = {
         safety_commands.RULES_DIR: [p for d in engine.bundled_rule_sources() for p in d.glob("*.yaml")],
         safety_commands.TOOLDEFS_DIR: list(engine.bundled_tooldefs_dir().glob("*.yaml")),
     }
     for target, files in sources.items():
         target.mkdir(parents=True, exist_ok=True)
+        section = "rules" if target == safety_commands.RULES_DIR else "tooldefs"
         for path in files:
-            shutil.copy(path, target / path.name)
+            if hashlib.sha256(path.read_bytes()).hexdigest() in shipped[section].get(path.name, []):
+                shutil.copy(path, target / path.name)
     safety_commands.DAMAGECONTROL_FILE.write_text("enabled: true\n")
 
 

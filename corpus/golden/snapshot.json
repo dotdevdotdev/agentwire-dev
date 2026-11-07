@@ -135,7 +135,7 @@
   "audit": 8,
   "engine": 1830,
   "engine_by_platform": 8,
-  "hooks": 1019,
+  "hooks": 1025,
   "hooks_by_platform": 6
  },
  "engine": {
@@ -3356,10 +3356,10 @@
    "unverifiable": false
   },
   "[\"Bash\", \"cd /golden/elsewhere && echo x > .claude/settings.json\", \"/golden/home\", \"default\", \"/golden/home\"]": {
-   "decision": "allow",
+   "decision": "ask",
    "protected": false,
-   "rule_id": null,
-   "unverifiable": false
+   "rule_id": "core.settings-write",
+   "unverifiable": true
   },
   "[\"Bash\", \"cd /golden/elsewhere && echo x > .claude/settings.json\", \"/golden/home\", \"kill-switch-off\", \"/golden/home\"]": {
    "decision": "allow",
@@ -6368,10 +6368,10 @@
    "unverifiable": false
   },
   "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"default\", \"/golden/elsewhere\"]": {
-   "decision": "allow",
+   "decision": "ask",
    "protected": false,
-   "rule_id": null,
-   "unverifiable": false
+   "rule_id": "core.settings-write",
+   "unverifiable": true
   },
   "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"default\", \"/golden/home\"]": {
    "decision": "block",
@@ -6392,10 +6392,10 @@
    "unverifiable": false
   },
   "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"default\", \"/golden/elsewhere\"]": {
-   "decision": "allow",
+   "decision": "ask",
    "protected": false,
-   "rule_id": null,
-   "unverifiable": false
+   "rule_id": "core.settings-write",
+   "unverifiable": true
   },
   "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"default\", \"/golden/home\"]": {
    "decision": "block",
@@ -12723,11 +12723,23 @@
    "exit": 2,
    "rule_id": "core.zero-access-path"
   },
-  "[\"Bash\", \"cd /golden/elsewhere && echo x > .claude/settings.json\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
-   "audit": "allowed",
-   "decision": "allow",
+  "[\"Bash\", \"cd /golden/elsewhere && echo x > .claude/settings.json\", \"/golden/home\", \"bypass\", \"/golden/home\"]": {
+   "audit": "asked",
+   "decision": "ask",
    "exit": 0,
    "rule_id": null
+  },
+  "[\"Bash\", \"cd /golden/elsewhere && echo x > .claude/settings.json\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
+   "audit": "asked",
+   "decision": "ask",
+   "exit": 0,
+   "rule_id": null
+  },
+  "[\"Bash\", \"cd /golden/elsewhere && echo x > .claude/settings.json\", \"/golden/home\", \"unattended\", \"/golden/home\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.settings-write"
   },
   "[\"Bash\", \"cd /tmp && echo hi\", \"/golden/home\", \"interactive\"]": {
    "audit": "allowed",
@@ -14265,9 +14277,15 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
+  "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"bypass\", \"/golden/elsewhere\"]": {
+   "audit": "asked",
+   "decision": "ask",
+   "exit": 0,
+   "rule_id": null
+  },
   "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"interactive\", \"/golden/elsewhere\"]": {
-   "audit": "allowed",
-   "decision": "allow",
+   "audit": "asked",
+   "decision": "ask",
    "exit": 0,
    "rule_id": null
   },
@@ -14277,9 +14295,21 @@
    "exit": 2,
    "rule_id": "core.protected-control-plane"
   },
+  "[\"Bash\", \"echo x > .claude/settings.json  # ask: because\", \"/golden/home\", \"unattended\", \"/golden/elsewhere\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.settings-write"
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"bypass\", \"/golden/elsewhere\"]": {
+   "audit": "asked",
+   "decision": "ask",
+   "exit": 0,
+   "rule_id": null
+  },
   "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"interactive\", \"/golden/elsewhere\"]": {
-   "audit": "allowed",
-   "decision": "allow",
+   "audit": "asked",
+   "decision": "ask",
    "exit": 0,
    "rule_id": null
   },
@@ -14288,6 +14318,12 @@
    "decision": "block",
    "exit": 2,
    "rule_id": "core.protected-control-plane"
+  },
+  "[\"Bash\", \"echo x > .claude/settings.json\", \"/golden/home\", \"unattended\", \"/golden/elsewhere\"]": {
+   "audit": "blocked",
+   "decision": "block",
+   "exit": 2,
+   "rule_id": "core.settings-write"
   },
   "[\"Bash\", \"echo x > .config/gh/hosts.yml\", \"/golden/home\", \"interactive\", \"/golden/home\"]": {
    "audit": "blocked",

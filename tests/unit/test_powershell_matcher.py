@@ -10,7 +10,7 @@ def test_the_bash_hook_judges_a_powershell_call_exactly_like_a_bash_call(run_hoo
 
     got = {
         (tool, cmd): verdict(tool, cmd)
-        for tool in ("Bash", "PowerShell")
+        for tool in ("Bash", "PowerShell", "Monitor")
         for cmd in ("rm -rf /agentwire-selftest", "echo hi")
     }
     assert got == {
@@ -18,9 +18,11 @@ def test_the_bash_hook_judges_a_powershell_call_exactly_like_a_bash_call(run_hoo
         ("PowerShell", "rm -rf /agentwire-selftest"): 2,
         ("Bash", "echo hi"): 0,
         ("PowerShell", "echo hi"): 0,
+        ("Monitor", "rm -rf /agentwire-selftest"): 2,
+        ("Monitor", "echo hi"): 0,
     }
     # a tool the hook does not gate is still ignored
-    assert verdict("Monitor", "rm -rf /agentwire-selftest") == 0
+    assert verdict("NotATool", "rm -rf /agentwire-selftest") == 0
 
 
 def test_the_outcome_logger_matches_the_powershell_tool_too():
