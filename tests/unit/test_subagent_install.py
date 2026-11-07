@@ -3,8 +3,8 @@
 Everything runs against a temp dir; the real ~/.claude/agents is never touched.
 """
 
-import yaml
 import pytest
+import yaml
 
 import agentwire.hooks_cli as m
 from agentwire.doctor_cli import _render_subagent_section
