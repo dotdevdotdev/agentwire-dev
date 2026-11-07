@@ -25,6 +25,10 @@ A child session may run a workflow internally; that is the intended composition.
 - Bypass posture never prompts for launch. Under other postures in `-p` mode a `Workflow` allow rule is needed.
 - agentwire usage-limit recovery stays authoritative: workflow auto-pause does not apply to background or `-p` sessions.
 
+## Leaves: the `aw-*` subagents
+
+Hand each workflow agent a purpose-built definition via `agent(prompt, {agentType: 'aw-reviewer'})` rather than a generic prompt: `aw-reviewer`, `aw-verifier`, `aw-researcher`, `aw-implementer`, `aw-test-runner`, `aw-browser`. Installed by `agentwire hooks install`. Purpose, tools, model, return shape and what is documented vs observed: [workflow-subagents](workflow-subagents.md). (#1335)
+
 ## Scheduled tasks
 
 The `ultracode` keyword does not fire from scheduled or `-p` prompts. A task that wants a workflow must say "use a workflow" in prose, or invoke a saved `/<name>`. See [scheduled workloads](../scheduling/scheduled-workloads.md#workflows-in-scheduled-tasks).

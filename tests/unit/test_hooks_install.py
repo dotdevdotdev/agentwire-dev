@@ -85,6 +85,10 @@ class TestInstallHooks:
         for name, *_ in _managed_hook_files():
             (hooks_src / name).write_text(f"#!/bin/bash\n# {name}\n")
         monkeypatch.setattr(main_mod, "get_hooks_source", lambda: hooks_src)
+        subagents_src = pkg / "subagents"
+        subagents_src.mkdir()
+        (subagents_src / "aw-fake.md").write_text("---\nname: aw-fake\ndescription: x\n---\n")
+        monkeypatch.setattr(main_mod, "get_subagents_source", lambda: subagents_src)
         return home, hooks_src
 
     def test_fresh_install_deploys_all_and_registers(self, env):
@@ -94,6 +98,7 @@ class TestInstallHooks:
         assert (home / ".claude" / "hooks" / "agentwire-permission.sh").exists()
         assert (home / ".claude" / "hooks" / "idle-handler.sh").exists()
         assert (home / ".agentwire" / "queue-processor.sh").exists()
+        assert (home / ".claude" / "agents" / "aw-fake.md").is_symlink()
 
         settings = json.loads((home / ".claude" / "settings.json").read_text())
         events = settings["hooks"]

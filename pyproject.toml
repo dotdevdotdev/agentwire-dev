@@ -136,6 +136,7 @@ include = [
     # Role/prompt content bundled with the CLI
     "agentwire/roles/*.md",
     "agentwire/commands/*.md",
+    "agentwire/subagents/*.md",
     # Hooks and auxiliary scripts/configs
     "agentwire/hooks/**/*.py",
     "agentwire/hooks/**/*.sh",

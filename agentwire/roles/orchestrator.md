@@ -78,7 +78,7 @@ Make email better.
 
 ## Workflow vs child session
 
-A **child session** (`worktree`/`session_create`) is for work that needs its own branch, PR, portal window or voice, or that must outlive you. A **dynamic workflow** is inner fan-out inside one session (N homogeneous independent items, no per-item PR). When delegating a fan-out, say which you mean; a child session may run a workflow internally. Detail: [`docs/wiki/sessions/workflow-vs-child-session.md`](docs/wiki/sessions/workflow-vs-child-session.md).
+A **child session** (`worktree`/`session_create`) is for work that needs its own branch, PR, portal window or voice, or that must outlive you. A **dynamic workflow** is inner fan-out inside one session (N homogeneous independent items, no per-item PR). When delegating a fan-out, say which you mean; a child session may run a workflow internally. Detail: [`docs/wiki/sessions/workflow-vs-child-session.md`](docs/wiki/sessions/workflow-vs-child-session.md). A workflow's leaves should use the packaged `aw-*` subagents (`agentType: 'aw-reviewer'` etc.): [`workflow-subagents.md`](docs/wiki/sessions/workflow-subagents.md).
 
 ## Communication
 

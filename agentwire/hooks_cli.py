@@ -285,6 +285,67 @@ def skill_drift() -> dict[str, str]:
     return drift
 
 
+def claude_agents_dir() -> Path:
+    return claude_dir() / "agents"
+
+
+def get_subagents_source() -> Path:
+    """The packaged subagent definitions (``agentwire/subagents/aw-*.md``)."""
+    package_dir = Path(__file__).parent
+    subagents_dir = package_dir / "subagents"
+    if subagents_dir.exists():
+        return subagents_dir
+
+    try:
+        with importlib.resources.files("agentwire").joinpath("subagents") as p:
+            if p.exists():
+                return Path(p)
+    except (TypeError, FileNotFoundError):
+        pass
+
+    raise FileNotFoundError("Could not find subagents directory in package")
+
+
+def _managed_subagent_names() -> list[str]:
+    """File names of the agentwire-owned subagents. Every one carries the ``aw-``
+    prefix so none can collide with the owner's own agents."""
+    try:
+        return sorted(p.name for p in get_subagents_source().glob("aw-*.md"))
+    except FileNotFoundError:
+        return []
+
+
+def install_subagents(force: bool = False, copy: bool = False, allow_foreign: bool = False) -> dict[str, str]:
+    """Install/refresh the packaged subagent definitions into ~/.claude/agents/.
+
+    Same machine-global link path (and provenance rules) as the slash commands.
+    Returns {filename: "installed" | "updated" | "current"}.
+    """
+    results: dict[str, str] = {}
+    for name in _managed_subagent_names():
+        source = get_subagents_source() / name
+        target = claude_agents_dir() / name
+        existed = target.exists() or target.is_symlink()
+        if _install_managed_file(source, target, force=force, copy=copy, allow_foreign=allow_foreign):
+            results[name] = "updated" if existed else "installed"
+        else:
+            results[name] = "current"
+    return results
+
+
+def subagent_drift() -> dict[str, str]:
+    """Drift state per packaged subagent: ok | stale | missing, or
+    ``source-unavailable`` for a checkout whose packaged dir cannot be resolved."""
+    try:
+        source_dir = get_subagents_source()
+    except FileNotFoundError:
+        return {}
+    return {
+        name: _managed_file_state(claude_agents_dir() / name, source_dir / name)
+        for name in _managed_subagent_names()
+    }
+
+
 def register_hook_in_settings(event: str, hook_name: str) -> bool:
     """Register a hook under `event` in Claude's settings.json.
 
@@ -466,6 +527,7 @@ def install_hooks(
     # silently because nothing ever resynced the hand-placed copies. Heal them
     # on the same install pass — drift-aware, like the hooks above.
     results.update(install_skills(force=force, copy=copy, allow_foreign=allow_foreign))
+    results.update(install_subagents(force=force, copy=copy, allow_foreign=allow_foreign))
 
     return results
 
@@ -508,6 +570,14 @@ def cmd_hooks_install(args) -> int:
             refreshed_skills = True
     if not refreshed_skills:
         print("Skills already current.")
+
+    refreshed_agents = [n for n in _managed_subagent_names() if results.get(n) in ("installed", "updated")]
+    if refreshed_agents:
+        print(f"\nInstalled subagents to {claude_agents_dir()}:")
+        for name in refreshed_agents:
+            print(f"  {Path(name).stem}")
+    else:
+        print("Subagents already current.")
 
     return 0
 
