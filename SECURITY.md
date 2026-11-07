@@ -49,9 +49,6 @@ see its documentation for what it matches and its limits. A hook of that kind is
 a best-effort screen, not a security boundary, and nothing in AgentWire makes
 bypass sessions safe.
 
-Contributor notes on the integration: `docs/wiki/internals/damage-control.md`
-and `docs/wiki/security/damage-control-hardening.md`.
-
 ### Redundant Permissions Bypass (`--dangerously-skip-permissions`)
 
 By default, AgentWire initializes Claude Code with the `--dangerously-skip-permissions` flag, which skips Claude Code's own approval prompts. AgentWire adds no compensating control: an agent in a bypass session can run any command your user can. Use `posture: prompted` or `posture: auto` if you want an approval step instead.

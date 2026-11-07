@@ -73,7 +73,7 @@ def _link_into_claude(source: Path, target: Path, *, allow_foreign: bool, direct
     check runs BEFORE the existing occupant is removed, so a refusal never
     leaves the slot empty.
     """
-    from agentwire.safety import provenance as prov
+    from agentwire import provenance as prov
 
     if not allow_foreign:
         refusal = prov.link_target_refusal(source)
@@ -257,8 +257,8 @@ def install_skills(force: bool = False, copy: bool = False, allow_foreign: bool 
 def skill_drift() -> dict[str, str]:
     """Drift state of agentwire-owned global skills.
 
-    Returns {name: ok|stale|missing|source-unavailable}. Mirrors
-    safety_commands.*_drift() so `agentwire doctor` can flag a hand-placed or drifted
+    Returns {name: ok|stale|missing|source-unavailable}. Lets
+    `agentwire doctor` flag a hand-placed or drifted
     skill the same way it flags hook drift.
 
     `source-unavailable` means the packaged skill can't be resolved in the
@@ -285,25 +285,11 @@ def skill_drift() -> dict[str, str]:
     return drift
 
 
-def hook_matcher(hook_name: str) -> str:
-    """The tool-name matcher a managed hook registers with.
-
-    The outcome logger exists to label damage-control decisions, so it matches
-    exactly the tools damage control matches (SSOT: ``damage_control.claude_code.MATCHERS``);
-    every other managed hook matches everything.
-    """
-    if hook_name == "outcome_logger.py":
-        from damage_control.claude_code import MATCHERS
-
-        return "|".join(MATCHERS)
-    return ".*"
-
-
 def register_hook_in_settings(event: str, hook_name: str) -> bool:
     """Register a hook under `event` in Claude's settings.json.
 
-    Returns True if settings were updated (added, or its matcher corrected to
-    the current :func:`hook_matcher`), False if already configured. Raises
+    Returns True if settings were updated (added), False if already configured
+    (whatever matcher the owner hand-set is kept). Raises
     ``SettingsError`` (file untouched) when settings.json is unparseable (#1220).
 
     Claude Code hook format:
@@ -322,7 +308,6 @@ def register_hook_in_settings(event: str, hook_name: str) -> bool:
     """
     # Use ~ for portability
     hook_command = f"~/.claude/hooks/{hook_name}"
-    matcher = hook_matcher(hook_name)
 
     def mutate(settings: dict) -> bool:
         entries = settings.setdefault("hooks", {}).setdefault(event, [])
@@ -331,16 +316,10 @@ def register_hook_in_settings(event: str, hook_name: str) -> bool:
         for entry in entries:
             for h in entry.get("hooks", ()):
                 if h.get("command") == hook_command:
-                    if entry.get("matcher") == matcher or matcher == ".*":
-                        # Already registered. A default-matcher hook keeps
-                        # whatever matcher the owner hand-set.
-                        return False
-                    # Registered under an older matcher: correct it in place.
-                    entry["matcher"] = matcher
-                    return True
+                    return False
 
         entries.append({
-            "matcher": matcher,
+            "matcher": ".*",
             "hooks": [{"type": "command", "command": hook_command}],
         })
         return True
@@ -374,13 +353,6 @@ def _managed_hook_files() -> list[ManagedHook]:
             "idle-handler.sh", claude_hooks_dir(), ("Notification",),
             "Idle notification hook", True,
             "required for worker notifications and scheduled tasks",
-        ),
-        # Records what happened AFTER damage-control decided: ran / failed /
-        # denied. Joined to the audit rows by tool_use_id.
-        ManagedHook(
-            "outcome_logger.py", claude_hooks_dir(),
-            ("PostToolUse", "PostToolUseFailure", "PermissionDenied"),
-            "Outcome logger", True, "required for damage-control audit outcomes",
         ),
         # Reports Claude's in-session conversation changes (/clear, /resume,
         # compact) into the launch record so `restart` resumes the CURRENT one.
@@ -458,7 +430,7 @@ def install_hooks(
     a stale file — it points every session's permission and idle hooks at a task
     branch, which then changes under them on every commit.
     """
-    from agentwire.safety import provenance as prov
+    from agentwire import provenance as prov
 
     state, canonical, running = prov.install_provenance()
     if state in prov.REFUSING_STATES and not allow_foreign:
@@ -490,31 +462,6 @@ def install_hooks(
         for ev in event:
             register_hook_in_settings(ev, hook_name)
 
-    # Register the damage-control hooks: the package's `init` under AgentWire's profile (exec form,
-    # recorded interpreter, self-tested before anything switches). This is what makes
-    # `hooks install` after a rebuild actually switch the machine to the package it just built.
-    #
-    # NOT quiet, and NOT silently swallowed: the install can legitimately decline to act (a hook
-    # set that fails its selftest keeps the old registration), and a decline an operator never
-    # sees is the #916/#936 failure mode itself — `hooks install` printing success while the
-    # thing it installs stays stale.
-    try:
-        from agentwire import safety_ext
-
-        failures: list[str] = []
-        outcome = safety_ext.install(allow_foreign=allow_foreign, log=failures.append)
-        results["damage-control"] = (
-            "refused-foreign" if outcome.refused
-            else "failed" if outcome.code
-            else "updated" if outcome.changed else "current"
-        )
-        if outcome.code:
-            for line in failures:
-                print(f"  Damage control: {line}")
-            print("     Details: agentwire doctor")
-    except Exception as e:
-        print(f"  Warning: damage-control install failed: {e}")
-
     # Global skills (currently just /wiki) are agentwire-owned too, and rotted
     # silently because nothing ever resynced the hand-placed copies. Heal them
     # on the same install pass — drift-aware, like the hooks above.
@@ -533,9 +480,6 @@ def cmd_hooks_install(args) -> int:
         return 1
     if any(state == "refused-foreign" for state in results.values()):
         # A refusal must never be reportable as a successful install (#936).
-        return 1
-    if results.get("damage-control") == "failed":
-        # Likewise a guard that could not be proven (the old registration is still in force).
         return 1
     for hook_name, target_dir, *_ in _managed_hook_files():
         state = results.get(hook_name)
@@ -805,53 +749,6 @@ def cmd_hooks_session_start(args) -> int:
     return 0
 
 
-def engine_requires_human(payload: dict) -> bool:
-    """True when the damage-control engine would put this call to a human under the payload's mode.
-
-    The engine is the SSOT for which asks bypass/auto may not demote (escape-asks,
-    unverifiable shapes); the permission hook asks it rather than guessing from the
-    command text. A bypass-mode ask is, by construction, a non-demotable one. Read-only:
-    the verdict's audit row is never written.
-    """
-    from damage_control import engine
-    from damage_control.adapter import HOOK_KINDS, hook_namespace, parse_payload
-    from damage_control.policy import Guard
-
-    from . import safety_ext
-
-    safety_ext.activate()
-    name = payload.get("tool_name", "")
-    kind = next(
-        (k for k, (tools, _) in HOOK_KINDS.items() if tools is not None and name in tools),
-        "mcp" if name.startswith("mcp__") else None,
-    )
-    if kind is None:
-        return False
-    tools, tooldefs = HOOK_KINDS[kind]
-    ns = hook_namespace()
-    call, ctx = parse_payload(payload, tools, ns)
-    if call is None:
-        return False
-    guard = Guard(engine.load_effective_config(tooldefs), ns)
-    return guard.decide(call, ctx).decision == "ask"
-
-
-def cmd_hooks_needs_human(args) -> int:
-    """Permission-hook helper: payload on stdin, prints ``1`` (human must decide) or ``0``.
-
-    Fails closed: any error prints ``1`` so a broken check can never become an auto-approve.
-    """
-    import sys
-
-    try:
-        payload = json.loads(sys.stdin.read() or "{}")
-        print("1" if engine_requires_human(payload) else "0")
-    except Exception as e:
-        print(f"needs-human error: {type(e).__name__}: {e}", file=sys.stderr)
-        print("1")
-    return 0
-
-
 def register_hooks_parser(subparsers) -> None:
     hooks_parser = subparsers.add_parser(
         "hooks", help="Manage agentwire hook files (permission, idle handler, queue processor)"
@@ -895,9 +792,3 @@ def register_hooks_parser(subparsers) -> None:
     )
     hooks_session_start.set_defaults(func=cmd_hooks_session_start)
 
-    # hooks needs-human (invoked by the permission hook, not by humans)
-    hooks_needs_human = hooks_subparsers.add_parser(
-        "needs-human",
-        help="Permission hook helper: does the engine keep this call a human confirm under the payload's mode? (stdin payload; prints 1/0, fails closed)",
-    )
-    hooks_needs_human.set_defaults(func=cmd_hooks_needs_human)

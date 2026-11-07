@@ -290,7 +290,7 @@ def _with_unattended_env(env: dict[str, str]) -> dict[str, str]:
     captured here at import (see ``_capture_unattended_env``).
     Every session-creation path funnels its env through here on the way to
     ``tmux new-session -e K=V``, so the marker lands in the new session BEFORE
-    the agent launches and the damage-control hook can read it.
+    the agent launches and any hook can read it.
 
     THE TWO VARS INHERIT DIFFERENTLY AND THAT IS DELIBERATE (#914). A child
     session an unattended agent spawns inherits BOTH — transitively, to any
@@ -307,9 +307,8 @@ def _with_unattended_env(env: dict[str, str]) -> dict[str, str]:
     that the grant now carries its PATH SCOPE with it (``encode_unattended_allow``
     keeps the scope in the wire format), so what a child inherits is
     "commit under ``<store>``", not "commit". A child cannot widen it: the
-    damage-control hook reads this var from the Claude Code process env, not
-    from the shell the agent runs commands in, and the files that define grants
-    are protected control plane.
+    a hook reads this var from the Claude Code process env, not
+    from the shell the agent runs commands in.
 
     No leak into interactive sessions: a human's ``agentwire new`` has no such
     var in its environment, so nothing is propagated.
@@ -353,8 +352,7 @@ def _set_session_name_env(agent: "AgentCommand", session_name: str, created_by: 
 
     Every session created via ``cmd_new`` / ``cmd_spawn`` / ``cmd_recreate``
     / ``cmd_fork`` / scheduler-spawn paths gets ``AGENTWIRE_SESSION_NAME`` so
-    downstream tooling (notably the worker damage-control rules in
-    ``damage_control/engine.py``) can identify which agentwire session the running
+    downstream tooling can identify which agentwire session the running
     tool is part of.
 
     ``created_by`` of ``''`` (root/orchestrator) or ``None`` means no
@@ -2134,8 +2132,8 @@ def _resolve_posture_from_args(args) -> tuple[str | None, str | None]:
     """Resolve the session's posture from the shared spawn-flag core.
 
     Posture is the ONLY session axis (#729), and every spawn defaults to the
-    same one — bypass — regardless of kind/topology: workers run bypass +
-    damage-control just like orchestrators, no tool-locking. Precedence:
+    same one — bypass — regardless of kind/topology: workers run bypass
+    just like orchestrators, no tool-locking. Precedence:
     explicit --posture first; else the internal --bare/--prompted booleans
     (set by cmd_worktree / cmd_recreate callers); else the default posture.
 

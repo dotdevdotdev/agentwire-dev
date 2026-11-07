@@ -342,4 +342,4 @@ Skills index: https://github.com/googleworkspace/cli/blob/main/docs/skills.md
 
 ## Guarding gws in agentwire
 
-agentwire ships no gws policy (user-level control). To add your own, see [Writing your own tooldef](../internals/damage-control.md#writing-your-own-tooldef-user-level-policy-1137) — gws is the worked example.
+agentwire ships no gws policy. Policy for gws belongs to whichever guard you run.

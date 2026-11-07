@@ -145,9 +145,6 @@ include = [
     # Hooks and auxiliary scripts/configs
     "agentwire/hooks/**/*.py",
     "agentwire/hooks/**/*.sh",
-    # AgentWire's damage-control rules layer (YAML source + the JSON a hook reads)
-    "agentwire/safety/rules/*.json",
-    "agentwire/safety/rules/*.yaml",
     # Top-level docs to ship in wheel
     "LICENSE",
     "README.md",
@@ -155,8 +152,6 @@ include = [
 artifacts = [
     "agentwire/hooks/**/*.py",
     "agentwire/hooks/**/*.sh",
-    "agentwire/safety/rules/*.json",
-    "agentwire/safety/rules/*.yaml",
 ]
 exclude = [
     # Never-served source art kept in-repo for regen only. The portal serves
@@ -245,9 +240,6 @@ markers = [
     "slow: marks tests as slow",
     "integration: requires subprocess mocking",
     "e2e: end-to-end portal tests",
-    # Installs a real older release from PyPI and upgrades it (#1276). Needs network; run by the
-    # `upgrade` CI job, deselected from the generic full run.
-    "upgrade: installs the previous release from PyPI and upgrades it in a fresh HOME (#1276)",
     # Spawns a real tmux binary (WS connect / speak paths PTY-pipe through tmux).
     # Deselected in the hermetic CI gate via `-m 'not requires_tmux'` (#323);
     # still runs locally where tmux is on PATH.
@@ -256,8 +248,6 @@ markers = [
     # deployment paths (#893). READ-ONLY by intent — the session-scoped backstop
     # still fails the run if an opted-out test writes anything.
     "real_agentwire_home: sees the real ~/.agentwire paths instead of the tmp redirect (#893)",
-    # Keeps the real hook selftest + `claude --version` probe (#1219); every other test gets stubs.
-    "real_hook_probe: runs the real damage-control selftest and claude --version probe (#1219)",
 ]
 asyncio_mode = "auto"
 
@@ -272,8 +262,7 @@ asyncio_mode = "auto"
 #   B404 import subprocess            — driving subprocesses (tmux, git, claude) IS the product.
 #   B602/B603/B607 subprocess/shell   — scheduler gates, service healthchecks and task
 #                                       pre-commands run user-authored shell commands by
-#                                       design; the threat model is the user's own machine,
-#                                       and damage-control hooks gate dangerous ops upstream.
+#                                       design; the threat model is the user's own machine.
 #   B501 request verify=False         — every site targets the LOCAL portal over its
 #                                       self-signed cert (localhost only); there is no
 #                                       remote TLS trust decision to get wrong here.

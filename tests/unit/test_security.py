@@ -75,13 +75,11 @@ class TestFrozenConfig:
         '  auth_token: "realsecret"\n'
         "executables:\n"
         '  claude: "/usr/bin/claude"\n'
-        "safety:\n"
-        "  enabled: true\n"
     )
 
-    def test_disabling_safety_blocked(self):
-        new = self.OLD.replace("enabled: true", "enabled: false")
-        assert "safety" in security.frozen_config_violations(new, self.OLD)
+    def test_rewriting_executables_blocked(self):
+        new = self.OLD.replace("/usr/bin/claude", "/tmp/evil")
+        assert "executables" in security.frozen_config_violations(new, self.OLD)
 
 
 # ---------------------------------------------------------------------------

@@ -122,7 +122,6 @@ Command Categories:
   Diagnostics:
     doctor           Auto-diagnose and fix common issues
     network          Network diagnostics and status
-    safety           damage-control-dev integration (separate optional project)
     hooks            Manage agentwire hook files
 
   Advanced:
@@ -185,7 +184,7 @@ Command Categories:
     from . import session_cli
     from . import channels_cli, config_cli, portal_cli, tts_cli
     from . import scheduler_cli, ensure_cli, tasks_cli
-    from . import doctor_cli, history_cli, machine_cli, safety_cli
+    from . import doctor_cli, history_cli, machine_cli
     from . import handoff_cli, hooks_cli, mcp_cli, roles_cli, tunnels_cli
     from . import notify_cli, palette_cli, push_cli, repo_cli, system_cli, wiki_cli
     from . import fleet_cli, restart_cli, tabs_cli, wait_cli, worktree_cli
@@ -207,7 +206,6 @@ Command Categories:
         ensure_cli.register_ensure_parser,
         tasks_cli.register_tasks_parser,
         doctor_cli.register_doctor_parser,
-        safety_cli.register_safety_parser,
         machine_cli.register_machine_parser,
         history_cli.register_history_parser,
         roles_cli.register_roles_parser,
@@ -391,7 +389,7 @@ def _find_subparser(parser: argparse.ArgumentParser, *names: str):
 # Command groups whose bare invocation (no subcommand) prints group help.
 _GROUP_COMMANDS = [
     "portal", "tts", "stt", "tunnels", "machine", "history", "handoff",
-    "wiki", "hooks", "projects", "safety", "network", "listen",
+    "wiki", "hooks", "projects", "network", "listen",
     "roles", "task", "lock", "scheduler", "council", "limits",
     "config",
 ]
@@ -411,14 +409,6 @@ def main() -> int:
         and getattr(args, f"{args.command}_command", None) is None
     ):
         _find_subparser(parser, args.command).print_help()
-        return 0
-
-    if (
-        args.command == "safety"
-        and getattr(args, "safety_command", None) == "tooldefs"
-        and getattr(args, "tooldefs_command", None) is None
-    ):
-        _find_subparser(parser, "safety", "tooldefs").print_help()
         return 0
 
     if hasattr(args, "func"):

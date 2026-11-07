@@ -15,39 +15,13 @@ set -e
 # Read JSON from stdin
 input=$(cat)
 
-# Honor session-level permission bypass — when Claude Code was launched with
-# --dangerously-skip-permissions (permission_mode: "bypassPermissions") or is
-# running in autonomous mode (permission_mode: "auto"), the user has explicitly
-# opted out of permission friction. Short-circuit with an immediate allow so
-# the portal is never consulted. Python used for JSON parsing — no jq dep,
-# matches the stack the damage-control hooks run on.
-permission_mode=$(printf '%s' "$input" | python3 -c "import json,sys
-try:
-    print(json.load(sys.stdin).get('permission_mode',''))
-except Exception:
-    pass" 2>/dev/null || true)
-
-# Bypass/auto demote an engine ask to an allow EXCEPT the non-demotable ones
-# (escape-asks, unverifiable shapes): those stay a real human confirm, so this
-# short-circuit must not approve them either. The engine decides (CLI is SSOT,
-# never guess from command text); anything but a clean "0" — missing binary,
-# crash, timeout — holds for a human.
-needs_human() {
-    local bin="${AGENTWIRE_BIN:-$(command -v agentwire 2>/dev/null || echo "$HOME/.local/bin/agentwire")}"
-    local verdict
-    verdict=$(printf '%s' "$input" | "$bin" hooks needs-human 2>/dev/null) || return 0
-    [ "$verdict" = "0" ] && return 1
-    return 0
-}
-
-case "$permission_mode" in
-    bypassPermissions|auto)
-        if ! needs_human; then
-            echo '{"decision":"allow","message":"bypass mode: permission auto-approved"}'
-            exit 0
-        fi
-        ;;
-esac
+# A request that reaches this hook is one Claude Code could not settle on its
+# own. That holds in EVERY permission mode: under bypass
+# (--dangerously-skip-permissions, permission_mode "bypassPermissions") or auto,
+# a permission request only arrives because some hook demanded a human. So this
+# script never auto-approves — it cannot ask a guard whether the demand was
+# deliberate, and approving on a guess would defeat the hook that asked. Every
+# request goes to the portal and waits for a person (or times out to deny).
 
 # Find .agentwire.yml in current or parent directories
 find_agentwire_config() {

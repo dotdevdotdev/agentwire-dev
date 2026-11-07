@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from agentwire import hooks_cli
-from agentwire.safety import provenance as prov
+from agentwire import provenance as prov
 
 
 @pytest.fixture
@@ -31,13 +31,8 @@ def machine(tmp_path, monkeypatch):
     for pkg in (canonical, worktree):
         (pkg / "hooks" / "idle-handler.sh").write_text("#!/bin/bash\n")
 
-    real_running = prov.running_package_dir
-
-    def running(package="agentwire"):
-        return canonical.resolve() if package == "agentwire" else real_running(package)
-
-    monkeypatch.setattr(prov, "canonical_package_dir", running)
-    monkeypatch.setattr(prov, "running_package_dir", running)
+    monkeypatch.setattr(prov, "canonical_package_dir", lambda: canonical.resolve())
+    monkeypatch.setattr(prov, "running_package_dir", lambda: canonical.resolve())
     monkeypatch.setattr(hooks_cli, "get_hooks_source", lambda: canonical / "hooks")
     (home / ".claude" / "hooks").mkdir(parents=True)
     return home, canonical, worktree
@@ -59,7 +54,7 @@ class TestLinkTargetRefusal:
         assert not bad, f"accepted as a link target: {bad}"
 
         # Bootstrap (no canonical install): a plain dir is fine, a worktree is not.
-        monkeypatch.setattr(prov, "canonical_package_dir", lambda package="agentwire": None)
+        monkeypatch.setattr(prov, "canonical_package_dir", lambda: None)
         assert prov.link_target_refusal(stray) is None
         assert prov.link_target_refusal(worktree / "hooks" / "idle-handler.sh") is not None
 
@@ -69,7 +64,7 @@ class TestInstallRefusesAndPreservesTheSlot:
         self, machine, monkeypatch, capsys
     ):
         home, _canonical, worktree = machine
-        monkeypatch.setattr(prov, "running_package_dir", lambda package="agentwire": worktree.resolve())
+        monkeypatch.setattr(prov, "running_package_dir", lambda: worktree.resolve())
 
         class Args:
             force = False

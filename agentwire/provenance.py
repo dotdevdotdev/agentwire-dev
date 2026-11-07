@@ -5,19 +5,14 @@ Every installer path in agentwire resolves its source as ``Path(__file__).parent
 the process was launched from the canonically installed tool. It is wrong every
 other time, and the failure is silent and machine-wide:
 
-    a session on a task branch runs `agentwire safety install` (or `uv run
+    a session on a task branch runs `agentwire hooks install` (or `uv run
     agentwire ...`, or anything that heals hooks), and its OWN checkout — which
-    may predate a P0 security fix by days — becomes the hook for every other
-    session on the box (before #1209 M4 its scripts were copied over
-    ``~/.agentwire/hooks/damage-control/``; now its interpreter and profile are
-    REGISTERED, and its venv dies with the worktree).
+    may predate a fix by days — becomes the hook for every other session on the
+    box, and its venv dies with the worktree.
 
-That is not hypothetical: it reverted #918's ``git -C`` bypass fix within an
-hour of deployment, from one of six live worktrees carrying the pre-fix package.
-``shutil.copy2`` preserves mtime, so the downgraded file looked *older* than the
-deployment that it replaced, and ``doctor`` reported ``[ok] DC hook scripts
-current`` — correctly, because the installed copy now matched whatever source
-last ran.
+``shutil.copy2`` preserves mtime, so a downgraded file looks *older* than the
+deployment it replaced, and ``doctor`` would report it current — correctly,
+because the installed copy now matches whatever source last ran.
 
 So the guard is provenance, not version comparison: **only the canonical install
 may write machine-global config.** Comparing versions is no substitute: it cannot stop a stale branch that has
@@ -52,20 +47,12 @@ Two things this deliberately does NOT key on, both measured rather than assumed:
 
 from __future__ import annotations
 
-import importlib
 import os
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 # Distribution names this package has shipped under, most likely first.
 _DIST_NAMES = ("agentwire-dev", "agentwire")
-
-# The two packages agentwire deploys machine-globally (#1209 M6): the host, and the
-# damage-control engine its hooks run (``python -I -m damage_control.hook``). The engine is a
-# separate distribution inside the same tool venv, so a worktree copy of EITHER one is the
-# #936 hazard — and with the dependency inverted, guarding only ``agentwire`` leaves the
-# package that actually executes on every tool call unguarded.
-PACKAGES = ("agentwire", "damage_control")
 
 CANONICAL = "canonical"
 BOOTSTRAP = "bootstrap"
@@ -76,23 +63,21 @@ FOREIGN = "foreign"
 REFUSING_STATES = (FOREIGN, WORKTREE)
 
 
-def running_package_dir(package: str = "agentwire") -> Path:
-    """Directory of the ``package`` this process imported."""
-    if package == "agentwire":
-        return Path(__file__).resolve().parent.parent
-    return Path(importlib.import_module(package).__file__).resolve().parent
+def running_package_dir() -> Path:
+    """Directory of the ``agentwire`` package this process imported."""
+    return Path(__file__).resolve().parent
 
 
-def _package_under_venv(venv: Path, package: str = "agentwire") -> Optional[Path]:
-    """``<venv>/lib/python*/site-packages/<package>`` if it exists."""
-    for candidate in sorted(venv.glob(f"lib/python*/site-packages/{package}")):
+def _package_under_venv(venv: Path) -> Optional[Path]:
+    """``<venv>/lib/python*/site-packages/agentwire`` if it exists."""
+    for candidate in sorted(venv.glob("lib/python*/site-packages/agentwire")):
         if candidate.is_dir():
             return candidate.resolve()
     return None
 
 
-def canonical_package_dir(package: str = "agentwire") -> Optional[Path]:
-    """The installed tool's ``package`` dir (``agentwire`` or ``damage_control``), or None if not installed.
+def canonical_package_dir() -> Optional[Path]:
+    """The installed tool's ``agentwire`` dir, or None if not installed.
 
     Resolved from the install LAYOUT rather than from ``PATH``: ``uv run`` and
     friends put an ephemeral venv's ``agentwire`` first on ``PATH``, so a
@@ -103,31 +88,31 @@ def canonical_package_dir(package: str = "agentwire") -> Optional[Path]:
     and it was the wrong shape twice over: it duplicated
     ``--allow-foreign-source`` with something undocumented, and — worse — a
     leading ``VAR=value`` assignment is collapsed to a mask token by
-    ``masked_subcommands``, so a command-position damage-control rule *cannot
-    observe it being set*. An override invisible to the layer guarding
-    machine-global writes is this module's own failure mode one level in, and
-    the stated threat model (an agent on a task branch) sets inline env vars
-    routinely. The flag is an argument in command position and stays visible.
+    masked by command scanners, so a guard *cannot observe it being set*. An
+    override invisible to the layer guarding machine-global writes is this
+    module's own failure mode one level in, and the stated threat model (an
+    agent on a task branch) sets inline env vars routinely. The flag is an
+    argument in command position and stays visible.
     """
     home = Path.home()
 
     # uv tool install (the documented install path).
     tool_root = Path(os.environ.get("UV_TOOL_DIR") or home / ".local" / "share" / "uv" / "tools")
     for dist in _DIST_NAMES:
-        pkg = _package_under_venv(tool_root / dist, package)
+        pkg = _package_under_venv(tool_root / dist)
         if pkg:
             return pkg
 
     # pipx.
     for dist in _DIST_NAMES:
-        pkg = _package_under_venv(home / ".local" / "pipx" / "venvs" / dist, package)
+        pkg = _package_under_venv(home / ".local" / "pipx" / "venvs" / dist)
         if pkg:
             return pkg
 
     # Any other venv reachable through the console script on ~/.local/bin.
     console = home / ".local" / "bin" / "agentwire"
     if console.exists():
-        pkg = _package_under_venv(console.resolve().parent.parent, package)
+        pkg = _package_under_venv(console.resolve().parent.parent)
         if pkg:
             return pkg
 
@@ -170,8 +155,8 @@ def rebuild_refusal_lines(repo_root: Path) -> List[str]:
         f"  source checkout : {repo_root}",
         "",
         "  This is machine-global. The worktree would BECOME the canonical install,",
-        "  and every later `hooks install` / `safety install` would then legitimately",
-        "  deploy this task branch's security hooks to every session on the box —",
+        "  and every later `hooks install` would then legitimately",
+        "  deploy this task branch's hooks to every session on the box —",
         "  the two-step version of #936, via the documented post-change workflow.",
         "",
         "  Fix: rebuild from the primary checkout —",
@@ -186,9 +171,7 @@ def rebuild_package_refusal_lines(repo_root: Path) -> List[str]:
 
     The worktree check above covers the checkout; this covers the package itself — a missing
     one would install nothing runnable, and one that resolves (e.g. through a symlink) into a
-    linked worktree would make that worktree canonical. The damage-control engine is no longer
-    built from the checkout (#1209 M8): it comes from PyPI, and its own provenance (a copy
-    running out of a worktree venv) is still judged by ``install_provenance`` over ``PACKAGES``.
+    linked worktree would make that worktree canonical.
     """
     path = repo_root / "agentwire"
     if not path.is_dir():
@@ -202,10 +185,10 @@ def rebuild_package_refusal_lines(repo_root: Path) -> List[str]:
     return []
 
 
-def install_provenance(package: str = "agentwire") -> Tuple[str, Optional[Path], Path]:
+def install_provenance() -> Tuple[str, Optional[Path], Path]:
     """``(state, canonical_pkg_or_None, running_pkg)`` — see the module docstring."""
-    running = running_package_dir(package)
-    canonical = canonical_package_dir(package)
+    running = running_package_dir()
+    canonical = canonical_package_dir()
     if canonical is None:
         # No install to defer to. That is a legitimate bootstrap — unless the
         # source is a task branch, which is never a thing to install a machine
@@ -214,16 +197,6 @@ def install_provenance(package: str = "agentwire") -> Tuple[str, Optional[Path],
     if canonical == running:
         return CANONICAL, canonical, running
     return FOREIGN, canonical, running
-
-
-def all_provenance() -> List[Tuple[str, str, Optional[Path], Path]]:
-    """``(package, state, canonical, running)`` for every package agentwire deploys."""
-    return [(pkg, *install_provenance(pkg)) for pkg in PACKAGES]
-
-
-def refusing_provenance() -> List[Tuple[str, str, Optional[Path], Path]]:
-    """The entries of :func:`all_provenance` in a refusing state: a machine-global write needs NONE."""
-    return [row for row in all_provenance() if row[1] in REFUSING_STATES]
 
 
 def refusal_lines(canonical: Optional[Path], running: Path, what: str) -> List[str]:
@@ -237,7 +210,7 @@ def refusal_lines(canonical: Optional[Path], running: Path, what: str) -> List[s
         "",
         "  These are machine-global files. Installing them from a checkout that is",
         "  not the installed tool is how a task branch silently DOWNGRADES the",
-        "  security hooks for every other session on this machine (#936).",
+        "  hooks for every other session on this machine (#936).",
         "",
         "  Fix: run this from the installed tool instead —",
         "       git -C <main checkout> pull --ff-only && agentwire rebuild",

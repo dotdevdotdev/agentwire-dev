@@ -76,14 +76,9 @@ project-scoped dir, and registry entries record the resolved path, so existing
 worktrees survive an override change. Unknown keys in the block warn to stderr
 but don't fail.
 
-> **No safety config in `.agentwire.yml` (#466/#467).** `.agentwire.yml` is
-> agent-writable, so it carries **zero** damage-control policy. The kill switch,
-> `disabled_rules`, `unattended_allow` defaults, **and the per-project `allowed_paths`
-> allowlist** all live in the protected, agent-unwritable `.damagecontrol.yml` at
-> the repo root (and global `~/.agentwire/damagecontrol.yml`) — edited host-side
-> only. The allowlist is the one knob that overrides the protected-control-plane
-> check, so it must itself sit behind that protection. See
-> [`docs/wiki/internals/damage-control.md`](../../docs/wiki/internals/damage-control.md).
+> **No guard config in `.agentwire.yml`.** `.agentwire.yml` is agent-writable
+> and carries no screening policy; agentwire ships none. Any guard's own policy
+> files belong to that guard.
 
 ## Task Schema (`.agentwire.tasks.yml`)
 
@@ -107,10 +102,7 @@ merge model, because task defs ARE executable code):
 
 Both commands are **host-only by design** — and `promote` is **hard-gated**,
 not just discouraged: it's not exposed as an MCP tool (an MCP tool that
-shelled out to it would bypass the Bash-tool protection entirely — see
-[Outbound MCP tool gating](../../docs/wiki/internals/damage-control.md#outbound-mcp-tool-gating-457)),
-it's blocked as a Bash command even with an `# ask:` comment or the kill switch off
-(`PROTECTED_COMMAND_PATTERNS` in `safety/_core.py`), and the function itself
+shelled out to it would hand an agent an instant bypass), and the function itself
 refuses to run under `AGENTWIRE_UNATTENDED=1` or without a genuine host signal
 (a real interactive terminal, or the explicit `AGENTWIRE_ALLOW_TASKS_PROMOTE=1`
 opt-in for your own non-interactive script) — `--yes` only skips the
@@ -196,8 +188,7 @@ a grant. The built-in grants let a task work, open a PR, and email the owner
 (`git.add`/`git.commit`/`git.push`/`gh.pr-create`/`outbound.agentwire-email` —
 the last is a blanket allow, any recipient, #804); list extra rules here to
 permit a normally-gated action (deploy, DB write, outbound SMS) for **this task
-only**. Blocked actions name the exact rule id (in the email and `agentwire safety
-logs`) so widening is copy-paste. Hard blocks (`rm -rf`, `git push --force`) and
+only**. Hard blocks (`rm -rf`, `git push --force`) and
 interactive sessions are unaffected.
 
 An entry is either a **bare rule id** (unscoped) or a mapping with **`paths`**
@@ -214,8 +205,7 @@ things to know:
 
 agentwire passes `unattended_allow` through as an opaque string
 (`AGENTWIRE_UNATTENDED_ALLOW`) and does not validate it; the reader of that
-variable owns its grammar. See `docs/wiki/internals/unattended.md` and
-`docs/wiki/internals/damage-control.md`.
+variable owns its grammar. See `docs/wiki/internals/unattended.md`.
 
 **Built-in variables:**
 - `{{ date }}`, `{{ time }}`, `{{ datetime }}` - Current date/time

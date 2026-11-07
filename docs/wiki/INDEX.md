@@ -54,8 +54,6 @@ Headless and scheduled execution.
 
 - **[Secrets & API keys](security/secrets.md)** — `~/.agentwire/.env` is the one place every key lives; which vars each feature reads; the `api_key_env` pattern for new integrations
 - **[Remote-access hardening](security/remote-access-hardening.md)** — threat model for the any-device→tunnel→portal→shell path; network footprint map (what agentwire owns vs BYO tunnels); the portal auth boundary and the per-device / capability-scope / freeze-config hardening plan (#396, #420, #423–#425)
-- **[Damage control integration](internals/damage-control.md)** — developer notes on how the integration with the separate `damage-control-dev` project works (optional; not an AgentWire feature)
-- **[Damage-control matcher hardening](security/damage-control-hardening.md)** — developer note on the matcher hardening shipped in PR #500
 - **[Sandbox spike](security/sandbox-spike.md)** — workers under the Claude Code sandbox (`agentwire new --sandbox`, opt-in): settings keys, observed probe results, required allowances, residual gaps (#1279)
 - **[pip-audit](security/pip-audit.md)** — dependency CVE triage workflow
 
@@ -99,11 +97,10 @@ Implementation reference for contributors and advanced users.
 - **[Portal](internals/portal.md)** — modes, REST API, WebSocket events
 - **[Session topology](internals/session-topology.md)** — parent→child visualization: born-from-parent ghost placement, the shared `TopologyView` renderer + its Session Workspace window and phantom-overlay mounts, lineage-tinted/hierarchy-grouped collage, live `session_created` appearance, and the shared design tokens behind all of it
 - **[Large parallel refactors](internals/parallel-refactor.md)** — splitting a huge file across parallel worktrees: positional-interleaving conflicts, regenerate-against-fresh-base + sequential merges, foundation-first, verification discipline
-- **[Upgrade test](internals/upgrade-test.md)** — CI job that installs the previous release from PyPI, upgrades to the branch in a fresh HOME, and asserts migrate/doctor (#1276)
 - **[Window collage](internals/window-collage.md)** — Mission Control overlay: preview-tile architecture + why mutating real WinBox windows can never work
 - **[Shell escaping](internals/shell-escaping.md)** — how complex strings cross tmux boundaries (incl. the 1024-byte cap on anything typed into a fresh pane)
-- **[Damage control integration](internals/damage-control.md)** — developer notes on the integration with the separate `damage-control-dev` project
 - **[Unattended contract](internals/unattended.md)** — `AGENTWIRE_UNATTENDED` as the public "no human present" signal, and `unattended_allow` as an opaque passthrough (#1309)
+- **[Migrating to standalone damage-control-dev](internals/migrating-to-standalone-damage-control.md)** — owner runbook: move the guard hooks off agentwire's venv before rebuilding (#1313)
 - **[Troubleshooting](internals/troubleshooting.md)** — common issues and fixes
 
 ## Skills

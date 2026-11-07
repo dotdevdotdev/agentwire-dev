@@ -301,7 +301,7 @@ class SandboxConfig:
     applies to a session launched without the flag. Writes are otherwise
     limited to the session's working directory; ``~/.agentwire`` stays
     read-only except the message-passing paths below, so a sandboxed agent
-    cannot edit ``damagecontrol.yml`` or ``.env``."""
+    cannot edit ``.env``."""
 
     allow_write: list[str] = field(default_factory=lambda: [
         "~/.cache/uv",  # uv run / uv sync

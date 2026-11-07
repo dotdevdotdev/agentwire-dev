@@ -17,8 +17,7 @@ import yaml
 # runs under (#729). Claude Code is the only agent backend (#730), so there is
 # nothing left to fuse a permission mode WITH — posture is all there is. The
 # `bare` sentinel is orthogonal: no agent, so no permission mode at all.
-# Tool-locking postures (restricted/readonly) were dropped — every agent runs
-# with damage-control hooks as the guard, not tool allowlists.
+# Tool-locking postures (restricted/readonly) were dropped — no tool allowlists.
 POSTURES = ("bypass", "prompted", "auto")
 DEFAULT_POSTURE = "bypass"
 BARE = "bare"
@@ -88,9 +87,7 @@ class ProjectConfig:
 
     Lives in .agentwire.yml in the project root — PURELY declarative session
     config (posture/roles/voice/parent/worktree), no execution vector, agent-writable
-    (#720). Holds NO damage-control safety config — the kill switch, rule knobs,
-    AND the per-project allowlist all live in the protected, agent-unwritable
-    ``.damagecontrol.yml`` instead (#466/#467). Task definitions (pre/post/
+    (#720). Holds NO guard config. Task definitions (pre/post/
     on_task_end/shell — code the scheduler runs via shell=True) live in the
     separate, protected ``.agentwire.tasks.yml`` instead (see ``tasks.py`` /
     ``tasks_cli.py``) — never parsed here.

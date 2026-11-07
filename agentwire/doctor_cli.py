@@ -1,6 +1,6 @@
 """CLI for diagnostics — ``agentwire doctor`` and ``agentwire network``.
 
-``doctor`` walks the full install (Python/deps, hooks, skills, damage control,
+``doctor`` walks the full install (Python/deps, hooks, skills,
 source-checkout drift, services, config, SSH/tunnels, voice loop, secrets,
 remote machines, dead-lettered messages, dangling worktree sessions) and
 optionally auto-fixes the local ones. ``network status`` is the read-only
@@ -293,7 +293,7 @@ def _render_hooks_section() -> int:
     except FileNotFoundError:
         hooks_source = None
 
-    from .safety import provenance as prov
+    from . import provenance as prov
 
     for hook_name, target_dir, _event, label, required, why in _managed_hook_files():
         target = target_dir / hook_name
@@ -362,293 +362,6 @@ def _render_skill_section() -> int:
             print("     Run: agentwire hooks install")
             issues += 1
     return issues
-
-
-def _report_delete_recursive(allowed_entries) -> int:
-    """List active ``delete-recursive`` entries (informational); flag refused ones (#1152). Returns the issue count."""
-    from damage_control.engine import DELETE_RECURSIVE_OP
-
-    carrying = [e for e in allowed_entries if DELETE_RECURSIVE_OP in e["allow"]]
-    refused = [e for e in carrying if e.get("dr_refused")]
-    active = [e for e in carrying if not e.get("dr_refused")]
-    for e in active:
-        where = f"this repo's .damagecontrol.yml ({e['project_root']})" if e.get("project_root") else e.get("source", "rules")
-        print(f"  [..] delete-recursive active: {e['path']!r} from {where} — rm -rf is allowed there")
-    for e in refused:
-        print(f"  [!!] delete-recursive entry REFUSED: {e['path']!r} ({e.get('source', 'rules')}) — {e['dr_refused']}")
-        print("       It does nothing until narrowed to one directory name (e.g. dist/* or */node_modules/*).")
-    return len(refused)
-
-
-def _repair_damage_control() -> None:
-    """``doctor --fix``: re-register the hooks and rewrite the profile (the package's ``init``).
-
-    The same install as ``agentwire hooks install`` and the same provenance guard, runnable from an
-    ordinary terminal. It can only help while ``agentwire`` itself runs; when the venv is broken
-    too, the way out is the stdlib-only break-glass script (see the dead-interpreter report).
-    """
-    from . import safety_ext
-
-    print("  Repairing damage control (agentwire hooks install, damage-control part)...")
-    outcome = safety_ext.install()
-    if outcome.refused:
-        print("  [!!] Refused: run this from the canonically installed agentwire, not a checkout.")
-    elif outcome.code:
-        print("  [!!] The install was refused or failed its self-test, so the registration was NOT changed.")
-
-
-def _render_damage_control_section(fix: bool = False) -> int:
-    """Print the damage-control health block. Returns the count of issues found.
-
-    Covers the four #462 blind spots plus DC hook staleness: the global kill
-    switch (``safety.enabled: false``), installed-rules drift vs the bundled
-    rules, PreToolUse matcher registration, and DC hook-script staleness.
-    """
-    issues = 0
-    if fix:
-        _repair_damage_control()
-
-    # Kill switch — ``enabled`` in ~/.agentwire/damagecontrol.yml gates ALL
-    # damage control. A silent `false` is the loudest possible failure, so flag
-    # it first and hard.
-    try:
-        from damage_control.engine import load_safety_config
-        safety_enabled = load_safety_config().get("enabled", True)
-    except Exception as e:
-        print(f"  [..] Could not read safety config: {e}")
-        safety_enabled = True
-    if not safety_enabled:
-        print("  [!!] Damage control is DISABLED (enabled: false)")
-        print("       ALL command/path/outbound gating is off.")
-        print("       Fix: set enabled: true in ~/.agentwire/damagecontrol.yml")
-        issues += 1
-    else:
-        print("  [ok] Damage control enabled (enabled: true)")
-
-    # allowedPaths vs the protected control plane (#938). The allowlist
-    # deliberately outranks control-plane protection (the one human, host-side
-    # override) — but a broad entry silently takes the kill switch and rule
-    # files with it, so name every overlap. Judged with the enforcement
-    # matcher itself (control_plane_allowlist_overlaps), never a
-    # re-implementation.
-    try:
-        from damage_control.engine import (
-            control_plane_allowlist_overlaps,
-            load_allowed_paths,
-            load_effective_config,
-        )
-        dc_cfg = load_effective_config()
-        allowed_entries = load_allowed_paths(dc_cfg)
-        overlaps = control_plane_allowlist_overlaps(allowed_entries)
-    except Exception as e:
-        print(f"  [..] Could not check allowedPaths against control plane: {e}")
-    else:
-        if overlaps:
-            print("  [!!] allowedPaths re-permits PROTECTED control-plane paths:")
-            for entry_path, prot in overlaps:
-                print(f"       {entry_path!r} covers {prot}")
-            print("       A write there can disable damage control itself "
-                  "(kill switch, rules, hooks).")
-            print("       Fix: narrow the allowedPaths entry so it no longer "
-                  "covers these paths.")
-            issues += 1
-        else:
-            print("  [ok] allowedPaths does not cover the protected control plane")
-        issues += _report_delete_recursive(allowed_entries)
-
-    try:
-        from . import safety_commands
-    except Exception as e:
-        print(f"  [..] Could not load safety module: {e}")
-        return issues
-
-    # Which packages is doctor speaking for? Every drift verdict below compares the machine
-    # against the RUNNING packages, so from a worktree checkout they describe that branch, not
-    # the installed tool (#936) - and there are two packages to ask about (#1209 M6).
-    try:
-        from .safety import provenance as prov
-        rows = prov.all_provenance()
-    except Exception as e:
-        print(f"  [..] Could not resolve install provenance: {e}")
-    else:
-        for package, state, canonical, running in rows:
-            if state in prov.REFUSING_STATES:
-                print(f"  [!!] Running {package} from a NON-CANONICAL package - installs are refused")
-                print(f"       running from : {running}")
-                print(f"       installed at : {canonical or '(none - this is a git worktree)'}")
-                print("       Drift verdicts below compare the machine against THIS checkout.")
-                issues += 1
-            elif state == prov.BOOTSTRAP:
-                print(f"  [..] No canonical {package} install found (bootstrap/dev checkout)")
-
-    # Registration, matchers, timeouts, fail-closed, interpreter, ruleset and the self-test: the
-    # package's own verdict (`damage-control-dev doctor --json`) under AgentWire's profile. A DEAD
-    # interpreter is the failure that matters: with onFailure:block every tool call is refused,
-    # including the ones that repair it.
-    try:
-        from . import safety_ext
-        package_status = safety_ext.status(deep=True)
-    except Exception as e:
-        print(f"  [..] Could not read the damage-control package status: {e}")
-    else:
-        print(f"  [..] damage-control-dev {package_status['version']}, profile '{package_status['profile']}'")
-        for finding in package_status["findings"]:
-            mark = {"ok": "ok", "info": "..", "bad": "!!"}[finding["level"]]
-            print(f"  [{mark}] {finding['message']}")
-            if finding["level"] == "bad":
-                issues += 1
-            if finding["code"] == "stale-ruleset":
-                print("       Fix: agentwire safety install --refresh   (prints the diff and acknowledges it)")
-        if not package_status["ok"]:
-            print("       Fix: agentwire hooks install   (or: agentwire doctor --fix)")
-            print("       Blocked outright? From a normal terminal (not through Claude Code):")
-            print("         python3 ~/.agentwire/bin/damage-control-breakglass unregister   # unblock; damage control is OFF")
-
-    from . import safety_migrate
-
-    legacy_registered = safety_migrate.legacy_registrations(safety_migrate.read_user_settings())
-    if legacy_registered:
-        print(f"  [!!] Matchers still registered with the pre-package hook scripts: {', '.join(legacy_registered)}")
-        print("       Fix: agentwire safety migrate")
-        issues += 1
-    legacy_files = safety_migrate.legacy_files()
-    if legacy_files and not legacy_registered:
-        print(f"  [..] Leftover pre-package hook scripts: {', '.join(p.name for p in legacy_files)}")
-        print("       Fix: agentwire safety migrate")
-
-    try:
-        from damage_control.profile import dump_profile
-
-        from . import safety_ext
-        manifest = safety_ext.manifest_path()
-        if not manifest.exists():
-            print(f"  [!!] Damage-control profile missing: {manifest}")
-            print("       Every hook blocks without it. Fix: agentwire hooks install")
-            issues += 1
-        elif manifest.read_text() != dump_profile(safety_ext.build_profile()):
-            print(f"  [!!] Damage-control profile differs from this install's: {manifest}")
-            print("       Fix: agentwire hooks install")
-            issues += 1
-        else:
-            print("  [ok] Damage-control profile current")
-    except Exception as e:
-        print(f"  [..] Could not check the damage-control profile: {e}")
-
-    # Rules and tooldefs ship inside the package; what lives on the machine is the host's
-    # own overlay. A file there REPLACES the bundled one of the same name, so name each.
-    overlay_plan = safety_migrate.classify()
-    for line in safety_migrate.overlay_report_lines(overlay_plan):
-        print(line)
-
-    # Rule groups and packs (#1141): informational only, never scored — a
-    # disabled pack is a choice, not drift.
-    try:
-        from damage_control import packs as _packs
-
-        from agentwire.safety_packs_cli import overview
-        broken = _packs.read_state(safety_commands.DAMAGECONTROL_FILE)["broken"]
-        if broken:
-            print(f"  [!!] {broken}")
-            print("       Fix: repair ~/.agentwire/damagecontrol.yml (nothing is migrated or removed meanwhile)")
-            issues += 1
-        rows = overview()
-        on = [r["name"] for r in rows if r["kind"] == "pack" and r["enabled"]]
-        off = [r["name"] for r in rows if r["kind"] == "pack" and not r["enabled"]]
-        out = [r["name"] for r in rows if r["kind"] == "group" and not r["enabled"]]
-        print(f"  [..] Damage-control packs enabled: {', '.join(on) or '(none)'}")
-        print(f"  [..] Packs available: {', '.join(off) or '(none)'}  "
-              f"(agentwire safety packs enable <name>)")
-        for r in rows:
-            if r["suggest_enable"]:
-                print(f"  [..] {', '.join(r['binaries_found'])} found here — "
-                      f"pack '{r['name']}' is off")
-        if out:
-            print(f"  [..] Opted-out default groups: {', '.join(out)}")
-    except Exception as e:
-        print(f"  [..] Could not read pack state: {e}")
-
-    # Duplicate rule ids — the only detector for a partially-applied rule set
-    # (#916). Two live rules sharing one id makes `disabled_rules` and
-    # `unattended_allow` ambiguous, which is the surface #914's scoped grants
-    # are built on.
-    try:
-        duplicates = safety_commands.load_patterns().get("_duplicate_rule_ids") or []
-    except Exception as e:
-        print(f"  [..] Could not check rule id uniqueness: {e}")
-        duplicates = []
-    if duplicates:
-        print(f"  [!!] DUPLICATE rule ids in the loaded rule set: {', '.join(duplicates)}")
-        print("       `disabled_rules` / `unattended_allow` naming one of these names")
-        print("       BOTH rules. Usually a half-applied rule sync.")
-        print(f"       Fix: {safety_migrate.duplicate_ids_fix(overlay_plan)}")
-        issues += 1
-    else:
-        print("  [ok] Rule ids unique across the loaded rule set")
-
-    # A rule/tooldef file that fails to parse contributes nothing — every
-    # protection in it is silently absent (#1130).
-    try:
-        from damage_control.engine import policy_file_parse_failures
-        parse_failures = (
-            safety_commands.load_patterns().get("_parse_failures") or []
-        ) + policy_file_parse_failures()
-    except Exception as e:
-        print(f"  [..] Could not check rule files for parse errors: {e}")
-        parse_failures = []
-    if parse_failures:
-        print("  [!!] Rule/tooldef/policy files that FAILED TO PARSE and are not loaded:")
-        for f in parse_failures:
-            loc = f"{f['file']}:{f['line']}" if f.get("line") else f["file"]
-            print(f"       {loc}: {f['error']}")
-        print("       Every rule in these files is absent from enforcement.")
-        issues += 1
-    else:
-        print("  [ok] Every rule, tooldef and policy file parses")
-
-    # Built-in unattended grants that name no live rule (#914 / #916). These
-    # read as working policy and are inert — the whole `DEFAULT_UNATTENDED_ALLOW`
-    # set went silently dead on this machine because the installed tooldefs are
-    # missing four `id:` lines the bundled copy has, and the user copy wins.
-    # It surfaces as scheduled tasks blocked on `git commit`, reported as a
-    # timeout. Rules drift is already reported above; tooldefs were not.
-    try:
-        from .safety.lint import (
-            load_effective_config,
-            split_missing_ids,
-            unattended_defaults_missing,
-        )
-        cfg, label = load_effective_config()
-        inert, by_group = split_missing_ids(unattended_defaults_missing(cfg))
-    except Exception as e:
-        print(f"  [..] Could not evaluate unattended default grants: {e}")
-        inert, by_group = [], {}
-    else:
-        if by_group:
-            print("  [..] Built-in unattended grants unavailable because their group is disabled: "
-                  + ", ".join(f"{r} (group '{g}')" for r, g in sorted(by_group.items())))
-        if inert:
-            print(f"  [!!] Built-in unattended grants naming NO live rule: {', '.join(inert)}")
-            print(f"       Loaded: {label}")
-            print("       These grants are inert — unattended tasks are blocked on actions")
-            print("       the defaults are specified to permit (typically a drifted")
-            print("       ~/.agentwire/tooldefs/ missing the stable `id:` fields).")
-            issues += 1
-        else:
-            print("  [ok] Built-in unattended grants all resolve to live rules")
-
-    _render_residuals_you_own()
-    return issues
-
-
-def _render_residuals_you_own() -> None:
-    """Informational, never scored: what the text hook cannot decide and the control that closes each (#1065)."""
-    from .safety.residuals import USER_OWNED_RESIDUALS
-
-    print("  [..] Residuals you own — a text hook cannot decide these; the control is yours to set:")
-    for residual, why, control in USER_OWNED_RESIDUALS:
-        print(f"       - {residual}")
-        print(f"         why: {why}")
-        print(f"         close it: {control}")
 
 
 def _render_voice_loop_section(config, ctx) -> int:
@@ -1874,12 +1587,6 @@ def cmd_doctor(args) -> int:
     print("\nChecking AgentWire global skills...")
     issues_found += _render_skill_section()
 
-    # 4b. Damage control (safety) — the kill switch, install drift, and the
-    # PreToolUse matcher registration. The #462 incident: a global disable and
-    # missing rule files were both invisible to every diagnostic.
-    print("\nChecking damage control (safety)...")
-    issues_found += _render_damage_control_section(fix=getattr(args, "fix", False))
-
     # 4c. Local checkout vs origin/main — rebuild reinstalls whatever is checked
     # out, so a never-pulled main silently ships stale code. Today only worktree
     # creation fetches; surface the drift here too.
@@ -2413,10 +2120,6 @@ def register_doctor_parser(subparsers) -> None:
     doctor_parser.add_argument(
         "-y", "--yes", action="store_true",
         help="Auto-confirm all fixes without prompting"
-    )
-    doctor_parser.add_argument(
-        "--fix", action="store_true",
-        help="Repair the damage-control install (re-register hooks, profile, break-glass) from an ordinary terminal"
     )
     doctor_parser.add_argument(
         "--voice", action="store_true",

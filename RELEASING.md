@@ -4,24 +4,12 @@ This project publishes the CLI and web app to PyPI as `agentwire-dev`. Packaging
 
 Every release does **both** a PyPI publish and a GitHub release. The **GitHub release is the changelog** — there is no `CHANGELOG.md`; release notes are built from the commits since the last tag (step 5).
 
-## The engine is a separate project (single source)
+## The engine is a separate project
 
-The damage-control engine has exactly one source: the `damage-control-dev` repo (<https://github.com/dotdevdotdev/damage-control-dev>), published on PyPI. `agentwire-dev` only *consumes* it through the range in `pyproject.toml` (currently `damage-control-dev>=0.5.1,<0.6`); a checkout and a PyPI install both resolve it from PyPI. There is no copy of the engine in this repo and nothing to release from here. `tests/unit/test_damage_control_pin.py` checks that the declared floor/ceiling parse and that the installed engine satisfies them.
-
-To ship an engine change:
-
-1. **Land it in the damage-control-dev repo**, tag and release it there (its own release flow). Do not tag or release from this repo.
-2. **Raise the floor here** in a normal agentwire PR: bump the `>=` in `pyproject.toml` (and the `<` ceiling too if the engine crossed it, e.g. `>=0.3.0,<0.4`), run `uv lock`, and re-run `scripts/golden_snapshot.py check` and `scripts/effective_rules.py --check` — re-record the golden only if the behavior change is intended, in that same PR.
-3. **Verify against the published wheel** before releasing agentwire: in a scratch venv, install the agentwire wheel (it pulls the engine from PyPI), then run the fast suite, `agentwire doctor` and a hook subprocess smoke under a temp `HOME`.
-4. **Then** bump and publish `agentwire-dev` (steps below), then the GitHub release.
-
-An `agentwire-dev` whose floor names an engine version PyPI doesn't have yet is uninstallable, so step 1 always completes (published) before step 2 merges.
+The damage-control engine lives in the `damage-control-dev` repo (<https://github.com/dotdevdotdev/damage-control-dev>) and is released from there. `agentwire-dev` ships no guard code; do not tag or release the engine from this repo.
 
 ## Pre-release checklist
 
-- The **`upgrade from previous release`** job in `.github/workflows/pytest.yml` is green on the commit you are about to tag (it runs on pushes to main and on PRs into a `release*` branch, not on ordinary PRs). It installs the previous release from PyPI, upgrades it to this checkout in a fresh `HOME`, then asserts `safety migrate` and `doctor` behave. Details: [`docs/wiki/internals/upgrade-test.md`](docs/wiki/internals/upgrade-test.md). Rerun it if the only failure is PyPI index lag.
-- The **`scoped-allow mutation check`** job in the same workflow is green on that commit (pushes to main only; ~30 s). It runs `scripts/mutate_scoped_allow.py` and fails on any surviving mutation or stale anchor. If it is red after an engine floor bump, re-anchor the mutations in the script rather than skipping it.
-- Engine bumps: also follow step 3 of the engine section above.
 
 ## Steps
 

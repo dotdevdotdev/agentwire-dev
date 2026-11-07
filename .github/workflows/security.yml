@@ -1,15 +1,11 @@
-# Security CI for the damage-control matcher.
+# Security CI.
 #
-# Three independent signals:
-#   1. bypass-corpus  — the load-bearing gate. Asserts the known evasion vectors
-#                       (quoting/escaping, $VAR, substitution, tilde/$HOME secret
-#                       reads, non-rm deletion) stay BLOCK/ASK and a corpus of
-#                       safe everyday commands keeps PASSing. Merges gate on this.
-#   2. bandit         — static scan tuned to a meaningful green gate. Intentional
+# Two independent signals:
+#   1. bandit         — static scan tuned to a meaningful green gate. Intentional
 #                       `shell=True` / localhost `verify=False` sites are skipped in
 #                       pyproject [tool.bandit]; the step fails only on NEW
 #                       high-severity high-confidence findings.
-#   3. pip-audit      — known-vuln scan over the resolved dependency set, on PRs
+#   2. pip-audit      — known-vuln scan over the resolved dependency set, on PRs
 #                       and a weekly cron.
 name: security
 
@@ -21,26 +17,6 @@ on:
     - cron: "0 7 * * 1"  # Mondays 07:00 UTC
 
 jobs:
-  bypass-corpus:
-    name: damage-control bypass corpus (merge gate)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.12"
-      - name: Sync dependencies
-        run: uv sync --extra dev
-      - name: AgentWire rules-layer JSON is in sync with its YAML
-        run: uv run --no-sync python scripts/build_rules_json.py --check
-      - name: Run bypass + hook fail-closed + control-plane corpus
-        run: >
-          uv run --no-sync pytest -q
-          tests/unit/test_damage_control_bypass.py
-          tests/unit/test_hook_fail_closed_matrix.py
-          tests/unit/test_control_plane_protection.py
-
   bandit:
     name: bandit
     runs-on: ubuntu-latest
@@ -61,8 +37,7 @@ jobs:
     name: pip-audit (advisory)
     runs-on: ubuntu-latest
     # Advisory, not a merge gate: hard-blocking every PR on transitive CVEs is
-    # noise. Keep it running on PRs + the weekly cron for visibility; the
-    # damage-control bypass corpus is the hard merge gate. Direct portal-facing
+    # noise. Keep it running on PRs + the weekly cron for visibility. Direct portal-facing
     # deps are bumped explicitly in pyproject; transitive fixes land via lock
     # bumps. See docs/wiki/security/pip-audit.md for the residual-CVE rationale.
     continue-on-error: true

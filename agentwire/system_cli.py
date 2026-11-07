@@ -47,8 +47,6 @@ def _clean_uv_cache_for_agentwire() -> None:
     The uv cache (~/.cache/uv) is shared by every uv tool and project on the
     machine — never rmtree it wholesale. `uv cache clean <package>` evicts just
     that package's wheels/sdists so the next install rebuilds from source.
-    damage-control-dev is a published, versioned wheel resolved from PyPI (#1209 M8),
-    so there is no stale local build of it to evict.
     """
     for package in ("agentwire-dev",):
         try:
@@ -561,7 +559,7 @@ def cmd_rebuild(args) -> int:
     # task branch machine-wide. Deliberately NOT folded into --force, which
     # means "rebuild despite being behind main": that would make the documented
     # staleness override silently grant a machine-global one too.
-    from agentwire.safety import provenance as prov
+    from agentwire import provenance as prov
 
     if prov.is_worktree_checkout(project_root) and not getattr(
         args, "allow_foreign_source", False
@@ -730,7 +728,7 @@ def register_system_parser(subparsers) -> None:
     rebuild_parser.add_argument(
         "--allow-foreign-source", action="store_true",
         help="Install a linked git WORKTREE as the machine's tool. Doing this "
-             "makes that task branch canonical, so every later hooks/safety "
+             "makes that task branch canonical, so every later hooks "
              "install deploys it machine-wide (#936)",
     )
     rebuild_parser.set_defaults(func=cmd_rebuild)

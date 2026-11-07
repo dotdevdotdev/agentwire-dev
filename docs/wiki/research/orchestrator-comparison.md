@@ -18,7 +18,7 @@
 ### Claude Squad
 - **What:** "a terminal app that manages multiple Claude Code, Codex, Gemini (and other local agents including Aider) in separate workspaces" ([README](https://github.com/smtg-ai/claude-squad/blob/main/README.md)). Built on tmux and `gh`. Highlights: background tasks including auto-accept, and "Review changes before applying them, checkout changes before pushing them".
 - **Does that AgentWire does not:** a single-window TUI that lists every task and reviews its changes in place. Per the README, review happens inside the app.
-- **AgentWire does that it does not:** no sign in its README of voice, a web UI, remote machines, scheduled runs, a parent/child session model, report-back messaging, or a command safety layer. _Absence on a README page is not proof of absence in the code._
+- **AgentWire does that it does not:** no sign in its README of voice, a web UI, remote machines, scheduled runs, a parent/child session model, report-back messaging. _Absence on a README page is not proof of absence in the code._
 
 ### Conductor
 - **What:** "Run parallel coding agents on your Mac" with Claude Code, Codex and Cursor in isolated workspaces ([homepage](https://www.conductor.build/)). The [docs](https://www.conductor.build/docs/) describe a flow of workspace, diff viewer, checks, pull request, merge, archive.
@@ -46,7 +46,7 @@ Taken together, the sourced differences are:
 
 - **Substrate:** AgentWire's unit is a tmux session addressable from CLI, portal, MCP and remote machines ([concepts](../concepts.md)). The desktop apps (Conductor, Sculptor) and the TUI (Claude Squad) are the UI.
 - **Topology:** parent/child sessions with report-back, fan-out cohorts and a fleet view ([fan-out cohorts](../sessions/fan-out-cohorts.md), [fleet](../sessions/fleet.md)). Claude Squad, Conductor and Sculptor present flat lists of workspaces in their READMEs and homepages; Multica's Squads are leader-routed agent groups.
-- **Safety:** every agent tool call passes through [damage control](../internals/damage-control.md). No other tool surveyed documents an equivalent on the pages read.
+- **Safety:** agentwire is not a guard; screening is the separate `damage-control-dev` project.
 - **What AgentWire is weaker at:** no first-party diff-review UI (below), no native desktop app, and a tmux dependency.
 
 ## Worth borrowing (suggested issues, not work done)
