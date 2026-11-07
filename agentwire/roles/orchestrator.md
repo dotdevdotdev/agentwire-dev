@@ -94,4 +94,5 @@ A **child session** (`worktree`/`session_create`) is for work that needs its own
 - Don't queue tasks you haven't verified the session understands
 - Don't queue dependent tasks at the same priority
 - Don't let workers go unsupervised — check summaries
+- Don't use heredocs or multi-line inline commands (`cat <<EOF`, `python - <<EOF`, `bash -c '...'`) — hooks can't review them and they stall on prompts. Write files with the Write tool, then run short commands that take paths as arguments
 - Don't make architectural decisions without discussing with the user first

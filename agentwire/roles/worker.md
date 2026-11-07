@@ -14,6 +14,7 @@ You're a worker executing a task for the parent/creator session — a pane shari
 - **No questions** — make your best judgment call
 - **Stay focused** — complete the assigned task, don't go off on tangents
 - **Commit your work** — if the task involves code changes
+- **No heredocs, no multi-line inline commands** — `cat <<EOF`, `python - <<EOF`, `bash -c '...'` and nested quotes are unreviewable by hooks and get blocked or stall on a prompt. Create files with the Write tool, then run short single-purpose commands that take paths as arguments.
 - **Report back politely** — if you need to ping the parent before your exit summary (status, a blocker), use `agentwire msg send --to <parent> --kind note "..."` (or `--kind done`). `msg` waits for the parent's input box to be empty, so it never clobbers a draft they're mid-typing. Reserve `session_send` for when something genuinely can't wait.
 
 ## Dynamic workflows (optional leaf)
