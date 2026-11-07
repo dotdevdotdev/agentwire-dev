@@ -187,6 +187,21 @@ entirely with `agentwire worktree --remove`, whose guards split by what's at
 risk (#941): worktree/session removal refuses a dirty tree (durability),
 branch deletion demands a verified merge (integration).
 
+
+## Teardown settles the ledger (#1324)
+
+A child torn down on purpose is no longer pending. Every teardown path —
+`worktree --remove`, `worktree --prune --gc-merged` (both via `_teardown_entry`)
+and `agentwire kill` — calls `cohort.settle(child)`, which drops the child's
+entry from every ledger it is enrolled in (and discards a ledger left empty).
+`reported` / `timeout` entries are kept: they carry the report text the
+parent's roll-up still reads. Without this, a child that idled, reported by
+other means and was removed stayed `resolved_idle` and made `fleet`/`doctor`
+red until the next `wait --children`. Pane entries (whose "session" is the
+live owner) never settle. `fleet` has a backstop: `idle_no_report` is not
+raised for a `gone` child with no open PR (a LIVE idle child still is).
+`wait --children` is unchanged for pending children.
+
 ## Reference
 
 | Piece | Where |
