@@ -50,6 +50,7 @@ import yaml
 from .core import _get_session_project_path, _output_json, _output_result
 from .project_config import ensure_gitignored
 from .tasks import PROPOSED_TASKS_FILENAME, TASKS_FILENAME, parse_task_config, validate_task
+from .unattended import is_unattended
 
 # Explicit host-side opt-in for a non-interactive `promote` (e.g. the owner's
 # own cron/CI script). Agent and scheduler sessions never have this set —
@@ -339,8 +340,6 @@ def cmd_tasks_promote(args) -> int:
     """
     json_mode = getattr(args, "json", False)
     assume_yes = getattr(args, "yes", False)
-
-    from damage_control.engine import is_unattended
 
     if is_unattended():
         return _output_result(

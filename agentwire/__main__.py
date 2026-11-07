@@ -13,7 +13,6 @@ from . import (  # noqa: E402  # must follow load_env_files() above
     __version__,
 )
 from .core import (  # noqa: E402,F401  # E402: must follow load_env_files(); F401: re-exported moved helpers
-    _UNATTENDED_ENV_KEYS,
     CONFIG_DIR,
     AgentCommand,
     _add_posture_flag,

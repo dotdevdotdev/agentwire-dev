@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..unattended import UNATTENDED_ALLOW_ENV, UNATTENDED_ENV, encode_allow
 from .gates import _gated_tasks
 from .models import (
     _EXIT_FAILED,
@@ -561,17 +562,15 @@ def _unattended_env(task: SchedulerTask) -> dict[str, str]:
     inverted.
     """
     env = dict(os.environ)
-    env["AGENTWIRE_UNATTENDED"] = "1"
+    env[UNATTENDED_ENV] = "1"
     try:
-        from damage_control.engine import encode_unattended_allow
-
         from ..tasks import load_task
         tc = load_task(Path(task.project), task.task)
         extra = getattr(tc, "unattended_allow", None)
         if extra:
-            encoded = encode_unattended_allow(extra)
+            encoded = encode_allow(extra)
             if encoded:
-                env["AGENTWIRE_UNATTENDED_ALLOW"] = encoded
+                env[UNATTENDED_ALLOW_ENV] = encoded
     except Exception:
         pass
     return env

@@ -212,9 +212,10 @@ things to know:
   deliberate: a fan-out task's children are what do the committing, so a grant
   that stopped at the parent could not fix a delegating task at all.
 
-`agentwire tasks review` warns before you promote when a task is specified to
-run commands its posture will refuse, or names a rule id that does not exist.
-See `docs/wiki/internals/damage-control.md`.
+agentwire passes `unattended_allow` through as an opaque string
+(`AGENTWIRE_UNATTENDED_ALLOW`) and does not validate it; the reader of that
+variable owns its grammar. See `docs/wiki/internals/unattended.md` and
+`docs/wiki/internals/damage-control.md`.
 
 **Built-in variables:**
 - `{{ date }}`, `{{ time }}`, `{{ datetime }}` - Current date/time
