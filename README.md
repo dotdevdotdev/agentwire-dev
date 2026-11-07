@@ -41,7 +41,7 @@ one cockpit, and its capabilities **compound**:
   email-on-fail, usage-limit recovery) means nothing silently fails.
 - **Your machine, your keys, no telemetry.** Runs entirely on your hardware, loopback
   by default. No cloud account, no third party in the loop — your code and your API
-  keys never leave the machine. 300+ damage-control blocks make running unattended sane.
+  keys never leave the machine.
 
 > **Use the official app to watch one session; use AgentWire to command a whole
 > fleet — on your own hardware, by keyboard, with voice layered on top.**
@@ -153,7 +153,6 @@ The cockpit, then the layers that stack on it:
 | **Briefing Mode** | A terse human-facing anchor fans out verbose worktree correspondents, then briefs you on cue |
 | **Voice** | Push-to-talk in, neural TTS out on CPU (Kokoro); voice cloning via a self-hosted GPU shim; global macOS hotkeys dictate to a background session from any app |
 | **Remote Machines** | SSH into GPU servers and talk to agents there |
-| **Safety Hooks** | 300+ dangerous commands blocked (rm -rf, force push, etc.), all logged |
 | **Outbound Channels** | Email (Resend) + SMS (Quo / OpenPhone) for cross-device notifications |
 | **Session Roles** | Leader/worker patterns for multi-agent workflows |
 
@@ -200,24 +199,12 @@ Workers execute tasks autonomously while the orchestrator coordinates.
 
 ---
 
-## Safety
+## Guarding agents
 
-AgentWire blocks dangerous operations before they execute:
-
-- `rm -rf /`, `git push --force`, `git reset --hard`
-- Cloud CLI destructive ops (AWS, GCP, Firebase, Vercel)
-- Database drops, Redis flushes, container nukes
-- Sensitive file access (.env, SSH keys, credentials)
-
-```bash
-agentwire safety check "rm -rf /"
-# → ✗ BLOCKED: rm with recursive or force flags
-
-agentwire safety status
-# → 312 patterns loaded, 47 blocks today
-```
-
-All decisions logged for audit trails.
+AgentWire does not manage or ship command guarding as a feature. If you want a
+hook layer that screens an agent's destructive commands, the separate
+[`damage-control-dev`](https://pypi.org/project/damage-control-dev/) project is an
+optional add-on; see its documentation for what it covers.
 
 ---
 
@@ -306,11 +293,10 @@ agentwire tunnels up              # SSH tunnels for services
 </details>
 
 <details>
-<summary><strong>Safety & Diagnostics</strong></summary>
+<summary><strong>Diagnostics</strong></summary>
 
 ```bash
 agentwire doctor                  # Auto-diagnose issues
-agentwire safety status           # Check protection status
 agentwire hooks install           # Install Claude Code hooks
 agentwire network status          # Service health check
 ```
@@ -328,7 +314,6 @@ Quick links:
 - [Portal API](docs/wiki/internals/portal.md)
 - [Remote Machines](docs/wiki/deployment/remote-machines.md)
 - [Voice Shim Contract](docs/wiki/voice/shim-contract.md) · [Self-Hosted TTS](docs/wiki/voice/tts-self-hosted.md)
-- [Safety Hooks](docs/wiki/internals/damage-control.md)
 
 ---
 

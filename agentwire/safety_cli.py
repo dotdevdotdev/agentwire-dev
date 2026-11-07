@@ -78,13 +78,13 @@ def cmd_safety_tooldefs_show(args) -> int:
 def register_safety_parser(subparsers) -> None:
     # === safety command group ===
     safety_parser = subparsers.add_parser(
-        "safety", help="Damage control security commands"
+        "safety", help="Integration commands for the separate damage-control-dev project"
     )
     safety_subparsers = safety_parser.add_subparsers(dest="safety_command")
 
     # safety check <command>
     safety_check = safety_subparsers.add_parser(
-        "check", help="Test if a command would be blocked/allowed"
+        "check", help="Test whether a command would be blocked or allowed by the installed rules"
     )
     safety_check.add_argument("command", help="Command to test")
     safety_check.add_argument(
@@ -94,7 +94,7 @@ def register_safety_parser(subparsers) -> None:
 
     # safety status
     safety_status = safety_subparsers.add_parser(
-        "status", help="Show safety status and pattern counts"
+        "status", help="Show the damage-control-dev integration status and rule counts"
     )
     safety_status.set_defaults(func=cmd_safety_status)
 

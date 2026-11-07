@@ -37,27 +37,25 @@ This security policy applies to:
 
 ## Security Features
 
-AgentWire includes built-in security features:
+AgentWire is not a sandbox and does not promise to stop an agent from running a
+destructive command. Agents run with `--dangerously-skip-permissions` by default
+(see below), so what stands between an agent and your machine is whatever you
+add.
 
-- **Damage Control Hooks:** Block 300+ dangerous command patterns. Commands are
-  matched after shell-aware normalization (quote/escape stripping, simple `$VAR`
-  resolution); constructs that can't be statically verified (command
-  substitution, `eval`, `base64 -d | sh`) fail closed.
-- **Path Protection:** Prevent access to sensitive files (`.env`, SSH keys,
-  credentials) across shell, file edits/writes, **and native content reads**
-  (Read/Grep/Glob). Committed env templates (`.env.example`, `.sample`,
-  `.template`, `.dist`) are treated as secret-free and remain readable.
-- **Audit Logging:** All blocked operations are logged
+Command and path screening is provided by the separate, optional
+[`damage-control-dev`](https://pypi.org/project/damage-control-dev/) project
+(PyPI). AgentWire does not manage or ship it as a feature: it depends on that
+package, registers its hooks when you run `agentwire hooks install`, and carries
+its own rules layer for AgentWire paths. What the hooks match, how they
+normalize commands, and their limits are documented in that project. Treat them
+as a best-effort screen, not a security boundary.
 
-See `docs/wiki/internals/damage-control.md` for details, and
-`docs/wiki/security/damage-control-hardening.md` for the 2026-06 matcher
-hardening (control-plane path coverage, tilde/`$HOME` canonicalization, `.env`
-whole-component matching, shell-aware fail-closed matching, read-surface
-policing) and the new fail-closed-when-unattended behavior.
+Contributor notes on the integration: `docs/wiki/internals/damage-control.md`
+and `docs/wiki/security/damage-control-hardening.md`.
 
 ### Redundant Permissions Bypass (`--dangerously-skip-permissions`)
 
-By default, AgentWire initializes Claude Code with the `--dangerously-skip-permissions` flag. This is safe because AgentWire implements its own **Damage Control Hooks** at the system shell level (installed via `agentwire hooks install`). Rather than relying on fragile, prompt-based AI dialogs for command approval, AgentWire intercepts and enforces safety rules directly in the shell. Bypassing Claude's built-in prompts prevents unnecessary interruptions and speeds up agent execution while keeping AgentWire's compensating shell-level controls in force.
+By default, AgentWire initializes Claude Code with the `--dangerously-skip-permissions` flag, which skips Claude Code's own approval prompts. The compensating control is the damage-control-dev hook layer described above, installed via `agentwire hooks install`. If those hooks are not installed, or the command is outside what they match, nothing else intervenes. Use `posture: prompted` or `posture: auto` if you want an approval step instead.
 
 ## Trust Model
 

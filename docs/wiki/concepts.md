@@ -40,11 +40,11 @@ Inside a session, **pane 0 is the orchestrator** — the agent the user (or anot
 
 Role and topology are independent axes (#716): a worker doesn't have to be a pane. `agentwire worktree <name>` spawns the same worker role as a standalone tmux session instead — its own worktree, its own pane 0 — reporting back with a draft PR rather than a pane-idle notification. Same etiquette, different substrate.
 
-This pattern is load-bearing in three ways. **First**, it bounds blast radius: a worker runs on its own isolated branch/worktree, so a mistake stays on a throwaway branch behind a draft PR the orchestrator reviews — and damage-control hooks guard every session regardless of posture. **Second**, it bounds context: workers run with a fresh prompt and a tiny system message, so they don't drag in the orchestrator's 200K-token conversation. **Third**, it bounds attention: pane 0 is where you look. Workers are noise that scrolls by; their summaries are the signal that surfaces.
+This pattern is load-bearing in three ways. **First**, it bounds blast radius: a worker runs on its own isolated branch/worktree, so a mistake stays on a throwaway branch behind a draft PR the orchestrator reviews. **Second**, it bounds context: workers run with a fresh prompt and a tiny system message, so they don't drag in the orchestrator's 200K-token conversation. **Third**, it bounds attention: pane 0 is where you look. Workers are noise that scrolls by; their summaries are the signal that surfaces.
 
 The pattern composes. An orchestrator in a "main" session can spawn workers AND send messages to other sessions. Those other sessions are also orchestrators with their own workers. The whole graph forms naturally: idle notifications flow upward (worker → orchestrator → `parent:` session → human), commands flow downward (human → main session → child sessions → workers).
 
-It also explains a lot of design choices in the wiki. Damage-control rules are session-local (per-pane, really) because workers are short-lived and their privileges should be too. Channels target sessions (not panes) because the orchestrator decides who handles inbound work. The scheduler creates orchestrator sessions (not workers) because tasks need their own context.
+It also explains a lot of design choices in the wiki. Channels target sessions (not panes) because the orchestrator decides who handles inbound work. The scheduler creates orchestrator sessions (not workers) because tasks need their own context.
 
 → Detailed: [CLAUDE.md](../../CLAUDE.md), [Architecture — Process model](architecture.md#process-model).
 

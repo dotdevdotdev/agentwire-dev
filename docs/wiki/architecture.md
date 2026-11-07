@@ -164,15 +164,11 @@ Decision shortcut:
 
 ---
 
-## Safety
+## Guarding agents
 
-Defense in depth, three layers:
+AgentWire's own guard is the `posture` axis, including classifier-mode auto sessions (`posture: auto`): a Sonnet 4.6 classifier reviews each tool call before execution. Hook-level command screening is the optional, separate project [`damage-control-dev`](https://pypi.org/project/damage-control-dev/); AgentWire does not manage or ship it as a feature. The integration points are documented for contributors in [Damage control integration](internals/damage-control.md).
 
-1. **Damage control hooks** (always on if `agentwire hooks install` was run): PreToolUse hooks on Bash/Edit/Write/Read/Grep/Glob match commands and paths against `agentwire/hooks/damage-control/rules/*.yaml`. Block hard-blocked patterns, prompt for ask-patterns, run bypassable patterns through allowlist checks; the read-side hook additionally enforces `zeroAccessPaths` on content reads.
-2. **Per-project allowlists** (`allowed_paths` in the protected `.damagecontrol.yml` at the repo root): override the global rules for paths inside this project (e.g., `dist/*` allow-all, `.env.development` allow read/write/edit). The allowlist is host-owned — an agent can't edit `.damagecontrol.yml` to widen its own freedom (#466/#467).
-3. **Classifier-mode auto sessions** (`posture: auto`): a Sonnet 4.6 classifier reviews each tool call before execution. Safe ops auto-approve at zero cost; dangerous ops are blocked. Layered on top of the hook-level checks.
-
-→ [Damage control](internals/damage-control.md), [auto](sessions/claude-code-auto-mode.md).
+→ [auto](sessions/claude-code-auto-mode.md).
 
 ---
 
