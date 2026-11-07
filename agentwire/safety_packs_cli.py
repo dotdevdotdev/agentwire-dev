@@ -12,12 +12,12 @@ import json
 import sys
 from typing import Any, Dict, List
 
-from damage_control import packs
-from damage_control.engine import overlay_dirs, policy_file_path
-
 
 def overview() -> List[Dict[str, Any]]:
     """One row per registry entry: kind, whether it is on, files, suggestion."""
+    from damage_control import packs
+    from damage_control.engine import overlay_dirs, policy_file_path
+
     return packs.overview(policy_file_path(), *overlay_dirs())
 
 
@@ -51,6 +51,9 @@ def _set(kind: str, name: str, enable: bool) -> int:
     plural = "packs" if kind == "pack" else "groups"
     if not _gate(f"{plural} {'enable' if enable else 'disable'}"):
         return 1
+    from damage_control import packs
+    from damage_control.engine import policy_file_path
+
     try:
         packs.set_enabled(policy_file_path(), kind, name, enable)
     except packs.MembershipError as e:

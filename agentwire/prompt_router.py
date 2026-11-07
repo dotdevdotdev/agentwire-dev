@@ -30,8 +30,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from damage_control.engine import detect_ask_request
-
 from .core import load_session_metadata
 from .usage_limit import (
     PARK_OPTION,
@@ -56,6 +54,20 @@ RENOTIFY_TTL = timedelta(minutes=10)
 HOOK_MARKER_TTL = timedelta(minutes=6)
 # Markers whose pane vanished are garbage-collected after this long.
 MARKER_GC_TTL = timedelta(minutes=30)
+
+# A routed Bash prompt shows at most this much of the command. A long command
+# keeps its head and its tail: the tail is where trailing intent (a pipe, a
+# redirect, a final comment) lives, and a plain head slice would cut it off.
+COMMAND_EXCERPT_HEAD = 100
+COMMAND_EXCERPT_TAIL = 200
+
+
+def _command_excerpt(command: str) -> str:
+    """The command, or its head and tail joined by an ellipsis when long."""
+    if len(command) <= COMMAND_EXCERPT_HEAD + COMMAND_EXCERPT_TAIL:
+        return command
+    return f"{command[:COMMAND_EXCERPT_HEAD]} … {command[-COMMAND_EXCERPT_TAIL:]}"
+
 
 # A root session's prompt has nowhere to route, so the owner is the only
 # recipient left. Longer than RENOTIFY_TTL on purpose: this is an out-of-band
@@ -908,17 +920,8 @@ def notify_permission_request(session: str, pane_index: int, data: dict) -> "str
 
     if tool_name == "Bash":
         command = str(tool_input.get("command", ""))
-        detail = command[:300]
+        detail = _command_excerpt(command)
         summary = f"run: {detail}" if detail else "run a command"
-        # An escape-ask (`# ask: <reason>`, damage-control-dev 0.2.0): the agent
-        # wants a human to decide a command the guard would block. Lead with its
-        # reason so truncation of a long command can't cut it off.
-        reason = detect_ask_request(command)
-        if reason:
-            summary = (
-                f"run a command the safety guard would block, with the agent's reason "
-                f"({reason[:300]}) — {summary}"
-            )
     elif tool_name in ("Edit", "Write"):
         summary = f"{tool_name.lower()} {tool_input.get('file_path', 'a file')}"
     else:

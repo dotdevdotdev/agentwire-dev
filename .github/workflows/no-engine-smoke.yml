@@ -1,0 +1,45 @@
+# Engine-free startup smoke (#1308, part of #1307).
+#
+# agentwire must start without the damage-control engine installed. Install it
+# into a fresh venv, uninstall the engine, and run the commands that must not
+# need it. `safety`, `doctor` and `hooks install` are deliberately NOT here.
+name: no-engine-smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    name: startup without the engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install agentwire, then remove the engine
+        run: |
+          uv venv "$RUNNER_TEMP/noengine"
+          uv pip install --python "$RUNNER_TEMP/noengine/bin/python" .
+          uv pip uninstall --python "$RUNNER_TEMP/noengine/bin/python" damage-control-dev
+          if "$RUNNER_TEMP/noengine/bin/python" -c "import damage_control" 2>/dev/null; then
+            echo "damage_control is still importable" >&2
+            exit 1
+          fi
+
+      - name: Run engine-free commands
+        env:
+          HOME: ${{ runner.temp }}/home
+        run: |
+          mkdir -p "$HOME"
+          aw="$RUNNER_TEMP/noengine/bin/agentwire"
+          "$aw" --help
+          "$aw" list
+          "$aw" new --help
+          "$aw" portal --help
+          "$aw" tasks --help
