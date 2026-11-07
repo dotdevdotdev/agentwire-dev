@@ -364,6 +364,23 @@ def _render_skill_section() -> int:
     return issues
 
 
+def _render_subagent_section() -> int:
+    """Print the subagent-definition drift block. Returns the count of issues found."""
+    from .hooks_cli import claude_agents_dir, subagent_drift
+
+    issues = 0
+    for name, state in sorted(subagent_drift().items()):
+        target = claude_agents_dir() / name
+        if state == "ok":
+            print(f"  [ok] {Path(name).stem} subagent: {target}")
+        else:
+            label = "STALE — installed copy differs from packaged source" if state == "stale" else "not installed"
+            print(f"  [!!] {Path(name).stem} subagent: {label}")
+            print("     Run: agentwire hooks install")
+            issues += 1
+    return issues
+
+
 def _render_voice_loop_section(config, ctx) -> int:
     """Print the voice-loop (push-to-talk) preflight. Returns failures found.
 
@@ -1586,6 +1603,9 @@ def cmd_doctor(args) -> int:
     # the same way as hooks — drift-aware against the packaged source.
     print("\nChecking AgentWire global skills...")
     issues_found += _render_skill_section()
+
+    print("\nChecking AgentWire subagent definitions...")
+    issues_found += _render_subagent_section()
 
     # 4c. Local checkout vs origin/main — rebuild reinstalls whatever is checked
     # out, so a never-pulled main silently ships stale code. Today only worktree

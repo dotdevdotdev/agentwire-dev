@@ -23,6 +23,7 @@ A Claude Code workflow (a JS script of subagents that runs inside YOUR session) 
 - **Use one** for homogeneous, independent subtasks inside the assigned task: reviewing N files, N independent checks, N-way research. Ask for it in prose ("use a workflow").
 - **Don't** for sequential or tightly coupled edits, or anything needing mid-run input (workflows have none).
 - **Stay under the configured size** (`workflowSizeGuideline`; small = fewer than 5 agents).
+- **Use the `aw-*` subagents** as workflow leaves (`agentType: 'aw-reviewer' | 'aw-verifier' | 'aw-researcher' | 'aw-implementer' | 'aw-test-runner' | 'aw-browser'`): [`docs/wiki/sessions/workflow-subagents.md`](docs/wiki/sessions/workflow-subagents.md).
 - **Collect results BEFORE you report** — a workflow dies with its session.
 - **You still own** the branch, the draft PR and `notify_parent`. A workflow never replaces spawning a child session for separately-lifecycled work.
 

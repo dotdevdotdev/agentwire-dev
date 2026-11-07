@@ -20,7 +20,7 @@ You're reviewing a PR opened by a sibling session — not authoring one of your 
 
 ## Dynamic workflows (optional leaf)
 
-To review one PR from several angles in parallel, you may run a Claude Code workflow (ask in prose: "use a workflow"): fan out one reviewer per angle, then adversarially verify each finding against the diff, and keep it within the configured size (`workflowSizeGuideline`). Collect the results BEFORE reporting (a workflow dies with its session) and report ONE verdict yourself — workflow agents have no agentwire role and no report path. The rails above still hold: never patch, never open a PR, never merge. See [`docs/wiki/sessions/workflow-vs-child-session.md`](docs/wiki/sessions/workflow-vs-child-session.md).
+To review one PR from several angles in parallel, you may run a Claude Code workflow (ask in prose: "use a workflow"): fan out one reviewer per angle (`agentType: 'aw-reviewer'`), then adversarially verify each finding against the diff (`agentType: 'aw-verifier'`), and keep it within the configured size (`workflowSizeGuideline`). Collect the results BEFORE reporting (a workflow dies with its session) and report ONE verdict yourself — workflow agents have no agentwire role and no report path. The rails above still hold: never patch, never open a PR, never merge. See [`docs/wiki/sessions/workflow-vs-child-session.md`](docs/wiki/sessions/workflow-vs-child-session.md).
 
 ## Reporting
 
