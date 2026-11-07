@@ -1,8 +1,8 @@
 # Engine-free startup smoke (#1308, part of #1307).
 #
-# agentwire must start without the damage-control engine installed, and must
-# not reference it at all (#1313). Install it into a fresh venv, uninstall the
-# engine, and run commands that must not need it.
+# agentwire must start from its real dependency set, which contains no
+# damage-control engine, and must not reference it at all (#1313, #1316).
+# Install it into a fresh venv and run commands that must not need it.
 name: no-engine-smoke
 
 on:
@@ -29,13 +29,12 @@ jobs:
             exit 1
           fi
 
-      - name: Install agentwire, then remove the engine
+      - name: Install agentwire; the engine must not come with it
         run: |
           uv venv "$RUNNER_TEMP/noengine"
           uv pip install --python "$RUNNER_TEMP/noengine/bin/python" .
-          uv pip uninstall --python "$RUNNER_TEMP/noengine/bin/python" damage-control-dev
           if "$RUNNER_TEMP/noengine/bin/python" -c "import damage_control" 2>/dev/null; then
-            echo "damage_control is still importable" >&2
+            echo "damage_control is importable, so a dependency pulls it in" >&2
             exit 1
           fi
 

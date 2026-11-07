@@ -24,12 +24,6 @@ classifiers = [
     "Topic :: Software Development :: User Interfaces",
 ]
 dependencies = [
-    # The damage-control engine (#1209): the ONLY source is the published damage-control-dev
-    # (github.com/dotdevdotdev/damage-control-dev); checkouts and wheels both resolve it from
-    # PyPI. Engine changes land there, release there, then raise this floor.
-    # tests/unit/test_damage_control_pin.py checks the range and the installed engine.
-    # Hooks run `python -I -m damage_control.hook`.
-    "damage-control-dev>=0.5.1,<0.6",
     "aiohttp>=3.13.4",  # >=3.13.4 clears CVE-2026-34515 + CVE-2026-34513 (portal-facing)
     "aiohttp-jinja2>=1.6",
     "jinja2>=3.1.0",

@@ -12,4 +12,4 @@ It is a **public signal**: agentwire itself reads it (e.g. `agentwire tasks prom
 
 A task's `unattended_allow` list (in `.agentwire.tasks.yml`) is **passed through, not interpreted**. agentwire does no validation of the entries; `agentwire tasks review` does not check them. The list is serialized by `unattended.encode_allow` into one string: comma-separated when every entry is a string, compact JSON when any entry is structured.
 
-Whatever reads that variable owns its grammar, its validation, and its precedence rules. In particular, the guard engine owns grant validation and takes the variable names from its own configuration (damage-control-dev #63); agentwire only guarantees that these two names carry the marker and the serialized list.
+Whatever reads that variable owns its grammar, its validation, and its precedence rules. In particular, the guard engine owns grant validation and takes the variable names from its own configuration; agentwire only guarantees that these two names carry the marker and the serialized list.

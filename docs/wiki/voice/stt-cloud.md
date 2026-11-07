@@ -30,8 +30,7 @@ beats silent dead mics). `agentwire doctor` checks the same thing.
 **Where to put the key:** `~/.agentwire/.env` — the one place every
 agentwire secret lives ([Secrets & API keys](../security/secrets.md)).
 agentwire loads it on every startup (`load_dotenv` in `__main__.py`), so a
-line like `OPENAI_API_KEY=sk-...` is all it takes. It's also covered by the
-damage-control hooks (zero-access for agents).
+line like `OPENAI_API_KEY=sk-...` is all it takes. Keep it `chmod 600`.
 
 ## It's generic: any OpenAI-compatible provider
 

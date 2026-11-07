@@ -61,7 +61,7 @@ cd ~/projects/agentwire-dev
 uv venv .venv-kokoro
 source .venv-kokoro/bin/activate
 pip install kokoro-onnx fastapi uvicorn faster-whisper pydantic python-multipart
-pip install -e /path/to/agentwire-dev  # agentwire + remaining deps (damage-control-dev comes from PyPI)
+pip install -e /path/to/agentwire-dev  # agentwire + remaining deps
 ```
 
 ### Creating the Chatterbox venv

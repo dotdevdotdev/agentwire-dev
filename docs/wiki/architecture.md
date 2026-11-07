@@ -74,22 +74,20 @@ This is why bug fixes land in one place: change the CLI, the portal and MCP tool
 ├── scheduler-events.jsonl   # scheduler audit log
 ├── roles/                   # role files (system-prompt personas)
 ├── voices/                  # TTS reference WAVs
-├── damage-control/          # OPTIONAL user override for security rules
 ├── apps/, artifacts/        # agent-generated UIs and HTML artifacts
 ├── locks/                   # session mutexes (acquired by `agentwire ensure`)
 ├── sessions/                # per-session metadata.json
 ├── usage-limit/             # usage-limit recovery park state
 ├── tasks/                   # ensure-task summary files
-├── tooldefs/                # tool definitions for damage-control ask-patterns
 ├── tunnels/                 # SSH tunnel state
-├── logs/                    # damage-control audit logs (per-day JSONL)
+├── logs/                    # agentwire logs
 ├── wiki/, scripts/          # wiki knowledge base + machine-specific helpers (local, not synced)
 └── cert.pem, key.pem        # self-signed TLS for the portal
 ```
 
 ### Per-project — `.agentwire.yml` + `.agentwire.tasks.yml`
 
-`.agentwire.yml` lives at the project root and is purely declarative: posture, roles, voice, parent (for cross-session notifications), worktree overrides — no execution vector, so it's agent-writable. Named tasks (`pre`/`post`/`on_task_end`/`shell` — code the scheduler runs via `shell=True`) live in a separate, protected sibling file, `.agentwire.tasks.yml` (#720), authored via propose-and-promote (`agentwire tasks review` / `agentwire tasks promote`) since a policed agent can't write it directly. See `agentwire-project-config` skill for the full schema and [Damage control](internals/damage-control.md#task-execution-config-split-agentwiretasksyml-720) for the protection model.
+`.agentwire.yml` lives at the project root and is purely declarative: posture, roles, voice, parent (for cross-session notifications), worktree overrides — no execution vector, so it's agent-writable. Named tasks (`pre`/`post`/`on_task_end`/`shell` — code the scheduler runs via `shell=True`) live in a separate, protected sibling file, `.agentwire.tasks.yml` (#720), authored via propose-and-promote (`agentwire tasks review` / `agentwire tasks promote`) since a policed agent can't write it directly. See `agentwire-project-config` skill for the full schema.
 
 **Gitignore both.** They're personal/live config (voices, schedules, notification addresses, task shell commands) — not project code. Tracking either also breaks worktree dispatch subtly: worktree runs check out HEAD, so uncommitted live edits to a tracked file are silently ignored. Gitignored, they're seeded into worktrees via `projects.worktrees.copy_files` (default includes both), so the live file always wins. AgentWire adds `.agentwire.yml` to `.gitignore` automatically whenever it writes the file into a git repo; `agentwire tasks promote` does the same for `.agentwire.tasks.yml` on first promote.
 
