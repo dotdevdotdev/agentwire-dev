@@ -166,7 +166,7 @@ Decision shortcut:
 
 ## Guarding agents
 
-AgentWire's own guard is the `posture` axis, including classifier-mode auto sessions (`posture: auto`): a Sonnet 4.6 classifier reviews each tool call before execution. Hook-level command screening is the optional, separate project [`damage-control-dev`](https://pypi.org/project/damage-control-dev/); AgentWire does not manage or ship it as a feature. The integration points are documented for contributors in [Damage control integration](internals/damage-control.md).
+AgentWire is not a guard: sessions default to the `bypass` posture, and nothing in AgentWire makes that safe. The only approval step it offers is the `posture` axis (`prompted`, or classifier-mode `auto`), including classifier-mode auto sessions (`posture: auto`): a Sonnet 4.6 classifier reviews each tool call before execution. Hook-level command screening is the optional, separate project [`damage-control-dev`](https://pypi.org/project/damage-control-dev/); AgentWire does not manage or ship it as a feature. The integration points are documented for contributors in [Damage control integration](internals/damage-control.md).
 
 → [auto](sessions/claude-code-auto-mode.md).
 

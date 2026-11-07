@@ -313,7 +313,7 @@ prompt_router:
 
 ## Escape-asks (`# ask: <reason>`, #1278)
 
-damage-control-dev 0.2.0 lets an agent end a command it expects to be blocked with `# ask: <reason>`; the block becomes a human **ask** that bypass/auto never demotes. The worker, worker-worktree, reviewer, reviewer-worktree and orchestrator role prompts teach it: one command, a reason saying what and why, never respell a blocked command, never chain commands under one comment.
+damage-control-dev 0.2.0 lets an agent end a command it expects to be blocked with `# ask: <reason>`; the block becomes a human **ask** that bypass/auto never demotes. Role prompts no longer teach it (#1315); the routing below still applies if an agent or human uses it.
 
 - **Interactive child:** Claude shows a permission dialog, the `PermissionRequest` hook posts it to the portal, and `notify_permission_request` routes it to the parent like any permission prompt. The routed text names the command and leads with the agent's reason (`detect_ask_request`), so a long command cannot truncate it away. A root session has no parent: the existing no-parent path emails the owner (throttled).
 - **Bypass/auto:** `agentwire-permission.sh` normally short-circuits to allow in these modes. It now skips that short-circuit when the command's last line contains `# ask:` (deliberately a superset of the engine's parser; a false positive costs a confirm, a false negative would approve what the human was owed).

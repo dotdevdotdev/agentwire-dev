@@ -201,7 +201,9 @@ Workers execute tasks autonomously while the orchestrator coordinates.
 
 ## Guarding agents
 
-AgentWire does not manage or ship command guarding as a feature. If you want a
+AgentWire is not a guard. Sessions default to the `bypass` posture
+(`--dangerously-skip-permissions`), so agents can run any command your user can.
+Set `posture: prompted` or `posture: auto` for an approval step. If you want a
 hook layer that screens an agent's destructive commands, the separate
 [`damage-control-dev`](https://pypi.org/project/damage-control-dev/) project is an
 optional add-on; see its documentation for what it covers.

@@ -295,11 +295,11 @@ def run_onboarding(skip_session: bool = True, force: bool = False) -> int:
     # ─────────────────────────────────────────────────────────────
     print_header("2. AI Agent")
 
-    # --dangerously-skip-permissions is safe here because damage-control hooks
-    # enforce all safety constraints at the hook level (see SECURITY.md)
+    # Sessions default to the bypass posture. AgentWire is not a guard (see SECURITY.md).
     agent_command = "claude --dangerously-skip-permissions"
     print_success(f"Agent: {agent_command}")
-    print_info("  (--dangerously-skip-permissions is safe here; AgentWire's hooks enforce safety instead)")
+    print_info("  AgentWire is not a guard: sessions run with the bypass posture by default, so agents can run any command.")
+    print_info("  Use posture: prompted or posture: auto in .agentwire.yml if you want an approval step.")
 
     # ─────────────────────────────────────────────────────────────
     # Question 3: Topology
@@ -330,7 +330,7 @@ def run_onboarding(skip_session: bool = True, force: bool = False) -> int:
 
         packs = [r for r in overview() if r["kind"] == "pack"]
         suggested = [r["name"] for r in packs if r["suggest_enable"]]
-        print_info("Core protection is on. Vendor rule packs are opt-in: "
+        print_info("Vendor rule packs are opt-in: "
                    + ", ".join(r["name"] for r in packs))
         if suggested:
             print_info("Vendor CLIs found here. Consider: "

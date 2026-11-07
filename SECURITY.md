@@ -42,20 +42,19 @@ destructive command. Agents run with `--dangerously-skip-permissions` by default
 (see below), so what stands between an agent and your machine is whatever you
 add.
 
-Command and path screening is provided by the separate, optional
-[`damage-control-dev`](https://pypi.org/project/damage-control-dev/) project
-(PyPI). AgentWire does not manage or ship it as a feature: it depends on that
-package, registers its hooks when you run `agentwire hooks install`, and carries
-its own rules layer for AgentWire paths. What the hooks match, how they
-normalize commands, and their limits are documented in that project. Treat them
-as a best-effort screen, not a security boundary.
+AgentWire is not a guard. Command and path screening, if you want it, comes from
+a separate, optional project such as
+[`damage-control-dev`](https://pypi.org/project/damage-control-dev/) (PyPI);
+see its documentation for what it matches and its limits. A hook of that kind is
+a best-effort screen, not a security boundary, and nothing in AgentWire makes
+bypass sessions safe.
 
 Contributor notes on the integration: `docs/wiki/internals/damage-control.md`
 and `docs/wiki/security/damage-control-hardening.md`.
 
 ### Redundant Permissions Bypass (`--dangerously-skip-permissions`)
 
-By default, AgentWire initializes Claude Code with the `--dangerously-skip-permissions` flag, which skips Claude Code's own approval prompts. The compensating control is the damage-control-dev hook layer described above, installed via `agentwire hooks install`. If those hooks are not installed, or the command is outside what they match, nothing else intervenes. Use `posture: prompted` or `posture: auto` if you want an approval step instead.
+By default, AgentWire initializes Claude Code with the `--dangerously-skip-permissions` flag, which skips Claude Code's own approval prompts. AgentWire adds no compensating control: an agent in a bypass session can run any command your user can. Use `posture: prompted` or `posture: auto` if you want an approval step instead.
 
 ## Trust Model
 

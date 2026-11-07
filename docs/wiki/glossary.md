@@ -14,7 +14,7 @@ An outbound notification integration — a session pushes a message to an extern
 
 ## D — Damage Control
 
-The optional, separate project [`damage-control-dev`](https://pypi.org/project/damage-control-dev/); AgentWire does not manage or ship it as a feature. It is a hook library that screens agent tool calls; AgentWire only integrates with it. → [Damage control integration](internals/damage-control.md).
+The optional, separate project [`damage-control-dev`](https://pypi.org/project/damage-control-dev/); AgentWire does not manage or ship it as a feature, and AgentWire itself is not a guard. It is a hook library that screens agent tool calls; AgentWire only integrates with it. → [Damage control integration](internals/damage-control.md).
 
 ## E — Ensure Task
 
