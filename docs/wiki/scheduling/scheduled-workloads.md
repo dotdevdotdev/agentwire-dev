@@ -586,3 +586,7 @@ if *this* paste submitted. Only when it's absent is the send called failed.
 > regardless of whether it turns out to be that hang's cause** — an unattended
 > send path that can silently not-send is a latent version of this for every
 > scheduled task.
+
+## Workflows in scheduled tasks
+
+The `ultracode` keyword only fires from human-typed prompts, so it does **not** fire from a scheduled task (or any `-p` prompt). A task that wants a Claude Code dynamic workflow must say "use a workflow" in its prompt prose, or invoke a saved `/<name>` workflow. In `-p` mode the `Workflow` tool goes through normal permission evaluation: the default `bypass` posture covers it, but a posture that prompts needs a `Workflow` (or `Workflow(<name>)`) allow rule. Keep the task within `workflowSizeGuideline` and have it collect results before the task ends, since a workflow dies with its session. Decision rules: [workflow vs child session](../sessions/workflow-vs-child-session.md).
