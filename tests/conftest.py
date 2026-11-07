@@ -1,6 +1,5 @@
 """Shared test fixtures for the AgentWire test suite."""
 
-import functools
 import os
 import sys
 from pathlib import Path

@@ -347,21 +347,7 @@ Host *
 
 ### Command Incorrectly Blocked
 
-**Test command:**
-
-```bash
-agentwire safety check "your command here"
-```
-
-**View recent blocks:**
-
-```bash
-agentwire safety logs --tail 20
-```
-
-**Check pattern that matched:**
-
-The safety check output shows which pattern blocked the command.
+agentwire has no command screen of its own. If a command is blocked, the block comes from a separately installed guard hook: read its message and consult that project's documentation.
 
 ### Hooks Not Installed
 

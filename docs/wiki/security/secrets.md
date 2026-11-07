@@ -120,10 +120,9 @@ Two mechanisms keep them there:
 
 ## Security posture
 
-- **Damage-control gives `.env` zero access for agents** — agent sessions
-  can't read, edit, or even mention the file in shell commands
-  ([damage control](../internals/damage-control.md)). Keys flow to features
-  through the process environment only.
+- **agentwire does not stop agents reading `.env`.** A separately installed
+  guard (the `damage-control-dev` `agentwire` pack) can; agentwire itself does
+  not. Keys flow to features through the process environment only.
 - **`--env` caveat:** secrets passed via `agentwire new --env KEY=VAL` (or
   `recreate`/`fork --env`) are injected with `tmux set-environment` at session
   creation. That keeps them out of `ps auxwww` and shell history, but anything

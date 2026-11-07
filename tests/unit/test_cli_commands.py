@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 from unittest.mock import ANY, MagicMock
 
-import yaml
-
 # --- _recent_activity (scheduler status helper) ---
 
 

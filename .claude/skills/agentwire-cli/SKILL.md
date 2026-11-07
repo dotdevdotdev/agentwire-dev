@@ -285,16 +285,7 @@ agentwire task validate session/task  # validate task syntax
 agentwire fetch <url>                 # fetch a page via Jina Reader (markdown, JS-rendered)
 agentwire fetch <url> --limit 4000    # cap chars (default 8000, 0 = no limit)
 
-# Safety & diagnostics
-agentwire safety check "cmd"    # test if command would be blocked
-agentwire safety status         # show pattern counts and recent blocks
-agentwire safety logs           # query audit logs
-agentwire safety suggest-delete-recursive [--days N] [--min N] [--json]  # recurring blocked rm -rf dist/node_modules/…; PRINTS the delete-recursive policy a human pastes (read-only, never writes policy)
-agentwire safety packs list|status [--json]   # vendor rule packs (aws, databases, ...): off by default
-agentwire safety packs enable|disable <name>   # HUMAN-ONLY (tty + protected); agents suggest, never run
-agentwire safety groups list|status|enable|disable <g>  # default groups; kernel can't be disabled
-agentwire safety install        # install damage control hooks (the package's init under agentwire's profile); --refresh prints + acknowledges the ruleset diff
-agentwire safety migrate [--dry-run]  # HUMAN-ONLY (tty + protected): retire a pre-package install (pristine rule copies, old script registrations)
+# Hooks
 agentwire hooks install         # install permission hook (Claude Code only)
 agentwire hooks uninstall       # remove permission hook (Claude Code only)
 agentwire hooks status          # check hook installation status
