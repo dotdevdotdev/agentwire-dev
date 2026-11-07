@@ -33,6 +33,7 @@ import { projectsSection } from './sidebar/projects-section.js';
 import { schedulerSection } from './sidebar/scheduler-section.js';
 import { councilSection } from './sidebar/council-section.js';
 import { fleetSection } from './sidebar/fleet-section.js';
+import { addSectionsIsolated } from './sidebar/add-sections.js';
 import { servicesSection } from './sidebar/services-section.js';
 import { notificationsPanel } from './notifications-panel.js';
 import { scratchpad } from './scratchpad.js';
@@ -83,6 +84,8 @@ const elements = {
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
+    // Global keyboard first: nothing below may take the palette hotkey out (#1300).
+    setupCommandPaletteHotkey();
     sidebar.init();
     document.getElementById('sidebarQuicktask')?.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -98,19 +101,20 @@ async function init() {
         sidebar.close();
         openHelp();
     });
-    sidebar.addSection('sessions', sessionsSection);
-    sidebar.addSection('services', servicesSection);
-    sidebar.addSection('machines', machinesSection);
-    sidebar.addSection('projects', projectsSection);
-    sidebar.addSection('artifacts', artifactsSection);
-    sidebar.addSection('scheduler', schedulerSection);
-    sidebar.addSection('council', councilSection);
-    sidebar.addSection('fleet', fleetSection);
-    sidebar.addSection('safety', safetySection);
-    sidebar.addSection('config', configSection);
+    addSectionsIsolated(sidebar, [
+        ['sessions', sessionsSection],
+        ['services', servicesSection],
+        ['machines', machinesSection],
+        ['projects', projectsSection],
+        ['artifacts', artifactsSection],
+        ['scheduler', schedulerSection],
+        ['council', councilSection],
+        ['fleet', fleetSection],
+        ['safety', safetySection],
+        ['config', configSection],
+    ], (id, err) => console.error(`[desktop] sidebar section "${id}" failed to mount`, err));
     setupClock();
     setupPageUnload();
-    setupCommandPaletteHotkey();
     setupWindowCycling();
     setupWindowSwipeCycling();
     setupCollage();
@@ -1213,17 +1217,14 @@ function updateTaskbarActive(id) {
     });
 }
 
-// Cmd/Ctrl + K opens the command palette on the root list, with
-// "Ask council" as the default selection. xterm.js uses a hidden
-// textarea for terminal input, so we don't skip on tag; Cmd+K is
-// always intercepted.
+// Cmd/Ctrl + K and Option/Alt + K open the command palette on the root list.
+// Bound through bindHotkey like every other portal chord: capture phase on
+// window, by physical key (e.code). An xterm textarea that stops keydown
+// propagation, or Safari rewriting the key under Option, cannot swallow it (#1300).
 function setupCommandPaletteHotkey() {
-    document.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && (e['key'] === 'k' || e['key'] === 'K')) {
-            e.preventDefault();
-            if (!isCommandPaletteOpen() && !isHelpOpen()) openCommandPalette();
-        }
-    });
+    const when = () => !isCommandPaletteOpen() && !isHelpOpen();
+    bindHotkey({ code: 'KeyK', mod: true, when }, () => openCommandPalette());
+    bindHotkey({ code: 'KeyK', alt: true, when }, () => openCommandPalette());
 }
 
 // --- Instant-mode banner ---
