@@ -197,3 +197,28 @@ class TestBackupRotation:
         assert healed["code-quality"]["run_count"] == 12
 
 
+
+
+class TestMissingBoardIsNotAnError:
+    """No board file = no tasks configured, a valid state (#1326)."""
+
+    def test_missing_board_loads_empty(self, board_env):
+        board_env.unlink()
+        board = load_board()
+        assert board.tasks == {}
+
+    def test_status_with_no_board_exits_zero_and_says_so(self, board_env, capsys):
+        from types import SimpleNamespace
+
+        from agentwire import scheduler_cli
+
+        board_env.unlink()
+        cfg = SimpleNamespace(scheduler=SimpleNamespace(board_file=board_env))
+        with patch("agentwire.config.get_config", return_value=cfg), \
+             patch("agentwire.scheduler.live_daemon_state", return_value=None):
+            rc = scheduler_cli.cmd_scheduler_status(SimpleNamespace(json=False))
+        out = capsys.readouterr()
+        assert rc == 0
+        assert "not found" not in out.out + out.err
+        assert "no tasks configured" in out.out
+        assert "Tasks: 0/0 enabled" in out.out

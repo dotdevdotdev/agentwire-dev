@@ -72,6 +72,9 @@ def run_scheduler_loop() -> None:
 
     task_count = len(board.tasks)
     enabled_count = sum(1 for t in board.tasks.values() if t.enabled)
+    if not _sched._sched_config().board_file.exists():
+        print(f"[{_ts()}] No board file — running with nothing to do until "
+              "tasks are defined.")
     print(f"[{_ts()}] Loaded {task_count} tasks ({enabled_count} enabled)")
 
     _sched._log_event("scheduler_started", task_count=task_count, enabled_count=enabled_count)

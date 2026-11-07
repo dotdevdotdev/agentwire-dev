@@ -20,20 +20,17 @@ def load_board() -> Board:
     """Load the scheduler board from YAML.
 
     Returns:
-        Board with tasks and state populated.
+        Board with tasks and state populated. A missing board file is a valid
+        state (no tasks configured yet) and yields an empty Board (#1326).
 
     Raises:
-        FileNotFoundError: If board file doesn't exist.
         ValueError: If board file is malformed.
     """
     from agentwire import scheduler as _sched
 
     board_path = _sched._sched_config().board_file
     if not board_path.exists():
-        raise FileNotFoundError(
-            f"Board file not found: {board_path}\n"
-            f"Create it with task definitions."
-        )
+        return Board()
 
     with open(board_path) as f:
         raw = yaml.safe_load(f)
