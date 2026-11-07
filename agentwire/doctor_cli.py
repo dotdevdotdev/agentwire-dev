@@ -1356,9 +1356,9 @@ def _render_secrets_permissions_section(
     ``chmod 600 ~/.agentwire/.env`` was documented in two places and enforced
     in none — a manual step a human was expected to remember. The machine this
     check was written on had it at 0644, world-readable, holding every API key,
-    and no diagnostic anywhere said so. Doctor already flags stale hooks,
-    drifted rules and a disabled kill switch; a world-readable key file belongs
-    in the same list.
+    and no diagnostic anywhere said so. Doctor already flags stale hooks
+    and a behind-main checkout; a world-readable key file belongs in the same
+    list.
 
     Healing is opt-in (``--yes`` / the interactive prompt) rather than
     automatic, unlike the forced ``chmod`` on agentwire's OWN writes: tightening
