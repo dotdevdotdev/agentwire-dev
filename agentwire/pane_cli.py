@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import pane_manager
+from . import cohort, pane_manager
 from .core import (
     _add_posture_flag,
     _check_tmux_installed,
@@ -747,6 +747,8 @@ def cmd_kill(args) -> int:
                                 verbose=not json_mode)
     if not result["success"]:
         return _output_result(False, json_mode, result["error"])
+
+    cohort.settle(session)
 
     if json_mode:
         _output_json({

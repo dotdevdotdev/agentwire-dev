@@ -128,7 +128,10 @@ def _child_row(parent: str, parent_live: bool, entry: dict, *, registry: dict[st
         "flags": [],
     }
     flags = row["flags"]
-    if ledger_state == cohort.IDLE:
+    # Backstop for #1324: a gone child with no open PR has nothing left to
+    # report on; only a LIVE idle child (or one whose PR is open) is signal.
+    gone_without_pr = state == STATE_GONE and not (row["pr"] and row["pr"]["state"] == "OPEN")
+    if ledger_state == cohort.IDLE and not gone_without_pr:
         flags.append(IDLE_NO_REPORT)
     if queued and not parent_live:
         flags.append(REPORT_QUEUED_TO_DEAD)

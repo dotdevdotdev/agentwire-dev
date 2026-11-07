@@ -18,7 +18,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import chrome_tabs, pane_manager, services, worktree_registry
+from . import chrome_tabs, cohort, pane_manager, services, worktree_registry
 from .core import (
     EFFORT_LEVELS,
     _check_tmux_installed,
@@ -2131,6 +2131,10 @@ def _teardown_entry(
     # we can't close these — just report them so the caller can. A session
     # that closed its own tabs and untracked them normally leaves nothing here.
     orphaned_tabs = chrome_tabs.clear(session_name)
+
+    # A pane entry's session_name is the OWNER, which is still alive.
+    if kill_session:
+        cohort.settle(session_name)
 
     record_left, record_orphaned_ids = _session_record_state(session_name)
 

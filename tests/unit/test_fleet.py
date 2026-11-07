@@ -181,3 +181,50 @@ def test_text_render_names_the_flag(world, capsys):
     cohort.collect(PARENT)
     fleet_cli.cmd_fleet(SimpleNamespace(all=True, session=None, no_pr=True, json=False))
     assert fleet.IDLE_NO_REPORT in capsys.readouterr().out
+
+
+def _idle_child(world, name):
+    _spawn(world, name)
+    inbox.enqueue(PARENT, "went idle", kind="idle", sender=name)
+    cohort.collect(PARENT)
+    assert _child(fleet.build_fleet(PARENT), name)["ledger_state"] == cohort.IDLE
+
+
+def test_teardown_settles_a_resolved_idle_child_so_nothing_is_flagged(world, monkeypatch):
+    """#1324: kill / worktree --remove must drop the idle-no-report ledger entry."""
+    from agentwire import pane_cli
+
+    _idle_child(world, "proj-t")
+    monkeypatch.setattr(pane_cli, "kill_local_session", lambda s, **kw: (
+        world.live.discard(s) or {"success": True, "graceful": False, "agent_exited": True, "error": ""}))
+
+    assert pane_cli.cmd_kill(SimpleNamespace(session="proj-t", pane=None, json=True,
+                                             force=True, timeout=1)) == 0
+
+    assert cohort.load(PARENT) is None  # last entry: ledger discarded
+    data = fleet.build_fleet(PARENT)
+    assert data["flagged"] == []
+
+
+def test_settle_keeps_reported_children_and_siblings(world):
+    _spawn(world, "proj-r", topology=cohort.MAIN)
+    inbox.enqueue(PARENT, "done", kind="done", sender="proj-r")
+    cohort.collect(PARENT)
+    _spawn(world, "proj-x")
+
+    cohort.settle("proj-r")
+    cohort.settle("proj-x")
+
+    assert [c["session"] for c in cohort.load(PARENT)["children"]] == ["proj-r"]
+
+
+def test_gone_idle_child_without_pr_is_not_flagged_but_with_open_pr_is(world):
+    _idle_child(world, "proj-g")
+    world.live.discard("proj-g")
+    world.registry = [{"session": "proj-g", "branch": "b", "project": "/p", "topology": "worktree"}]
+
+    assert _flags(fleet.build_fleet(PARENT), "proj-g") == []
+
+    world.prs["b"] = {"state": "OPEN", "url": "u"}
+    flags = _flags(fleet.build_fleet(PARENT), "proj-g")
+    assert fleet.GONE_WITH_OPEN_PR in flags

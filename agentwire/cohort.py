@@ -256,6 +256,40 @@ def discard(parent: str) -> bool:
         return False
 
 
+def settle(child: str) -> list[str]:
+    """Stop *child* being a pending cohort member everywhere it is enrolled (#1324).
+
+    The one hook every teardown path calls (``worktree --remove``,
+    ``--prune --gc-merged``, ``kill``): once a child's session is deliberately
+    gone, nothing is left to wait on or to flag. Drops its ledger entry unless
+    it is ``reported``/``timeout`` — those keep the report text the parent's
+    roll-up still reads — and discards a ledger that ends up empty.
+
+    Returns the parents whose ledgers were changed. Fails open per ledger.
+    """
+    touched = []
+    for parent in ledger_parents():
+        try:
+            with _locked(parent):
+                data = load(parent)
+                if not data:
+                    continue
+                kept = [c for c in data["children"]
+                        if c.get("session") != child or c.get("state") in (REPORTED, TIMEOUT)]
+                if len(kept) == len(data["children"]):
+                    continue
+                if kept:
+                    data["children"] = kept
+                    _save(parent, data)
+                else:
+                    discard(parent)
+        except (OSError, ValueError):
+            continue
+        touched.append(parent)
+        log_event("settled", parent=parent, child=child)
+    return touched
+
+
 def enroll(parent: str, child: str, task: str | None = None,
            ttl: int = DEFAULT_TTL, topology: str = MAIN) -> bool:
     """Record *child* as an outstanding member of *parent*'s cohort.

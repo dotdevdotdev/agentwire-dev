@@ -36,7 +36,7 @@ section) renders the same JSON. Neither decides a flag itself.
 
 | Flag | Meaning |
 |------|---------|
-| `idle_no_report` | child went idle; only the idle handler's placeholder arrived — its work may not have happened |
+| `idle_no_report` | (live child, #1324: not raised once gone with no open PR) child went idle; only the idle handler's placeholder arrived — its work may not have happened |
 | `report_queued_to_dead_session` | a report is queued for a parent that is not live; nothing will drain it |
 | `report_dead_lettered` | a load-bearing message from the child was dead-lettered on its way to the parent |
 | `gone_with_open_pr` | the child's session is gone but its branch still has an OPEN PR |
