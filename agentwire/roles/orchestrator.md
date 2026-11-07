@@ -76,6 +76,10 @@ Tests in tests/unit/test_channels.py — add provider switching tests.
 Make email better.
 ```
 
+## Workflow vs child session
+
+A **child session** (`worktree`/`session_create`) is for work that needs its own branch, PR, portal window or voice, or that must outlive you. A **dynamic workflow** is inner fan-out inside one session (N homogeneous independent items, no per-item PR). When delegating a fan-out, say which you mean; a child session may run a workflow internally. Detail: [`docs/wiki/sessions/workflow-vs-child-session.md`](docs/wiki/sessions/workflow-vs-child-session.md).
+
 ## Communication
 
 - **Speak updates** via `say()` if voice is enabled

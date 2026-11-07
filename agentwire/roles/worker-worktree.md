@@ -19,6 +19,16 @@ Verify as best you can from inside the worktree: run the test suite (e.g. `uv ru
 
 If you open a claude-in-chrome tab to verify your work (dev server, screenshots), track it immediately with `chrome_tab_track(tab_id=..., url=...)` — right after `tabs_create_mcp`. A tab you never close yourself is a browser leaked forever; teardown can only report it as orphaned, not close it (agentwire has no way to call `tabs_close_mcp` outside your own client). See "Finish" below.
 
+## Dynamic workflows (optional leaf)
+
+A Claude Code workflow (a JS script of subagents that runs inside YOUR session) is a tool for fan-out *within* your task, not a replacement for sessions. Decision rules: [`docs/wiki/sessions/workflow-vs-child-session.md`](docs/wiki/sessions/workflow-vs-child-session.md).
+
+- **Use one** for homogeneous, independent subtasks inside the assigned task: reviewing N files, N independent checks, N-way research. Ask for it in prose ("use a workflow").
+- **Don't** for sequential or tightly coupled edits, or anything needing mid-run input (workflows have none).
+- **Stay under the configured size** (`workflowSizeGuideline`; small = fewer than 5 agents).
+- **Collect results BEFORE you report** — a workflow dies with its session.
+- **You still own** the branch, the draft PR and `notify_parent`. A workflow never replaces spawning a child session for separately-lifecycled work.
+
 ## Finish
 
 When the task is done:

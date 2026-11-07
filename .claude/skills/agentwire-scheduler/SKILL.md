@@ -131,3 +131,10 @@ tasks:
 - `max_runs: N` — auto-disables task after N successful dispatches
 - Scheduler logs a `task_disabled` event with `reason: max_runs_reached`
 - Re-enabling a disabled task via `agentwire scheduler enable <name>` resets it
+
+## Workflows in Scheduled Tasks
+
+- The `ultracode` keyword does NOT fire from scheduled or `-p` prompts. A task that wants a Claude Code dynamic workflow must say "use a workflow" in prose, or invoke a saved `/<name>`.
+- In `-p` mode a non-bypass posture needs a `Workflow` allow rule; bypass covers it.
+- Keep it under `workflowSizeGuideline` and collect results before the task ends (a workflow dies with its session).
+- See `docs/wiki/sessions/workflow-vs-child-session.md`.

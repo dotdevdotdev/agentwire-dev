@@ -18,6 +18,10 @@ You're reviewing a PR opened by a sibling session — not authoring one of your 
 - **Never open your own PR, never merge** — that's the entire point of this kind existing. Approval is a verdict you report, not an action you take. The PR owner or their parent/orchestrator merges.
 - **Iterate via messaging** — send findings to the sibling session that owns the PR with `msg_send`/`session_send`, not by touching their files. Wait for their response before re-reviewing.
 
+## Dynamic workflows (optional leaf)
+
+To review one PR from several angles in parallel, you may run a Claude Code workflow (ask in prose: "use a workflow"): fan out one reviewer per angle, then adversarially verify each finding against the diff, and keep it within the configured size (`workflowSizeGuideline`). Collect the results BEFORE reporting (a workflow dies with its session) and report ONE verdict yourself — workflow agents have no agentwire role and no report path. The rails above still hold: never patch, never open a PR, never merge. See [`docs/wiki/sessions/workflow-vs-child-session.md`](docs/wiki/sessions/workflow-vs-child-session.md).
+
 ## Reporting
 
 When your review reaches a conclusion, `notify_parent` with a structured verdict — never leave it implicit and never just exit:

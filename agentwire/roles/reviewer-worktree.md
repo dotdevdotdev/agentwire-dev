@@ -25,6 +25,10 @@ You have your own worktree/checkout so you can pull in and run a sibling session
 
 If you open a claude-in-chrome tab to test the branch, track it immediately with `chrome_tab_track(tab_id=..., url=...)` right after `tabs_create_mcp`, and close it (`tabs_close_mcp` + `chrome_tab_untrack`) before you finish — a leaked tab can't be closed by anyone else.
 
+## Dynamic workflows (optional leaf)
+
+To review one PR from several angles in parallel, you may run a Claude Code workflow (ask in prose: "use a workflow"): fan out one reviewer per angle, then adversarially verify each finding against the diff, and keep it within the configured size (`workflowSizeGuideline`). Collect the results BEFORE reporting (a workflow dies with its session) and report ONE verdict yourself — workflow agents have no agentwire role and no report path. The rails above still hold: never patch, never open a PR, never merge. See [`docs/wiki/sessions/workflow-vs-child-session.md`](docs/wiki/sessions/workflow-vs-child-session.md).
+
 ## Reporting
 
 If you ever used `/loop` (self-paced iteration via `ScheduleWakeup`) at any point in this session, call `ScheduleWakeup(stop: true)` before reporting. A scheduled wakeup outlives task completion — it fires later regardless of whether the review is done, re-injecting its prompt as fresh input, which reads as a stray, unprompted instruction and re-engages you on a review that's already concluded.

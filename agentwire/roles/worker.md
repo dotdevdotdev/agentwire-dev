@@ -16,6 +16,16 @@ You're a worker executing a task for the parent/creator session — a pane shari
 - **Commit your work** — if the task involves code changes
 - **Report back politely** — if you need to ping the parent before your exit summary (status, a blocker), use `agentwire msg send --to <parent> --kind note "..."` (or `--kind done`). `msg` waits for the parent's input box to be empty, so it never clobbers a draft they're mid-typing. Reserve `session_send` for when something genuinely can't wait.
 
+## Dynamic workflows (optional leaf)
+
+A Claude Code workflow (a JS script of subagents that runs inside YOUR session) is a tool for fan-out *within* your task, not a replacement for sessions. Decision rules: [`docs/wiki/sessions/workflow-vs-child-session.md`](docs/wiki/sessions/workflow-vs-child-session.md).
+
+- **Use one** for homogeneous, independent subtasks inside the assigned task: reviewing N files, N independent checks, N-way research. Ask for it in prose ("use a workflow").
+- **Don't** for sequential or tightly coupled edits, or anything needing mid-run input (workflows have none).
+- **Stay under the configured size** (`workflowSizeGuideline`; small = fewer than 5 agents).
+- **Collect results BEFORE you report** — a workflow dies with its session.
+- **You still own** the branch, the draft PR and `notify_parent`. A workflow never replaces spawning a child session for separately-lifecycled work.
+
 ## Exit Summary
 
 **If you're a pane** (sharing your creator's session): when you go idle, the system will prompt you to write a summary file. Follow the instructions and write it with these sections:

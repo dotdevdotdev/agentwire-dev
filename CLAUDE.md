@@ -162,6 +162,7 @@ LLM-maintained knowledge base at `~/.agentwire/wiki/` using the Karpathy LLM Wik
 - **Polite messaging** — use `agentwire msg` (MCP `msg_send`, …) for routine peer updates; it delivers only when the recipient's input box is empty. `send`/`session_send` paste + Enter immediately and clobber a half-typed draft — reserve them for forcibly driving a session. Report-back: `msg send --kind done`. [`messaging.md`](docs/wiki/sessions/messaging.md).
 - **Council** — `agentwire council ...` (7 MCP `council_*` tools), namespaced by `<name>`; takes are attributed verbatim. [`council.md`](docs/wiki/council.md).
 - **Briefing mode** — terse `anchor` + verbose `correspondent` worktrees filing to `research_dir()`, signalling passively with `msg send --kind ingest`. [`briefing-mode.md`](docs/wiki/briefing-mode.md).
+- **Workflow vs child session** — child session = needs its own branch, PR, portal window, voice, or to outlive the parent; Claude Code dynamic workflow = inner fan-out of homogeneous items inside ONE session (size-capped, collect before `notify_parent`). A workflow never replaces a child session. [`workflow-vs-child-session.md`](docs/wiki/sessions/workflow-vs-child-session.md).
 - **Large parallel refactors** — parallel worktrees on one shared file conflict on positional interleaving; foundation-first, merge sequentially, regenerate each branch against the fresh base, verify with the FULL suite. [`parallel-refactor.md`](docs/wiki/internals/parallel-refactor.md).
 
 ## Reference Skills
