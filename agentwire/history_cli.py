@@ -23,6 +23,7 @@ from .core import (
     _output_result,
     _run_remote,
     build_agent_command,
+    delete_session_record,
     format_relative_time,
     load_config,
     mirror_role_prompt_remote,
@@ -485,22 +486,6 @@ def dead_session_records(older_than_s: int | None = None, *, now: float | None =
     return sorted(rows, key=lambda r: -r["age_s"])
 
 
-def _delete_record(session: str) -> None:
-    """Remove a session's record file, then its now-empty directories."""
-    from .core import session_metadata_path, sessions_dir
-
-    path = session_metadata_path(session)
-    path.unlink()
-    root = sessions_dir()
-    parent = path.parent
-    while parent != root:
-        try:
-            parent.rmdir()
-        except OSError:
-            break  # not empty — other files live here; leave them
-        parent = parent.parent
-
-
 def cmd_history_prune(args) -> int:
     """List dead session records; delete them only with --yes."""
     from .msg_cli import _parse_duration
@@ -517,7 +502,7 @@ def cmd_history_prune(args) -> int:
     deleted = []
     if args.yes:
         for r in rows:
-            _delete_record(r["session"])
+            delete_session_record(r["session"])
             deleted.append(r["session"])
 
     if args.json:

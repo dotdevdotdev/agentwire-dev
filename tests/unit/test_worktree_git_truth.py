@@ -182,6 +182,61 @@ class TestDurabilityGuard:
 
 
 
+class TestTeardownRecordRule:
+    """#1327 — a record is dropped at teardown only when nothing is left to
+    resume into: session owned, worktree removed, branch merged-and-deleted.
+    Anything else keeps it so `restart -s` still works."""
+
+    @pytest.fixture
+    def env(self, repo, tmp_path, monkeypatch):
+        from agentwire import session_cli as m
+        from agentwire.core import session_metadata_path, store_session_metadata
+
+        monkeypatch.setattr("agentwire.core.CONFIG_DIR", tmp_path / "agentwire")
+        monkeypatch.setattr(m.chrome_tabs, "REGISTRY_FILE", tmp_path / "tabs.json")
+        monkeypatch.setattr(m.shutil, "which", lambda *_: None)
+        monkeypatch.setattr(m, "tmux_session_exists", lambda *_: False)
+        monkeypatch.setattr(m, "_sessions_by_path", lambda: {})
+        # No origin in the fixture repo: merge state is what the tests dictate.
+        monkeypatch.setattr(m, "_branch_merge_state", lambda *_: "merged")
+
+        wt = tmp_path / "wt-x"
+        _git(repo, "worktree", "add", "-q", "-b", "x", str(wt))
+        store_session_metadata("myapp-x", {"cwd_at_launch": str(wt),
+                                           "conversation_ids": ["c1"]})
+        path = session_metadata_path("myapp-x")
+        assert path.exists()
+        return m, wt, path
+
+    def _td(self, m, repo, tmp_path, wt, **kw):
+        return m._teardown_entry(repo, tmp_path, "myapp-x", wt, "x", "main", **kw)
+
+    def test_merged_and_removed_leaves_no_record(self, env, repo, tmp_path):
+        m, wt, path = env
+        result = self._td(m, repo, tmp_path, wt)
+        assert result["branch_deleted"] and result["record_dropped"]
+        assert result["record_left"] is None
+        assert not path.exists()
+
+    def test_kept_branch_keeps_the_record(self, env, repo, tmp_path):
+        m, wt, path = env
+        result = self._td(m, repo, tmp_path, wt, keep_branch=True)
+        assert not result["record_dropped"] and result["record_left"]
+        assert path.exists()
+
+    def test_unmerged_branch_keeps_the_record(self, env, repo, tmp_path, monkeypatch):
+        m, wt, path = env
+        monkeypatch.setattr(m, "_branch_merge_state", lambda *_: "open")
+        result = self._td(m, repo, tmp_path, wt)
+        assert not result["branch_deleted"]
+        assert not result["record_dropped"] and path.exists()
+
+    def test_pane_entry_never_drops_its_owners_record(self, env, repo, tmp_path):
+        m, wt, path = env
+        result = self._td(m, repo, tmp_path, wt, kill_session=False)
+        assert not result["record_dropped"] and path.exists()
+
+
 # --- doctor: orphaned worktrees are finally visible (#837) ---
 
 
