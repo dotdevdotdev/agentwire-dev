@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import sys
 
-from . import safety_commands
-
 
 def cmd_safety_check(args) -> int:
     """CLI command: agentwire safety check"""
+    from . import safety_commands
+
     command = args.command
     verbose = getattr(args, 'verbose', False)
     return safety_commands.safety_check_cmd(command, verbose)
@@ -21,16 +21,22 @@ def cmd_safety_check(args) -> int:
 
 def cmd_safety_status(args) -> int:
     """CLI command: agentwire safety status"""
+    from . import safety_commands
+
     return safety_commands.safety_status_cmd()
 
 
 def cmd_safety_notify_unattended_block(args) -> int:
     """CLI command: agentwire safety notify-unattended-block (hook-invoked; event JSON on stdin)"""
+    from . import safety_commands
+
     return safety_commands.safety_notify_unattended_block_cmd(sys.stdin.read())
 
 
 def cmd_safety_logs(args) -> int:
     """CLI command: agentwire safety logs"""
+    from . import safety_commands
+
     tail = getattr(args, 'tail', None)
     session = getattr(args, 'session', None)
     today = getattr(args, 'today', False)
@@ -40,16 +46,22 @@ def cmd_safety_logs(args) -> int:
 
 def cmd_safety_report(args) -> int:
     """CLI command: agentwire safety report"""
+    from . import safety_commands
+
     return safety_commands.safety_report_cmd(args.days, args.json)
 
 
 def cmd_safety_suggest_delete_recursive(args) -> int:
     """CLI command: agentwire safety suggest-delete-recursive"""
+    from . import safety_commands
+
     return safety_commands.safety_suggest_delete_recursive_cmd(args.days, args.min, args.json)
 
 
 def cmd_safety_install(args) -> int:
     """CLI command: agentwire safety install"""
+    from . import safety_commands
+
     return safety_commands.safety_install_cmd(
         assume_yes=getattr(args, "yes", False),
         force=getattr(args, "force", False),
@@ -67,11 +79,15 @@ def cmd_safety_migrate(args) -> int:
 
 def cmd_safety_tooldefs_list(args) -> int:
     """CLI command: agentwire safety tooldefs list"""
+    from . import safety_commands
+
     return safety_commands.safety_tooldefs_list_cmd()
 
 
 def cmd_safety_tooldefs_show(args) -> int:
     """CLI command: agentwire safety tooldefs show <tool>"""
+    from . import safety_commands
+
     return safety_commands.safety_tooldefs_show_cmd(args.tool)
 
 

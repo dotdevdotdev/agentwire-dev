@@ -46,7 +46,6 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from damage_control.engine import is_unattended
 
 from .core import _get_session_project_path, _output_json, _output_result
 from .project_config import ensure_gitignored
@@ -340,6 +339,8 @@ def cmd_tasks_promote(args) -> int:
     """
     json_mode = getattr(args, "json", False)
     assume_yes = getattr(args, "yes", False)
+
+    from damage_control.engine import is_unattended
 
     if is_unattended():
         return _output_result(

@@ -127,3 +127,18 @@ def test_root_session_escape_ask_escalates_to_the_owner(monkeypatch, tmp_path):
     )
     (info,) = escalated
     assert "branch is pushed" in info.question
+
+
+def test_routed_command_excerpt_keeps_head_and_tail_and_never_exceeds_the_cap():
+    cap = prompt_router.COMMAND_EXCERPT_HEAD + prompt_router.COMMAND_EXCERPT_TAIL + 3
+    short = "ls -la"
+    long_cmd = "START" + "x" * 800 + "END"
+    out = prompt_router._command_excerpt(long_cmd)
+    bad = []
+    if prompt_router._command_excerpt(short) != short:
+        bad.append("short command altered")
+    if not (out.startswith("START") and out.endswith("END")):
+        bad.append("head/tail lost")
+    if len(out) > cap:
+        bad.append(f"too long: {len(out)}")
+    assert not bad, bad
