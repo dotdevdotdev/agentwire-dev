@@ -17,7 +17,6 @@ const stubs = {
     'card-terminal.js': 'export const mountCardTerminal = (name) => { globalThis.__live.add(name); const t = globalThis.__mkTextarea(); t.focus(); return () => { t.remove(); globalThis.__live.delete(name); }; }; export const mountSelfMic = () => {};',
     'api.js': 'export const apiFetch = async () => ({ ok: true, json: async () => ({}) });',
     'toast.js': 'export const toast = () => {}; export const toastSuccess = () => {}; export const toastError = () => {};',
-    'safety-shared.js': 'export const projectFromCwd = () => "";',
 };
 globalThis.__hotkeys = [];
 globalThis.__live = new Set();
