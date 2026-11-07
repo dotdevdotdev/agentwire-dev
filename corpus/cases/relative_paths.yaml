@@ -191,11 +191,11 @@
   context:
     cwd: /golden/elsewhere
   expect:
-    decision: allow
+    decision: ask
     protected: false
   class: relative-path-operand
   tags:
-  - stays-allowed
+  - settings-write-ask
   source: tests/unit/test_relative_path_operands.py::CASES
 - id: relative-path-operand-018
   tool: Bash
@@ -227,11 +227,11 @@
   context:
     cwd: /golden/elsewhere
   expect:
-    decision: allow
+    decision: ask
     protected: false
   class: relative-path-operand
   tags:
-  - stays-allowed
+  - settings-write-ask
   source: tests/unit/test_relative_path_operands.py::CASES
 - id: relative-path-operand-021
   tool: Bash
@@ -239,11 +239,11 @@
   context:
     cwd: /golden/home
   expect:
-    decision: allow
+    decision: ask
     protected: false
   class: relative-path-operand
   tags:
-  - stays-allowed
+  - settings-write-ask
   source: tests/unit/test_relative_path_operands.py::CASES
 - id: relative-path-operand-022
   tool: Bash
