@@ -145,8 +145,8 @@ do nothing without the token, but confirm "an agentwire portal lives here" (fing
    should be a capability subset, not the whole surface. → **#424**
 3. **Config-write is an auth-disable + RCE pivot.** `POST /api/config` writes raw YAML; an attacker
    who's in can set `auth_token: ""`, rewrite `executables`, and persist. → **#425**
-4. **Safety rules are API-writable.** `POST /api/safety/config` can disable the rm-rf hooks with
-   the same token — defense-in-depth defeated by one secret. → **#425** *(closed; **#466/#467** then went further — the kill switch, rules, and allowlist moved out of `config.yaml`/`.agentwire.yml` entirely into the protected, agent-unwritable `~/.agentwire/damagecontrol.yml` + `<repo>/.damagecontrol.yml`, closing the **local-agent** write path too, not just the token/API one.)*
+4. **Safety rules were API-writable.** `POST /api/safety/config` could disable the rm-rf hooks with
+   the same token. → **#425** *(closed; the endpoint and all guard config left agentwire with #1313 — screening is a separate project.)*
 5. **No auth-failure logging, no lockout, no alerting.** 401s are silent. → backlog (action E).
 6. **Token transport relies on opt-in TLS.** SSL only turns on if cert+key exist (`SSLConfig.enabled`, `config.py:52-60`).
    A non-loopback *plaintext* LAN bind sends the bearer token in cleartext. Fine when the BYO
@@ -184,10 +184,9 @@ every other defense. Closing the write path means even a fully-compromised token
 persistence or auth-disable.
 
 **Design:**
-- In `api_save_config` (`POST /api/config`, `agentwire/routes/config.py`) and `api_safety_config_post`
-  (`POST /api/safety/config`, `agentwire/routes/safety.py`), treat a fixed set of keys as
+- In `api_save_config` (`POST /api/config`, `agentwire/routes/config.py`), treat a fixed set of keys as
   **host-file-edit-only** and reject any request that attempts to change them: `server.auth_token`,
-  `server.host`, `executables`, `services` (the RCE-bearing ones), and the safety-disable toggles.
+  `server.host`, `executables`, `services` (the RCE-bearing ones).
 - Reject = compare the incoming value against the on-disk value for those keys; if changed, return
   `403` with a message naming the frozen key and pointing to "edit `~/.agentwire/config.yaml` on
   the host." Don't silently drop — be honest about why.

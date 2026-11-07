@@ -311,15 +311,9 @@ prompt_router:
 - [Polite messaging](messaging.md) — `agentwire msg` drains on the same
   watchdog tick, after this prompt-routing sweep.
 
-## Escape-asks (`# ask: <reason>`, #1278)
+## Permission hook
 
-A guard may let an agent end a command it expects to be blocked with `# ask: <reason>`; the block becomes a human **ask** that bypass/auto never demotes. Role prompts no longer teach it (#1315); the routing below still applies if an agent or human uses it.
-
-- **Interactive child:** Claude shows a permission dialog, the `PermissionRequest` hook posts it to the portal, and `notify_permission_request` routes it to the parent like any permission prompt. The routed text names the command and leads with the agent's reason (`detect_ask_request`), so a long command cannot truncate it away. A root session has no parent: the existing no-parent path emails the owner (throttled).
-- **Bypass/auto:** `agentwire-permission.sh` never short-circuits to allow in any mode (#1313): a request that reaches it was demanded by some hook, so it always goes to the portal for a human.
-- **Unattended:** a guard blocks the command and notifies the owner; no grant overrides it. Agents should report the blocker instead.
-
-**There is no bypass auto-allow (#1313).** The earlier `hooks needs-human` check (#1284) is gone with the engine integration; the permission hook approves nothing on its own, so every request that reaches it is a human decision. Verified by driving the script with a stub portal in all three permission modes; not verified against a live Claude Code session.
+`agentwire-permission.sh` never short-circuits to allow in any mode (#1313): a request that reaches it goes to the portal for a human. Whatever demanded the dialog (Claude Code itself, or a separately installed guard) is not agentwire's concern.
 
 ## Design notes moved from CLAUDE.md (#1280)
 

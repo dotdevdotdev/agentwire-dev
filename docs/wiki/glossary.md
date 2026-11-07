@@ -12,10 +12,6 @@ An agent-generated HTML file written to `~/.agentwire/artifacts/` and served by 
 
 An outbound notification integration — a session pushes a message to an external platform (email via Resend, SMS via Quo / OpenPhone). A third registered channel, `push` (Web Push/VAPID), auto-mirrors portal toasts to subscribed devices instead of being called directly. Stateless `SendOnlyChannel` subclasses; no inbound surface. Inbound user input flows through the portal, not channels. → [Channels](communication/channels.md).
 
-## D — Damage Control
-
-The optional, separate project [`damage-control-dev`](https://pypi.org/project/damage-control-dev/); AgentWire does not manage or ship it as a feature, and AgentWire itself is not a guard. It is a hook library that screens agent tool calls; AgentWire only integrates with it. → [Damage control integration](internals/damage-control.md).
-
 ## E — Ensure Task
 
 A headless agent task defined under `tasks:` in a project's protected `.agentwire.tasks.yml` and executed by `agentwire ensure`. Runs a full Claude Code session through `pre` → `prompt` → `on_task_end` → `post` phases with optional branch management. → [Scheduled workloads](scheduling/scheduled-workloads.md).
