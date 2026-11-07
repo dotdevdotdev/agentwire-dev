@@ -47,7 +47,6 @@ from .routes.palette import PaletteRoutesMixin, register_palette_routes
 from .routes.permission import PermissionRoutesMixin, register_permission_routes
 from .routes.projects import ProjectsRoutesMixin, register_projects_routes
 from .routes.push import PushRoutesMixin, register_push_routes
-from .routes.safety import SafetyRoutesMixin, register_safety_routes
 from .routes.scheduler import SchedulerRoutesMixin, register_scheduler_routes
 from .routes.scratchpad import ScratchpadRoutesMixin, register_scratchpad_routes
 from .routes.sessions import SessionsRoutesMixin, register_sessions_routes
@@ -205,7 +204,6 @@ class AgentWireServer(
     PermissionRoutesMixin,
     ProjectsRoutesMixin,
     PushRoutesMixin,
-    SafetyRoutesMixin,
     SchedulerRoutesMixin,
     ScratchpadRoutesMixin,
     SessionsRoutesMixin,
@@ -308,7 +306,6 @@ class AgentWireServer(
         # Mobile Review window + permission dialogs (from Claude Code hook)
         register_permission_routes(self, self.app)
         register_config_routes(self, self.app)
-        register_safety_routes(self, self.app)
         # Icon listing for dynamic icon picker
         self.app.router.add_get("/api/icons/{category}", self.api_icons)
         # History endpoints

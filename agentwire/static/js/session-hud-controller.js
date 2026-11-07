@@ -58,7 +58,6 @@ import { sessionHud } from './session-hud.js';
 import { apiFetch } from './api.js';
 import { normalizeMachine } from './session-id.js';
 import { toast, toastSuccess, toastError } from './toast.js';
-import { projectFromCwd } from './safety-shared.js';
 
 const GHOST_POLL_MS = 20000;
 
@@ -74,12 +73,10 @@ export const OBSERVE_CAP = 8;
  * `_scopedGhosts` prefers — see there). No explicit "project" field is
  * plumbed onto live session records (docs/design/session-card-fields.md tags
  * it "derive→plumb"), so this is a best-effort guess from the path's shape:
- * reuses `projectFromCwd` (safety-shared.js, already handles a plain
- * `~/projects/<project>/` checkout and the legacy scheduler-dispatch
- * `~/projects/<project>-worktrees/<branch>/` layout), layering in the
- * `agentwire worktree` default layout (`~/worktrees/<project>/<branch>/`,
- * CLAUDE.md) it doesn't cover. Both this and `projectFromCwd`'s "projects"
- * lookup are name-based and go stale under a non-default `worktree.dir`
+ * handles a plain `~/projects/<project>/` checkout, the legacy
+ * scheduler-dispatch `~/projects/<project>-worktrees/<branch>/` layout, and
+ * the `agentwire worktree` default layout (`~/worktrees/<project>/<branch>/`,
+ * CLAUDE.md). Both lookups are name-based and go stale under a non-default `worktree.dir`
  * override — a gap `_sessionProject` (an exact, config-independent lookup)
  * doesn't have, which is why that's the primary path and this is only the
  * fallback for sessions never registered via `agentwire worktree`.
@@ -92,8 +89,9 @@ function repoNameFromPath(path) {
     if (!parts.length) return null;
     const wtIdx = parts.lastIndexOf('worktrees');
     if (wtIdx !== -1 && wtIdx + 1 < parts.length) return parts[wtIdx + 1];
-    const viaProjects = projectFromCwd(path);
-    return viaProjects && viaProjects !== '—' ? viaProjects : parts[parts.length - 1];
+    const projIdx = parts.indexOf('projects');
+    if (projIdx !== -1 && projIdx < parts.length - 1) return parts[projIdx + 1].split('-worktrees')[0];
+    return parts[parts.length - 1];
 }
 
 class HudController {

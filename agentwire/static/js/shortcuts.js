@@ -89,6 +89,5 @@ export const FEATURE_TOUR = [
     { icon: '📋', name: 'Scratchpad', desc: 'Alt+N opens a quick notes drawer that travels with you across sessions.' },
     { icon: '⏰', name: 'Scheduler', desc: 'Run recurring tasks on a cron — see and trigger them from the Scheduler panel.' },
     { icon: '🧩', name: 'Artifacts', desc: 'Agents can render live HTML into artifact windows — dashboards, handoffs, reports.' },
-    { icon: '🛡', name: 'Safety', desc: 'Damage-control rules block dangerous commands. Review and tune them in the Safety panel.' },
     { icon: '📡', name: 'Machines', desc: 'Attach remote machines and tunnels — run sessions on a GPU box or another host.' },
 ];

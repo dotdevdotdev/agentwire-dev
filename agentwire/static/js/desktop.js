@@ -25,7 +25,6 @@ import { buildSessionId, normalizeMachine, isLocalMachine } from './session-id.j
 import { notificationsActive } from './notification-prefs.js';
 import { attachHorizontalSwipe } from './utils/swipe.js';
 import { configSection } from './sidebar/config-section.js';
-import { safetySection } from './sidebar/safety-section.js';
 import { artifactsSection } from './sidebar/artifacts-section.js';
 import { machinesSection } from './sidebar/machines-section.js';
 import { sessionsSection, getAllSessions } from './sidebar/sessions-section.js';
@@ -110,7 +109,6 @@ async function init() {
         ['scheduler', schedulerSection],
         ['council', councilSection],
         ['fleet', fleetSection],
-        ['safety', safetySection],
         ['config', configSection],
     ], (id, err) => console.error(`[desktop] sidebar section "${id}" failed to mount`, err));
     setupClock();
