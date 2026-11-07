@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/log-hook.sh"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/log-hook.sh"}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/log-hook.sh"}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/log-hook.sh"}]}],
+    "SubagentStart": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/log-hook.sh"}]}],
+    "SubagentStop": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/log-hook.sh"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/log-hook.sh"}]}],
+    "Notification": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/log-hook.sh"}]}],
+    "WorktreeRemove": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/log-hook.sh"}]}]
+  }
+}
