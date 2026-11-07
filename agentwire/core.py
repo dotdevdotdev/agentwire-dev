@@ -32,6 +32,7 @@ from .project_config import (
     resolve_posture,
 )
 from .roles import RoleConfig, merge_roles
+from .unattended import UNATTENDED_ENV_KEYS
 from .worktree import git_common_dir, git_root, main_worktree, parse_session_name
 
 # Default config directory
@@ -257,9 +258,6 @@ class AgentCommand:
     sandbox: bool = False  # launched under Claude Code's sandbox (--sandbox, #1279)
 
 
-_UNATTENDED_ENV_KEYS = ("AGENTWIRE_UNATTENDED", "AGENTWIRE_UNATTENDED_ALLOW")
-
-
 def _capture_unattended_env() -> dict[str, str]:
     """Pop the unattended marker OUT of this process's environment.
 
@@ -273,7 +271,7 @@ def _capture_unattended_env() -> dict[str, str]:
     guaranteeing no child process of the CLI can inherit the raw var.
     """
     captured: dict[str, str] = {}
-    for key in _UNATTENDED_ENV_KEYS:
+    for key in UNATTENDED_ENV_KEYS:
         val = os.environ.pop(key, None)
         if val:
             captured[key] = val
@@ -317,7 +315,7 @@ def _with_unattended_env(env: dict[str, str]) -> dict[str, str]:
     var in its environment, so nothing is propagated.
     """
     merged = dict(env)
-    for key in _UNATTENDED_ENV_KEYS:
+    for key in UNATTENDED_ENV_KEYS:
         val = _UNATTENDED_ENV.get(key)
         if val and key not in merged:
             merged[key] = val

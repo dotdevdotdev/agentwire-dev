@@ -104,7 +104,7 @@ Each is one PR; main is releasable after every one. Until S9 the dependency is s
 | # | Task | Done when |
 |---|---|---|
 | S1 (#1308) | **Engine-free import path** (+ no-engine CI smoke) | Defer/remove module-level engine imports reached by startup (`prompt_router` decoration deleted; `tasks_cli` import deferred); new CI job installs agentwire in a venv with the engine uninstalled and runs `agentwire --help`, `list`, `new --help`, `portal --help`, `tasks --help` green; `safety`/`doctor`/`hooks install` may still require the engine |
-| S2 (#1309) | **Own the unattended contract** | `agentwire/unattended.py` owns marker + opaque grants passthrough; `tasks.py`/`dispatch.py`/`tasks_cli.py` have no engine import; `AGENTWIRE_UNATTENDED` documented as a public signal; scheduler tests green |
+| S2 (#1309) | **Own the unattended contract** (done; [contract](unattended.md)) | `agentwire/unattended.py` owns marker + opaque grants passthrough; `tasks.py`/`dispatch.py`/`tasks_cli.py` have no engine import; `AGENTWIRE_UNATTENDED` documented as a public signal; scheduler tests green |
 | S3 (#1310) | **Owner decision: default posture** (§4) | Owner's choice recorded in this page; S8 unblocked |
 | S4 (#1311) | **Owner decision: protections destination** (§3) | A/B/C ratified in this page; S5 unblocked |
 | S5 (#1312) | **Stand up the profile at its destination** (other repo) | Profile, rules, corpus, scripts, tests and `agentwire paths --json` consumer live there; its own CI green; `needs-human`/permission semantics verified in a disposable account (§5); issue in that repo cross-linked |
