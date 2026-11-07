@@ -76,6 +76,37 @@ class TestWaitForSessionReady:
         assert any(c[-1] == "BSpace" for c in sent)
 
 
+class TestTrustPrompt:
+    """The trust-folder dialog may highlight "No, exit" by default; a bare
+    Enter then exits the session instead of trusting the folder."""
+
+    NO_DEFAULT = "Quick safety check\n ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm"
+    YES_DEFAULT = "Quick safety check\n   No, exit\n ❯ Yes, I trust this folder\n Enter to confirm"
+
+    def _first_trust_keys(self, monkeypatch, dialog):
+        monkeypatch.setattr(session_ready.time, "sleep", lambda s: None)
+        sent = []
+        from agentwire import pane_manager
+        monkeypatch.setattr(pane_manager, "run_command",
+                            lambda cmd, timeout=5: sent.append(cmd))
+        _scripted_capture(monkeypatch, [dialog, Exception("stop")])
+        clock = {"t": 0.0}
+
+        def fake_time():
+            clock["t"] += 0.5
+            return clock["t"]
+
+        monkeypatch.setattr(session_ready.time, "time", fake_time)
+        session_ready.wait_for_session_ready("s", timeout=2)
+        return sent[0][4:]
+
+    def test_no_default_moves_down_before_enter(self, monkeypatch):
+        assert self._first_trust_keys(monkeypatch, self.NO_DEFAULT) == ["Down", "Enter"]
+
+    def test_yes_default_presses_enter_only(self, monkeypatch):
+        assert self._first_trust_keys(monkeypatch, self.YES_DEFAULT) == ["Enter"]
+
+
 class TestTallDraftWindow:
     """#851 — the input box has a bounded visible height and SCROLLS. A draft
     taller than that height renders only a window of itself, so full-message

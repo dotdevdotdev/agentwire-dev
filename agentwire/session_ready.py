@@ -262,6 +262,18 @@ def _probe_input_handler(session: str, pane_index: int, deadline: float) -> bool
     return False
 
 
+def _trust_default_is_no(pane: str) -> bool:
+    """True when the trust-folder dialog's cursor sits on "No, exit".
+
+    Claude Code builds that highlight "No, exit" by default, so a bare Enter
+    exits the session instead of trusting the folder.
+    """
+    return any(
+        line.lstrip().startswith("❯") and "no" in line.lower()
+        for line in pane.splitlines()
+    )
+
+
 def wait_for_session_ready(
     session_full_name: str, timeout: float = 30.0, pane_index: int = 0
 ) -> bool:
@@ -310,9 +322,10 @@ def wait_for_session_ready(
             if not trust_accepted and (
                 "trust this folder" in lowered or "enter to confirm" in lowered
             ):
+                keys = ["Down", "Enter"] if _trust_default_is_no(out) else ["Enter"]
                 pane_manager.run_command(
                     ["tmux", "send-keys", "-t",
-                     f"{session_full_name}.{pane_index}", "Enter"],
+                     f"{session_full_name}.{pane_index}", *keys],
                     timeout=5,
                 )
                 trust_accepted = True
