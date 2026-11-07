@@ -127,7 +127,7 @@ radius:
 | Tier | Routes | If the token leaks |
 |---|---|---|
 | **CRITICAL — full RCE** | `GET /ws/terminal/{name}` (`tmux attach` → live shell, incl. `ssh -t … tmux attach` to remote machines), `POST /send/{name}` (arbitrary keystrokes), `POST /api/create`·`recreate`·`spawn-sibling`·`fork`, `POST /api/scheduler/tasks/{name}/run`, `POST /api/desktop/*`, `POST /api/council/start` | Own the dev box + any SSH-reachable remote machine |
-| **HIGH — config/persistence** | `POST /api/config` (writes raw `config.yaml` — can rewrite `executables`/`services` = RCE, set `host`, or set `auth_token: ""` to **disable auth entirely**), `POST /api/config/reload`, `POST /api/safety/config` (**disable rm-rf damage-control**), `POST/DELETE /api/machines` | Persist, escalate, and turn off the safety net with the same token |
+| **HIGH — config/persistence** | `POST /api/config` (writes raw `config.yaml` — can rewrite `executables`/`services` = RCE, set `host`, or set `auth_token: ""` to **disable auth entirely**), `POST /api/config/reload`, `POST /api/safety/config`, `POST/DELETE /api/machines` | Persist, escalate, and turn off the safety net with the same token |
 | **MEDIUM — info disclosure** | `GET /api/sessions{,/local,/remote}`, `/api/projects`, `/api/history{,/{id}}` (+resume), `/api/roles`, `/api/scratchpad`, `/api/scheduler/{board,events,live}`, `/api/council/archive`, session output WS `/ws/{name}` | Leak project paths, full conversation history, machine inventory, notes |
 | **MEDIUM — input/cost/write** | `POST /transcribe` (burns cloud STT credits if a cloud backend is set), `POST /upload`, `POST /api/artifacts/upload`, `DELETE /api/artifacts/{filename:.+}` | Credit burn, disk writes |
 

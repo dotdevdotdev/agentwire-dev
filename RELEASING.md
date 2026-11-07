@@ -4,10 +4,6 @@ This project publishes the CLI and web app to PyPI as `agentwire-dev`. Packaging
 
 Every release does **both** a PyPI publish and a GitHub release. The **GitHub release is the changelog** — there is no `CHANGELOG.md`; release notes are built from the commits since the last tag (step 5).
 
-## The engine is a separate project
-
-The damage-control engine lives in the `damage-control-dev` repo (<https://github.com/dotdevdotdev/damage-control-dev>) and is released from there. `agentwire-dev` ships no guard code; do not tag or release the engine from this repo.
-
 ## Pre-release checklist
 
 

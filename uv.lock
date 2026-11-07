@@ -17,7 +17,6 @@ dependencies = [
     { name = "aiohttp-jinja2" },
     { name = "av" },
     { name = "certifi" },
-    { name = "damage-control-dev" },
     { name = "fastapi" },
     { name = "jinja2" },
     { name = "kokoro-onnx", marker = "python_full_version < '3.14'" },
@@ -71,7 +70,6 @@ requires-dist = [
     { name = "av", specifier = ">=12.0.0" },
     { name = "certifi", specifier = ">=2026.10.23" },
     { name = "chatterbox-tts", marker = "python_full_version >= '3.13' and extra == 'tts'", specifier = ">=0.1.6" },
-    { name = "damage-control-dev", specifier = ">=0.5.1,<0.6" },
     { name = "fastapi", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'stt'", specifier = ">=0.104.0" },
     { name = "fastapi", marker = "extra == 'tts'", specifier = ">=0.104.0" },
@@ -1072,18 +1070,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7c/e6/8e7bd50d1b24281f40aa26939d716d6b58acd40d76177ea9c3e75d7d999c/ctranslate2-4.6.2-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:0f5abaf681d6cab4c2b345110398ad355d5e71cbf3997f0395f37ea922b9d2c5", size = 17532844, upload-time = "2025-12-05T06:40:59.019Z" },
     { url = "https://files.pythonhosted.org/packages/4a/e9/71acb421ede17acd9e0945aa09499cd0d50fdc67a2776ab94e6551ed2c9b/ctranslate2-4.6.2-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:4748510be4f582e7da5691976e1cccc8de4a680e5e4a61eb016d7457e8130633", size = 37961658, upload-time = "2025-12-05T06:41:02.059Z" },
     { url = "https://files.pythonhosted.org/packages/a1/97/0c9154ab6791867f51f1646ebc7376288f8556665de06ba1a9443a3db88c/ctranslate2-4.6.2-cp314-cp314t-win_amd64.whl", hash = "sha256:988830d6af1c439f641b4084f4b5d466747768baa685a49e46a3a99ccebc8975", size = 18866287, upload-time = "2025-12-05T06:41:04.851Z" },
-]
-
-[[package]]
-name = "damage-control-dev"
-version = "0.5.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyyaml" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/60/8d/f3b9f5cbbe184d9b20a0abcc6d87f7a854aaf0e8ecdf30b5ac12c96c709f/damage_control_dev-0.5.1.tar.gz", hash = "sha256:2bb742b2be78e55c4172507c45ec7e4c1969f83a8a59177dd754fd37fe43a462", size = 291909, upload-time = "2026-11-07T01:09:23.719Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9e/2e/af51c41e1185e3712d49531ec70b95213b2ce5f5b9105bae20a0a0c9b620/damage_control_dev-0.5.1-py3-none-any.whl", hash = "sha256:566d00e2636ebc5525bcfd4a3ce391969e57f50e1f8f83e7cd2c4c058dad5a4b", size = 325526, upload-time = "2026-11-07T01:09:22.255Z" },
 ]
 
 [[package]]

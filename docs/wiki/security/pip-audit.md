@@ -3,8 +3,7 @@
 > Living document. Update this, don't create new versions.
 
 The `security` CI workflow runs `pip-audit` over the resolved dependency set. It
-is **advisory** (non-blocking) by design — the damage-control bypass corpus is
-the hard merge gate. This page records how the audit is scoped and why the
+is **advisory** (non-blocking) by design. This page records how the audit is scoped and why the
 remaining CVEs are left in place.
 
 ## Scoping

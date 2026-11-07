@@ -25,8 +25,6 @@ agentwire rebuild
 git pull --ff-only && agentwire rebuild && agentwire portal restart --dev
 ```
 
-**The damage-control engine is not in this repo (#1209 M8).** `uv sync` / `uv tool install .` / `agentwire rebuild` resolve `damage-control-dev` from PyPI at the range in `pyproject.toml`. To hack on the engine, work in a checkout of github.com/dotdevdotdev/damage-control-dev and point this venv at it (`uv pip install -e /path/to/damage-control-dev`, then `uv run --no-sync …` so uv doesn't revert it) — never copy it back into this tree; release it there, then raise the floor here.
-
 Rebuild alone = stale static files. Restart alone = stale Python. The MCP server runs as a separate process started by Claude Code — session restart required after rebuild to pick up MCP changes. `rebuild` now refuses (warn + `--force` to override) when the checkout is behind `origin/main`, and `agentwire doctor` flags a behind-main checkout, and any of `~/.agentwire/` · `.env` · `portal.token` · `machines.json` readable beyond its owner (`doctor --yes` tightens them; #887).
 
 ## Tests
@@ -74,7 +72,7 @@ The `agentwire-mcp-tools` skill has the full reference (sessions, panes, voice, 
 | **Worktree session** | `agentwire worktree <name> -p <repo>` | **Standalone tmux session**, new branch `<name>` from origin/main. Survives independently; report-back via `agentwire notify-parent --to <orchestrator>`. Role defaults to `worker` (`--kind orchestrator` makes a durable project window). The `worker-worktree` etiquette role is auto-injected, so first prompts only need the task. |
 | **Worker pane** | `agentwire spawn --branch <name>` | A **pane inside the current session** (pane 1+), worktree on `<name>`. Inherits the session's dashboard; idle hook reaps it. |
 
-When the owner says "worktree session", they mean the standalone session (`agentwire worktree`), **never** `spawn` panes. Panes are for small watched subtasks; worktree sessions for parallel autonomous work. Every spawn defaults to **bypass** posture (damage-control hooks are the guard), so no `--posture` is needed.
+When the owner says "worktree session", they mean the standalone session (`agentwire worktree`), **never** `spawn` panes. Panes are for small watched subtasks; worktree sessions for parallel autonomous work. Every spawn defaults to **bypass** posture (agentwire is not a guard), so no `--posture` is needed.
 
 **`agentwire orchestrator [name] -p <project>`** is sugar for `worktree --kind orchestrator` — worktree topology + orchestrator role + rooted by default. `name` defaults to `"orchestrator"`.
 
@@ -100,7 +98,7 @@ When the owner says "worktree session", they mean the standalone session (`agent
 | `uploads/` | Uploaded images for cross-machine sharing |
 | `artifacts/` | Agent-generated HTML for artifact windows |
 | `wiki/` | LLM-maintained knowledge base (Karpathy LLM Wiki pattern) |
-| `logs/` | Audit logs for damage-control |
+| `logs/` | Logs |
 
 Per-project config lives in `.agentwire.yml` at the project root — **keep it gitignored** (personal config; a tracked copy makes worktree-dispatched runs silently use the stale committed version). `.agentwire.yml` is purely declarative (type/roles/voice/parent/worktree) and agent-writable; named tasks (pre/post/on_task_end/shell) live in the separate, protected sibling `.agentwire.tasks.yml`, authored via `agentwire tasks review`/`promote` (#720). See `agentwire-project-config` skill for fields and task schema.
 

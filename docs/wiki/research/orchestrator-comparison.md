@@ -38,7 +38,7 @@
 ### Multica
 - **What:** "a source-available workspace where you assign work to AI coding agents the way you'd assign it to a teammate": issue board, agents as assignees, Squads, Skills, Autopilots (cron), execution logs, usage analytics, review gates ([README](https://github.com/multica-ai/multica)). A different category: a project-management product with agents, not a terminal orchestrator.
 - **Does that AgentWire does not:** a board, issue assignment, multi-user workspaces and roles, per-run cost analytics, chat integrations (Slack and others), mobile apps. AgentWire ships no PM product by design.
-- **AgentWire does that it does not:** local-first terminal sessions you can attach to, voice, and a damage-control hook layer on every tool call. Whether Multica has an equivalent command guard is _unverified_.
+- **AgentWire does that it does not:** local-first terminal sessions you can attach to, and voice. Whether Multica has an equivalent command guard is _unverified_.
 
 ## Where AgentWire sits
 

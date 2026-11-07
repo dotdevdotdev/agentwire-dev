@@ -2,8 +2,7 @@
 """Render pip-audit JSON so a RED audit cannot render as GREEN (#900).
 
 The pip-audit job is deliberately ``continue-on-error: true``: hard-blocking
-every PR on transitive CVEs is noise, and the damage-control bypass corpus is
-the real merge gate. That decision stands. Its side effect did not — a failing
+every PR on transitive CVEs is noise. That decision stands. Its side effect did not — a failing
 audit became indistinguishable from a passing one at the workflow level, so
 nobody saw it unless they opened the job, and eight advisories accumulated
 before a PR's check list happened to be in front of someone.

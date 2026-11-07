@@ -16,7 +16,7 @@ description: Reference for `~/.agentwire/config.yaml` — main config structure 
 | `uploads/` | Uploaded images for cross-machine sharing |
 | `artifacts/` | Agent-generated HTML for artifact windows |
 | `wiki/` | LLM-maintained knowledge base (Karpathy LLM Wiki pattern) |
-| `logs/` | Audit logs for damage-control |
+| `logs/` | Logs |
 
 Per-session config (posture, roles, voice) lives in `.agentwire.yml` in each project directory (see `agentwire-project-config` skill).
 

@@ -1,6 +1,6 @@
 # Decoupling damage control (design spike, #1307)
 
-> Design only. No behaviour changed by this page. Sub-issues are listed at the end and linked from #1307.
+> Done (#1307, S1–S9). agentwire no longer depends on or references the engine; kept as the record of the decoupling. Sub-issues are listed at the end.
 
 **Goal.** `damage-control-dev` (the engine) is a Claude Code hook library with its own repo. A user-scope hook in `~/.claude/settings.json` fires in *every* Claude Code session on the machine, workers included, whether or not agentwire spawned them. agentwire adds nothing for workers to be covered. Yet today agentwire requires the engine, imports it at startup, registers and repairs its hooks, ships a rules profile for it, and feeds it signals. After this work agentwire runs fully without it, and says plainly that it is not a guard.
 
