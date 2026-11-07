@@ -1,8 +1,7 @@
 """CLI for the protected task-execution file — `agentwire tasks review|promote` (#720).
 
-`.agentwire.tasks.yml` is protected control-plane (see
-`damage_control.engine.PROTECTED_CONTROL_PLANE_PATHS`) — the policed agent
-cannot write it directly via Edit/Write/Bash. The authoring flow is
+`.agentwire.tasks.yml` is task-execution config: an agent must not write it
+directly. The authoring flow is
 propose-and-promote, mirroring the worktree -> PR -> review -> merge model
 because task definitions ARE executable code:
 
@@ -18,22 +17,15 @@ Both commands are HOST-ONLY by design — and `promote` HARD-GATES it, not just
 defense-in-depth (#721 review — three self-promotion bypasses were found and
 closed):
 
-- They are deliberately NOT exposed as MCP tools. The `mcp-tool-damage-control`
-  hook only gates the specific outbound-comms matchers (email_send/quo_send) —
-  every other `mcp__agentwire__*` tool is open by default, so an MCP tool that
-  shelled out to `tasks promote` would hand the agent an instant, unguarded
-  bypass of the whole scheme. CLI-only keeps this on the human's own terminal.
-- `agentwire tasks promote` is ALSO hard-blocked as a `PROTECTED_COMMAND_PATTERNS`
-  entry in `damage_control/engine.py` — `# ask:`- and kill-switch-EXEMPT (same tier
-  as the protected-control-plane file check), so `# ask:` and
-  `enabled: false` can't open it either.
+- They are deliberately NOT exposed as MCP tools. An MCP tool that shelled out
+  to `tasks promote` would hand the agent an instant bypass of the whole
+  scheme. CLI-only keeps this on the human's own terminal.
 - `cmd_tasks_promote` ITSELF refuses to run outside a genuine host context
   (see `_host_context_ok` below), regardless of how it's reached. This is the
   layer that actually matters: a raw `python3 -c "from agentwire.tasks_cli
   import cmd_tasks_promote; ..."` never matches any bash pattern (no
   protected-path string, no "agentwire tasks promote" text) and so reaches
-  this function directly — the two Bash-hook layers above are necessary but
-  NOT sufficient. The function-level gate is invocation-path-agnostic: CLI,
+  this function directly — a command-text guard alone is NOT sufficient. The function-level gate is invocation-path-agnostic: CLI,
   `python -m agentwire`, or a raw import all hit the same check.
 """
 
@@ -122,44 +114,6 @@ def _validate_draft(data: dict) -> list[str]:
     return issues
 
 
-def _posture_lint_lines(data: dict) -> list[str]:
-    """Cross-check every task in a draft against what its unattended posture refuses.
-
-    The authoring-time half of #914: a task whose prompt says "commit and push
-    directly to main" is specified to do something the unattended posture
-    forbids, and nothing said so until it failed at 04:00 as a `max_duration`
-    timeout. `tasks review` is the moment a human is looking at the task and
-    can decide, so the warning belongs here.
-    """
-    try:
-        from .safety.lint import lint_task_posture, load_effective_config, render_report
-        from .tasks import parse_task_config
-    except Exception as e:  # noqa: BLE001 — a lint must never break review
-        return [f"(posture lint unavailable: {e})"]
-
-    try:
-        config, label = load_effective_config()
-    except Exception as e:  # noqa: BLE001
-        return [f"(posture lint unavailable: {e})"]
-
-    default_shell = data.get("shell")
-    lines: list[str] = []
-    for name, cfg in (data.get("tasks", {}) or {}).items():
-        if not isinstance(cfg, dict):
-            continue
-        try:
-            task = parse_task_config(name, cfg, default_shell=default_shell)
-            report = lint_task_posture(task, config, cwd=str(Path.cwd()))
-        except Exception as e:  # noqa: BLE001
-            lines.append(f"{name}: posture lint failed: {e}")
-            continue
-        rendered = render_report(report, label)
-        if rendered:
-            lines.append(f"{name}:")
-            lines.extend(f"  {line}" for line in rendered)
-    return lines
-
-
 def _shell_bearing_fields(tasks: dict) -> list[str]:
     """Flatten every shell-executed string across all tasks — the review's purpose."""
     lines: list[str] = []
@@ -205,7 +159,6 @@ def cmd_tasks_review(args) -> int:
 
     issues = _validate_draft(data)
     shell_lines = _shell_bearing_fields(data.get("tasks", {}))
-    posture_lines = _posture_lint_lines(data)
 
     active_text = active_path.read_text() if active_path.exists() else ""
     proposed_text = proposed_path.read_text()
@@ -223,7 +176,6 @@ def cmd_tasks_review(args) -> int:
             "diff": diff,
             "shell_commands": shell_lines,
             "validation_issues": issues,
-            "posture_warnings": posture_lines,
         })
         return 1 if issues else 0
 
@@ -236,14 +188,6 @@ def cmd_tasks_review(args) -> int:
             print(line)
     else:
         print("No shell commands found in this draft.")
-
-    if posture_lines:
-        # A warning, never a hard failure: the posture check is advisory (the
-        # prompt half is a heuristic), and blocking a promote on a guess would
-        # be worse than the timeout it replaces.
-        print("\nUnattended posture warnings:")
-        for line in posture_lines:
-            print(f"  {line}")
 
     if issues:
         print(f"\nValidation issues ({len(issues)}):")

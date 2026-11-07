@@ -75,15 +75,10 @@ class TestInstallHooks:
         # one, so these measure the install and not the guard, and behave
         # identically in a worktree and in CI's plain clone.
         monkeypatch.delenv("UV_TOOL_DIR", raising=False)
-        from agentwire.safety import provenance as _prov
+        from agentwire import provenance as _prov
         pkg = tmp_path / "pkg"
-        real_running = _prov.running_package_dir
-
-        def running(package="agentwire"):
-            return pkg.resolve() if package == "agentwire" else real_running(package)
-
-        monkeypatch.setattr(_prov, "canonical_package_dir", running)
-        monkeypatch.setattr(_prov, "running_package_dir", running)
+        monkeypatch.setattr(_prov, "canonical_package_dir", lambda: pkg.resolve())
+        monkeypatch.setattr(_prov, "running_package_dir", lambda: pkg.resolve())
 
         hooks_src = pkg / "hooks"
         hooks_src.mkdir(parents=True)
@@ -95,10 +90,7 @@ class TestInstallHooks:
     def test_fresh_install_deploys_all_and_registers(self, env):
         home, _src = env
         results = install_hooks()
-        dc = results.pop("damage-control")
         assert set(results.values()) == {"installed"}
-        assert dc == "updated"  # the package hooks were proven and registered (#1209 M4)
-        assert install_hooks()["damage-control"] == "current"
         assert (home / ".claude" / "hooks" / "agentwire-permission.sh").exists()
         assert (home / ".claude" / "hooks" / "idle-handler.sh").exists()
         assert (home / ".agentwire" / "queue-processor.sh").exists()
@@ -112,6 +104,21 @@ class TestInstallHooks:
         assert any(h["command"].endswith("session-start-handler.sh")
                    for e in events["SessionStart"] for h in e["hooks"])
 
+    def test_install_neither_registers_nor_removes_a_guard_registration(self, env):
+        """An engine registration in user settings belongs to its owner: install adds none and keeps theirs."""
+        home, _src = env
+        guard = {"matcher": "Bash", "hooks": [{
+            "type": "command", "command": "/opt/guard/bin/python -I -m some_guard.hook bash"}]}
+        settings_path = home / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(json.dumps({"hooks": {"PreToolUse": [guard]}}))
+
+        install_hooks()
+        install_hooks(force=True)
+
+        events = json.loads(settings_path.read_text())["hooks"]
+        assert events["PreToolUse"] == [guard]
+        assert not [e for e in events if e not in {"PreToolUse", "PermissionRequest", "Notification", "SessionStart"}], events
 
     def test_stale_installed_copy_refreshed(self, env):
         # The exact #238 scenario: an old regular-file copy must be replaced.

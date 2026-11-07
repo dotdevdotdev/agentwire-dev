@@ -54,8 +54,6 @@ WATCHDOG_STAGES: tuple[tuple[str, str, str], ...] = (
      "fan-out cohort sweep"),
     ("idle_deferred", "bounded idle-deferral sweep (background tasks still running)",
      "the qualified notice for a stuck background task"),
-    ("safety_notify", "unattended-block digest",
-     "unattended-block digest"),
     ("role_prompts", "role-prompt GC",
      "role-prompt GC"),
 )
@@ -316,12 +314,9 @@ def cmd_limits_tick(args) -> int:
     already gone when its cohort is evaluated — its orphaned children are
     reaped in the same tick rather than the next.
 
-    The unattended-block digest (#925) and the role-prompt GC (#884) run last
-    and are both self-throttled: pure housekeeping with no bearing on any
-    session's liveness, so nothing above them should ever wait on them. The
-    digest stage only RELEASES a spool that is already due — without it, a
-    burst's tail would wait for the next block to be delivered, so a task
-    blocked ten times and then giving up would report one block and sit on nine.
+    The role-prompt GC (#884) runs last and is self-throttled: pure
+    housekeeping with no bearing on any session's liveness, so nothing above it
+    should ever wait on it.
 
     Each stage runs inside :func:`_run_stage` so an exception in one subsystem
     is logged and skipped rather than aborting the whole cycle (#490). A stage
@@ -334,7 +329,6 @@ def cmd_limits_tick(args) -> int:
         inbox,
         prompt_router,
         role_prompts,
-        safety_notify,
         session_context,
     )
     from agentwire.scheduler import zombie as scheduler_zombie
@@ -365,8 +359,6 @@ def cmd_limits_tick(args) -> int:
         "cohort", cohort.tick, {"reaped": [], "swept": []})
     idle_held = stage(
         "idle_deferred", background_tasks.tick, {"qualified": [], "cleared": []})
-    blocks = stage(
-        "safety_notify", safety_notify.tick, {"emailed": False, "pending": 0})
     prompt_gc = stage(
         "role_prompts", role_prompts.tick, {"deleted": [], "skipped": "error"},
         {"deleted": [], "skipped": "disabled"})
@@ -374,7 +366,7 @@ def cmd_limits_tick(args) -> int:
         print(json.dumps({
             **result, "prompts": prompts, "messages": messages,
             "context": context, "zombies": zombies, "cohorts": cohorts,
-            "idle_deferred": idle_held, "safety_notify": blocks,
+            "idle_deferred": idle_held,
             "role_prompts": prompt_gc,
         }))
         return 0
@@ -429,8 +421,6 @@ def cmd_limits_tick(args) -> int:
     stuck = idle_held.get("qualified") or []
     if stuck:
         print("idle deferral bound hit (qualified notice sent): " + ", ".join(stuck))
-    if blocks.get("emailed"):
-        print("unattended-block digest emailed")
     swept_prompts = prompt_gc.get("deleted") or []
     if swept_prompts:
         print(f"role prompts aged out: {len(swept_prompts)} "

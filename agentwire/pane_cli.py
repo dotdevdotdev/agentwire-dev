@@ -930,7 +930,7 @@ def cmd_spawn(args) -> int:
         return _output_result(False, json_mode, f"Roles not found: {', '.join(missing)}")
 
     # Resolve posture via the shared spawn core (defaults to bypass —
-    # a worker pane runs bypass + damage-control, no tool-locking).
+    # a worker pane runs bypass, no tool-locking).
     posture, st_err = _resolve_posture_from_args(args)
     if st_err:
         return _output_result(False, json_mode, st_err)

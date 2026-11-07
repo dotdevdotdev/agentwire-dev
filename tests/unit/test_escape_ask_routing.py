@@ -1,4 +1,4 @@
-"""Escape-asks (`# ask: <reason>`, damage-control-dev 0.2.0) end to end (#1278).
+"""Escape-asks (`# ask: <reason>`) routing, end to end (#1278).
 
 An agent that expects a block ends the command with `# ask: <reason>`; a human
 must decide. Role prompts no longer teach the syntax (#1315); the engine and the
@@ -7,16 +7,15 @@ auto-approves it under bypass/auto, and a child's ask routes to its parent / the
 owner with the reason visible.
 """
 
+import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from agentwire import prompt_router
 from agentwire.roles import load_roles, merge_roles, resolve_roles
-from tests.unit.test_hook_subprocess import _run
 
 BLOCKED = "git reset --hard HEAD~3"
 ESCAPE = f"{BLOCKED} # ask: need to drop the bad rebase, branch is pushed"
@@ -34,54 +33,29 @@ def test_no_role_teaches_the_escape_ask():
     assert not taught, taught
 
 
-def test_engine_asks_under_bypass_and_blocks_when_unattended(tmp_path):
-    got = {
-        "plain": _run("bash", "Bash", {"command": BLOCKED}, tmp_path, mode="bypassPermissions"),
-        "escape": _run("bash", "Bash", {"command": ESCAPE}, tmp_path, mode="bypassPermissions"),
-        "unattended": _run("bash", "Bash", {"command": ESCAPE}, tmp_path, unattended=True),
-    }
-    assert got == {"plain": "block", "escape": "ask", "unattended": "block"}
+def test_permission_hook_never_auto_approves_in_any_mode(tmp_path):
+    """A request that reaches the hook goes to the portal in EVERY mode; bypass/auto never short-circuit to allow."""
+    home = tmp_path / "home"
+    project = home / "projects" / "demo"
+    project.mkdir(parents=True)
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    log = tmp_path / "portal.log"
+    curl = stub / "curl"
+    curl.write_text('#!/usr/bin/env bash\necho posted >> "$STUBLOG"\necho \'{"decision":"deny","message":"stub"}\'\n')
+    curl.chmod(0o755)
 
-
-def _hook(command: str, mode: str, tmp_path: Path) -> subprocess.CompletedProcess:
-    payload = '{"tool_name":"Bash","permission_mode":"%s","tool_input":{"command":%s}}' % (
-        mode, __import__("json").dumps(command),
-    )
-    env = {
-        "PATH": os.environ["PATH"], "HOME": str(tmp_path), "PWD": str(tmp_path),
-        "AGENTWIRE_BIN": str(Path(sys.executable).parent / "agentwire"),
-    }
-    return subprocess.run(
-        ["bash", str(HOOK)], input=payload, capture_output=True, text=True,
-        env=env, cwd=tmp_path, timeout=30,
-    )
-
-
-def test_permission_hook_never_auto_approves_a_non_demotable_ask(tmp_path):
-    # Not in tmux and outside ~/projects: anything past the bypass short-circuit
-    # dies on "could not determine session" before touching the network.
-    cases = {
-        "plain": (BLOCKED, True),
-        "demotable-ask": ("docker compose up -d", True),
-        "escape": (ESCAPE, False),
-        "unverifiable": ('eval "$PAYLOAD"', False),
-    }
     got = {}
-    for label, (cmd, _) in cases.items():
-        for mode in ("bypassPermissions", "auto"):
-            got[f"{label}/{mode}"] = '"decision":"allow"' in _hook(cmd, mode, tmp_path).stdout
-    want = {f"{label}/{mode}": allowed for label, (_, allowed) in cases.items()
-            for mode in ("bypassPermissions", "auto")}
-    assert got == want
-
-
-def test_permission_hook_holds_for_a_human_when_the_engine_check_is_unavailable(tmp_path):
-    payload = '{"tool_name":"Bash","permission_mode":"bypassPermissions","tool_input":{"command":"ls"}}'
-    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "PWD": str(tmp_path),
-           "AGENTWIRE_BIN": str(tmp_path / "missing")}
-    proc = subprocess.run(["bash", str(HOOK)], input=payload, capture_output=True, text=True,
-                          env=env, cwd=tmp_path, timeout=30)
-    assert '"decision":"allow"' not in proc.stdout
+    for mode in ("bypassPermissions", "auto", "default"):
+        log.write_text("")
+        payload = json.dumps({"tool_name": "Bash", "permission_mode": mode, "tool_input": {"command": ESCAPE}})
+        env = {**os.environ, "HOME": str(home), "PATH": f"{stub}{os.pathsep}{os.environ['PATH']}",
+               "STUBLOG": str(log)}
+        env.pop("TMUX", None)
+        proc = subprocess.run(["bash", str(HOOK)], input=payload, capture_output=True, text=True,
+                              env=env, cwd=project, timeout=30)
+        got[mode] = ('"decision":"allow"' in proc.stdout, log.read_text().count("posted"))
+    assert got == {m: (False, 1) for m in ("bypassPermissions", "auto", "default")}
 
 
 @pytest.fixture

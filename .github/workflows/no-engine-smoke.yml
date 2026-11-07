@@ -1,8 +1,8 @@
 # Engine-free startup smoke (#1308, part of #1307).
 #
-# agentwire must start without the damage-control engine installed. Install it
-# into a fresh venv, uninstall the engine, and run the commands that must not
-# need it. `safety`, `doctor` and `hooks install` are deliberately NOT here.
+# agentwire must start without the damage-control engine installed, and must
+# not reference it at all (#1313). Install it into a fresh venv, uninstall the
+# engine, and run commands that must not need it.
 name: no-engine-smoke
 
 on:
@@ -21,6 +21,13 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+
+      - name: No damage_control reference remains in the package
+        run: |
+          if grep -rn "damage_control" agentwire/; then
+            echo "agentwire/ must not reference damage_control" >&2
+            exit 1
+          fi
 
       - name: Install agentwire, then remove the engine
         run: |
@@ -43,3 +50,5 @@ jobs:
           "$aw" new --help
           "$aw" portal --help
           "$aw" tasks --help
+          "$aw" hooks --help
+          "$aw" doctor --help

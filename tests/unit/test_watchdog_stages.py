@@ -12,7 +12,6 @@ def _stub_all_stages(monkeypatch):
     import agentwire.inbox as inbox_mod
     import agentwire.prompt_router as pr
     import agentwire.role_prompts as rp
-    import agentwire.safety_notify as sn
     import agentwire.session_context as sc
     from agentwire.scheduler import zombie
 
@@ -36,7 +35,6 @@ def _stub_all_stages(monkeypatch):
     monkeypatch.setattr(zombie, "tick", make("scheduler_zombie", {"killed": []}))
     monkeypatch.setattr(cohort, "tick", make("cohort", {"reaped": [], "swept": []}))
     monkeypatch.setattr(bt, "tick", make("idle_deferred", {"qualified": [], "cleared": []}))
-    monkeypatch.setattr(sn, "tick", make("safety_notify", {"emailed": False, "pending": 0}))
     monkeypatch.setattr(rp, "tick", make("role_prompts", {"deleted": []}))
     return order
 

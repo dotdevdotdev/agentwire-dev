@@ -96,8 +96,7 @@ projects:
 
         Security-critical keys are frozen (#425): even a valid token cannot use
         this endpoint to disable auth, move the bind host, rewrite the
-        executables/services that run as RCE, or turn off the damage-control
-        rules. Those are host-file-edit-only.
+        executables/services that run as RCE. Those are host-file-edit-only.
         """
         try:
             data = await request.json()

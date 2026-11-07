@@ -552,7 +552,7 @@ def _unattended_env(task: SchedulerTask) -> dict[str, str]:
     grants are passed via ``AGENTWIRE_UNATTENDED_ALLOW``. This overlay is the
     subprocess ``env=`` for the ensure/new dispatch calls; ``agentwire``'s
     ``_build_tmux_env_flags`` funnels both vars into the new tmux session before
-    the agent launches, where the damage-control hook reads them. Interactive
+    the agent launches, where a hook can read them. Interactive
     sessions never go through here, so the marker can't leak into them.
 
     Entries are encoded VERBATIM, scope included (#914) — ``encode_unattended_allow``

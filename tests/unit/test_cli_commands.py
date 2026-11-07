@@ -15,35 +15,6 @@ import yaml
 
 
 
-# --- cmd_safety_check ---
-
-class TestCmdSafetyCheck:
-
-    def test_blocked_by_pattern(self, tmp_path, monkeypatch):
-        import agentwire.safety_commands as mod
-
-        # The host's overlay dir (~/.agentwire/damage-control) adds rules to the bundled set.
-        rules_dir = tmp_path / "damage-control"
-        rules_dir.mkdir()
-        patterns = {
-            "bashToolPatterns": [
-                {
-                    "pattern": r"frobnicate\s+--everything",
-                    "action": "block",
-                    "reason": "Dangerous frobnication",
-                }
-            ]
-        }
-        with open(rules_dir / "patterns.yaml", "w") as f:
-            yaml.safe_dump(patterns, f)
-
-        monkeypatch.setenv("AGENTWIRE_DIR", str(tmp_path))
-
-        result = mod.check_command_safety("frobnicate --everything")
-        assert result["decision"] == "block"
-        assert "Dangerous" in result["reason"]
-
-
 # --- cmd_task_list / cmd_task_validate via tasks module ---
 
 class TestTaskCommands:

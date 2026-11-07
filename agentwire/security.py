@@ -53,13 +53,12 @@ _LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1"}
 # Config keys that the portal API must never be able to change — editing them is
 # host-file-only (#425). A leaked/compromised token must not be able to disable
 # its own auth, rewrite the executables/services that run as RCE, move the bind
-# host, or turn off the rm-rf damage-control rules.
+# host.
 FROZEN_CONFIG_KEYS = (
     "server.auth_token",
     "server.host",
     "executables",
     "services",
-    "safety",
 )
 REDACTION_MARKER = "[REDACTED]"
 _REDACTED_FIELDS = ("api_key", "auth_token")

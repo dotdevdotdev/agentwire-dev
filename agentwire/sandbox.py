@@ -3,8 +3,7 @@
 ``agentwire new --sandbox`` launches the agent with ``claude --settings <json>``
 turning on Claude Code's native Bash sandbox: writes limited to the session's
 working directory plus an allowance list, network limited to an allowlist,
-and the unsandboxed-retry escape hatch disabled. Damage control stays the
-decision layer; this only bounds what an *approved* command can touch.
+and the unsandboxed-retry escape hatch disabled. This only bounds what an *approved* command can touch.
 
 The settings ride ``--settings`` (per-process, above user/project files, below
 managed), so no settings file on disk is ever written. The allowance lists come
