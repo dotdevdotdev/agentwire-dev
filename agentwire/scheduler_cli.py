@@ -38,6 +38,7 @@ def _describe_live_daemon(state: dict) -> str:
 
 def cmd_scheduler_start(args) -> int:
     """Start the scheduler daemon in a tmux session."""
+    from .config import get_config
     from .scheduler import live_daemon_state
 
     if not _check_tmux_installed():
@@ -59,6 +60,10 @@ def cmd_scheduler_start(args) -> int:
         return 0
 
     print(f"Starting scheduler daemon in tmux session '{SCHEDULER_SESSION}'...")
+    board_path = get_config().scheduler.board_file
+    if not board_path.exists():
+        print(f"No board file at {board_path} — running with nothing to do "
+              "until tasks are defined there.")
     subprocess.run([
         "tmux", "new-session", "-d", "-s", SCHEDULER_SESSION,
     ])
@@ -134,13 +139,6 @@ def cmd_scheduler_status(args) -> int:
     running = live is not None
     board_path = get_config().scheduler.board_file
 
-    if not board_path.exists():
-        return _output_result(
-            False, json_mode,
-            f"Board file not found: {board_path}",
-            running=running,
-        )
-
     try:
         board = load_board()
     except (FileNotFoundError, ValueError) as e:
@@ -156,6 +154,7 @@ def cmd_scheduler_status(args) -> int:
         "pid": live.get("pid") if live else None,
         "in_tmux": tmux_session_exists(SCHEDULER_SESSION),
         "board_path": str(board_path),
+        "board_exists": board_path.exists(),
         "task_count": task_count,
         "enabled_count": enabled_count,
         "next_task": next_task,
@@ -173,7 +172,10 @@ def cmd_scheduler_status(args) -> int:
     else:
         status_str = "stopped"
     print(f"Scheduler: {status_str}")
-    print(f"Board: {board_path}")
+    if board_path.exists():
+        print(f"Board: {board_path}")
+    else:
+        print(f"Board: none ({board_path} does not exist — no tasks configured)")
     print(f"Tasks: {enabled_count}/{task_count} enabled")
 
     if next_task:

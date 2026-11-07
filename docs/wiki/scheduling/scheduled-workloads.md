@@ -260,6 +260,14 @@ agentwire ensure -s session --task name --dry-run               # Preview withou
 > (`scheduler-state.yaml.bak1..bak5`). This keeps machine-written state from
 > ever corrupting hand-authored tasks.
 
+**No `scheduler.yaml` is a valid state, not an error (#1326).** Nothing in
+agentwire writes the file — you author it — so a fresh install has none. A
+missing file is an empty board: `scheduler status` prints `Board: none (… does
+not exist — no tasks configured)` and exits 0, `board`/`history` report no
+tasks, and `start`/`serve` say they are running with nothing to do until tasks
+are defined (the daemon re-reads the file every loop, so adding it later needs
+no restart). A file that exists but is empty or malformed is still an error.
+
 Schedule tasks in `~/.agentwire/scheduler.yaml`:
 
 ```yaml
