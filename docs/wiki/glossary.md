@@ -14,7 +14,7 @@ An outbound notification integration — a session pushes a message to an extern
 
 ## D — Damage Control
 
-Security firewall: PreToolUse hooks block dangerous bash/edit/write operations using pattern rules in `agentwire/hooks/damage-control/rules/*.yaml` plus an optional user override at `~/.agentwire/damage-control/`. → [Damage control](internals/damage-control.md).
+The optional, separate project [`damage-control-dev`](https://pypi.org/project/damage-control-dev/); AgentWire does not manage or ship it as a feature. It is a hook library that screens agent tool calls; AgentWire only integrates with it. → [Damage control integration](internals/damage-control.md).
 
 ## E — Ensure Task
 

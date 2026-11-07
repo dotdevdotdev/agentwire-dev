@@ -1,12 +1,14 @@
-# Damage Control: Security Firewall for AgentWire
+# Damage Control: Integration Notes
 
 > Living document. Update this, don't create new versions.
+
+> **Scope.** Damage control is the separate, optional hook library [`damage-control-dev`](https://pypi.org/project/damage-control-dev/). AgentWire does not manage or ship it as a feature; this page is developer documentation for the integration code in this repo, and what follows describes that integration, not a product guarantee.
 
 ---
 
 ## Overview
 
-Damage Control is a security firewall system that protects AgentWire from dangerous operations during parallel agent execution. It intercepts tool calls (Bash, Edit, Write, Read, Grep, Glob) via PreToolUse hooks and blocks operations matching security patterns.
+Damage control (the `damage-control-dev` package) screens tool calls from agent sessions. It intercepts tool calls (Bash, Edit, Write, Read, Grep, Glob) via PreToolUse hooks and blocks operations matching security patterns.
 
 **Why Critical for AgentWire**: Parallel remote agent execution multiplies risk. A single `rm -rf /` in a remote session is unrecoverable. Multi-agent execution amplifies the chance of catastrophic mistakes.
 

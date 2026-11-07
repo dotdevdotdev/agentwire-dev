@@ -123,7 +123,7 @@ Command Categories:
   Diagnostics:
     doctor           Auto-diagnose and fix common issues
     network          Network diagnostics and status
-    safety           Damage control security commands
+    safety           damage-control-dev integration (separate optional project)
     hooks            Manage agentwire hook files
 
   Advanced:

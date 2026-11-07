@@ -54,8 +54,8 @@ Headless and scheduled execution.
 
 - **[Secrets & API keys](security/secrets.md)** — `~/.agentwire/.env` is the one place every key lives; which vars each feature reads; the `api_key_env` pattern for new integrations
 - **[Remote-access hardening](security/remote-access-hardening.md)** — threat model for the any-device→tunnel→portal→shell path; network footprint map (what agentwire owns vs BYO tunnels); the portal auth boundary and the per-device / capability-scope / freeze-config hardening plan (#396, #420, #423–#425)
-- **[Damage control](internals/damage-control.md)** — safety hooks: rules, patterns, audit log
-- **[Damage-control matcher hardening](security/damage-control-hardening.md)** — consolidated note for the matcher hardening shipped in PR #500
+- **[Damage control integration](internals/damage-control.md)** — developer notes on how the integration with the separate `damage-control-dev` project works (optional; not an AgentWire feature)
+- **[Damage-control matcher hardening](security/damage-control-hardening.md)** — developer note on the matcher hardening shipped in PR #500
 - **[Sandbox spike](security/sandbox-spike.md)** — workers under the Claude Code sandbox (`agentwire new --sandbox`, opt-in): settings keys, observed probe results, required allowances, residual gaps (#1279)
 - **[pip-audit](security/pip-audit.md)** — dependency CVE triage workflow
 
@@ -102,7 +102,7 @@ Implementation reference for contributors and advanced users.
 - **[Upgrade test](internals/upgrade-test.md)** — CI job that installs the previous release from PyPI, upgrades to the branch in a fresh HOME, and asserts migrate/doctor (#1276)
 - **[Window collage](internals/window-collage.md)** — Mission Control overlay: preview-tile architecture + why mutating real WinBox windows can never work
 - **[Shell escaping](internals/shell-escaping.md)** — how complex strings cross tmux boundaries (incl. the 1024-byte cap on anything typed into a fresh pane)
-- **[Damage control](internals/damage-control.md)** — safety hooks: rules, patterns, audit log
+- **[Damage control integration](internals/damage-control.md)** — developer notes on the integration with the separate `damage-control-dev` project
 - **[Troubleshooting](internals/troubleshooting.md)** — common issues and fixes
 
 ## Skills
