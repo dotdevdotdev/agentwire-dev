@@ -44,5 +44,5 @@ Each of these couples agentwire to an undocumented, fast-moving research-preview
 
 ## Open risks (from the research, unverified)
 
-- `agentwire idle-gate` (#1103) must treat a live workflow like a background task, or a worker is reaped mid-run.
-- Whether user-scope hooks fire inside workflow agents is inferred by the subagent analogy, not observed.
+- ~~idle-gate blind to a live workflow~~ **Observed and fixed (#1340):** the gate missed a running workflow (it renders only as a footer progress row), now read as a pending task; see [troubleshooting](../internals/troubleshooting.md#idle-notice-missing-while-a-background-task-runs-1103).
+- User-scope hooks fire inside workflow agents: **observed** (#1333, `agent_id` + `agent_type: workflow-subagent`).

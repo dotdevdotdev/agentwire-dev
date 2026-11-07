@@ -210,14 +210,49 @@ def _is_task_piece(piece: str) -> bool:
     return any(w.rstrip("s") in TASK_NOUNS for w in words)
 
 
+#: A dynamic workflow's progress row, rendered BELOW the mode line while the
+#: workflow runs and left there at ``3/3`` once it ends (#1340):
+#: ``◯ wf-spike  ▰▰▰▱▱▱  1/3 · 34s · ↓ 121.2k tokens``. The mode line's
+#: ``N shell`` counters never include it, so it is its own signal.
+_WORKFLOW_BAR = re.compile(r"[▰▱]{4,}")
+_WORKFLOW_PROGRESS = re.compile(r"[▰▱]{4,}\s+(?P<done>\d+)/(?P<total>\d+)\b")
+
+
+def _workflow_reading(rows: list[str]) -> PaneReading:
+    """Workflows still running per the footer progress rows (below the box).
+
+    ``n/m`` with ``n < m`` is live; ``n == m`` is finished. A row that carries
+    the progress bar but whose ``n/m`` is cut off is UNCERTAIN, never zero.
+    """
+    live = 0
+    for row in rows:
+        if not _WORKFLOW_BAR.search(row):
+            continue
+        m = _WORKFLOW_PROGRESS.search(row)
+        if m is None:
+            return PaneReading(None, "uncertain")
+        if int(m.group("done")) < int(m.group("total")):
+            live += 1
+    return PaneReading(live, "ok")
+
+
 def _footer_reading(rows: list[str]) -> PaneReading:
     """The live mode line (rows BELOW the input box only — a footer quoted in
     scrollback is above it and can never be mistaken for this one).
 
     ``count`` 0 and ``None`` are different values: a digit-bearing segment we
     cannot parse (``· 1``, ``· 1 shell, 1``) or a line cut off by the width is
-    UNCERTAIN, never zero.
+    UNCERTAIN, never zero. Running workflows (their own progress rows) add to
+    the count.
     """
+    workflows = _workflow_reading(rows)
+    mode_reading = _mode_line_reading(rows)
+    if workflows.status != "ok" or mode_reading.status != "ok":
+        return PaneReading(None, "uncertain")
+    return PaneReading(mode_reading.count + workflows.count, "ok")
+
+
+def _mode_line_reading(rows: list[str]) -> PaneReading:
     mode = next((r for r in rows if "⏵⏵" in r), None)
     if mode is None:
         return PaneReading(None, "uncertain")

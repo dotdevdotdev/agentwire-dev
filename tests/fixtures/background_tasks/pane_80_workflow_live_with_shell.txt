@@ -1,0 +1,24 @@
+ ▐▛███▛█   Claude Code v2.1.319
+▝▜██████▀  Sonnet 5.5 · Claude Pro
+ ▝▝   ▝▝   ~/proj · /rc
+
+⚠ Your login expires in 3 days · run /login to renew
+
+❯ /wf-spike ⟨#send-688a72⟩
+
+⏺ Workflow(dynamic workflow: wf-spike)
+  ⎿  Running in background · /workflows to monitor and save
+
+⏺ wf-spike is running in the background as run wf_ad77a8c3-108. I'll report when
+  it finishes.
+
+✻ Waiting for 1 dynamic workflow to finish
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  sonnet  ~/proj  main
+  [██████████████████████████████████████████████████████████████████░░░░] 95%
+  ⏵⏵ bypass permissions on · 1 shell, 1 monitor
+
+  ◯ wf-spike  ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/3 · 16s · ↓ 116.5k tokens
