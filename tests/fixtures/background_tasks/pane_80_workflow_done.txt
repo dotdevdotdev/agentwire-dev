@@ -1,0 +1,24 @@
+    said 4 files, then corrected itself to 3.
+  - Agent 2 (read-only): It returned # wf-spike scratch, the first line of the
+    README.
+  - Agent 3 (worktree edit): EnterWorktree was refused inside the subagent, so
+    it made the worktree by hand with git worktree add. The worktree is at
+    .claude/worktrees/wf-spike on branch wf-spike. It appended "spike" to
+    notes.txt and committed it there. The main checkout was untouched.
+
+  The spike shows that a subagent can't call EnterWorktree, but it can still do
+  isolated edits with git worktree add.
+
+  The worktree and the wf-spike branch are still there. I can remove them if you
+  want.
+
+✻ Baked for 1m 2s · done 9:56 AM
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  sonnet  ~/proj  main
+  [██████████████████████████████████████████████████████████████████░░░░] 95%
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+
+  ◯ wf-spike  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  3/3 · 54s · ↓ 122.8k tokens

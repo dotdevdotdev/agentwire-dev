@@ -479,6 +479,28 @@ told about: `agentwire doctor` flags that as `[!!]`. State: `~/.agentwire/idle-d
 `~/.agentwire/idle-deferred-events.jsonl`; `agentwire doctor` lists held
 notices.
 
+**A running dynamic workflow (#1340, observed on Claude Code 2.1.319).** A workflow
+is NOT counted by the mode line (`⏵⏵ … · 1 shell`) or the turn-end line: with only
+a workflow live the mode line reads `bypass permissions on (shift+tab to cycle)`
+and the old gate said count 0 (pane authoritative, transcript task id ignored as
+`stale_transcript`), so a worker would be reaped mid-run. The workflow renders its
+own footer row BELOW the mode line, `◯ <name> ▰▰▰▱▱▱ n/m · 34s · ↓ 121k tokens`
+(`n < m` running; the `3/3` row lingers after the run ends). `parse_pane` reads
+that row in the same live position as the mode line and adds each `n < m` row to
+the count; a row with the bar but a cut-off `n/m` is uncertain (hold). The
+`Workflow` tool result already parses as a transcript task (`taskId`,
+`taskType: local_workflow`, ended by a `<task-notification><status>`), so the
+transcript fallback was never the gap. Fixtures: `tests/fixtures/background_tasks/*workflow*`.
+
+**Stop-hook `background_tasks` as a primary signal: not adopted.** The spike
+logged `Stop` and `SubagentStop` payloads: `background_tasks` is a list of
+`{id, type, status, description, name|command}` and the `Stop` fired at turn end
+listed the workflow as `status: running` and the final `Stop` was `[]`. That is
+reliable in those two events. Not verified: the payload on the `Notification`
+event `idle-handler.sh` is actually registered on, and when `Stop` fires relative
+to the idle notice. Until verified there, the pane stays primary and the payload
+is a candidate cross-check, not a replacement.
+
 ### Wrong Target Session
 
 **For workers (panes 1+):** Notifications go to pane 0 automatically.
