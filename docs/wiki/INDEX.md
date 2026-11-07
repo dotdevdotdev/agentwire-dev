@@ -100,6 +100,7 @@ Implementation reference for contributors and advanced users.
 - **[Window collage](internals/window-collage.md)** — Mission Control overlay: preview-tile architecture + why mutating real WinBox windows can never work
 - **[Shell escaping](internals/shell-escaping.md)** — how complex strings cross tmux boundaries (incl. the 1024-byte cap on anything typed into a fresh pane)
 - **[Unattended contract](internals/unattended.md)** — `AGENTWIRE_UNATTENDED` as the public "no human present" signal, and `unattended_allow` as an opaque passthrough (#1309)
+- **[Migrating to standalone damage-control-dev](internals/migrating-to-standalone-damage-control.md)** — owner runbook: move the guard hooks off agentwire's venv before rebuilding (#1313)
 - **[Troubleshooting](internals/troubleshooting.md)** — common issues and fixes
 
 ## Skills
