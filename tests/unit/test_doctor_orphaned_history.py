@@ -170,8 +170,15 @@ class TestTeardownRecordNote:
         note = teardown_record_note({"session": "sess", "record_left": left,
                                      "record_orphaned_ids": orphaned})
         assert orphaned == ["cid"]
-        assert "session record left at" in note and "1 orphaned" in note
-        assert "history prune --dead" in note
+        assert "session record kept at" in note and "1 orphaned" in note
+        assert "restart -s sess" in note
+
+    def test_dropped_record_is_stated(self):
+        from agentwire.worktree import teardown_record_note
+
+        note = teardown_record_note({"session": "x", "record_left": None,
+                                     "record_dropped": True})
+        assert "dropped" in note
 
     def test_no_record_no_note(self, store):
         from agentwire.session_cli import _session_record_state

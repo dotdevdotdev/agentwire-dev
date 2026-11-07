@@ -34,6 +34,7 @@ from .core import (
     _run_remote,
     _set_session_name_env,
     build_agent_command,
+    delete_session_record,
     load_config,
     load_session_metadata,
     mirror_role_prompt_remote,
@@ -1713,11 +1714,12 @@ def _worktree_prune(args, project_path: Path, worktree_dir: Path, json_mode: boo
                 )
                 if result["success"]:
                     gc_merged_out.append(e["session"])
-                    if result.get("record_left"):
+                    if result.get("record_left") or result.get("record_dropped"):
                         gc_records.append({
                             "session": e["session"],
-                            "record_left": result["record_left"],
+                            "record_left": result.get("record_left"),
                             "record_orphaned_ids": result["record_orphaned_ids"],
+                            "record_dropped": result.get("record_dropped", False),
                         })
                     for t in result.get("orphaned_tabs") or []:
                         gc_orphaned_tabs.append({**t, "session": e["session"]})
@@ -1977,8 +1979,8 @@ def _delete_branch_if_safe(
 def _session_record_state(session_name: str) -> tuple[str | None, list[str]]:
     """What teardown leaves behind: the record's path and its orphaned chain ids.
 
-    ``(None, [])`` when the session has no record. Read-only — teardown never
-    deletes the record (see ``agentwire history prune --dead``).
+    ``(None, [])`` when the session has no record. Read-only; the decision to
+    drop it is :func:`record_is_finished`, made by the caller.
     """
     from .history import survey_chain
 
@@ -1995,6 +1997,22 @@ def _session_record_state(session_name: str) -> tuple[str | None, list[str]]:
         return str(path.parent), []
     _, orphans, _ = survey_chain(ids, cwd)
     return str(path.parent), [loc.conversation_id for loc in orphans]
+
+
+def record_is_finished(*, kill_session: bool, worktree_removed: bool,
+                       branch_deleted: bool) -> bool:
+    """The rule: is a torn-down session's record safe to drop?
+
+    The record exists so ``restart`` / ``--resume`` can bring a conversation
+    back. That is moot only when the thing it would resume INTO is gone for
+    good: this teardown owned the session (not a pane entry, whose session
+    belongs to a live orchestrator), removed the worktree, AND deleted the
+    branch — which ``_delete_branch_if_safe`` only does once the branch is
+    merged (or the caller forced it). Anything short of that — ``--keep-branch``,
+    an unmerged branch kept, a pane entry — leaves the work resumable, so the
+    record stays.
+    """
+    return kill_session and worktree_removed and branch_deleted
 
 
 def _teardown_entry(
@@ -2137,9 +2155,17 @@ def _teardown_entry(
         cohort.settle(session_name)
 
     record_left, record_orphaned_ids = _session_record_state(session_name)
+    record_dropped = False
+    if record_left and record_is_finished(
+        kill_session=kill_session, worktree_removed=worktree_existed,
+        branch_deleted=branch_deleted,
+    ):
+        delete_session_record(session_name)
+        record_dropped, record_left, record_orphaned_ids = True, None, []
 
     return {"success": True, "session": session_name, "path": str(worktree_path),
             "record_left": record_left, "record_orphaned_ids": record_orphaned_ids,
+            "record_dropped": record_dropped,
             "killed": killed, "worktree_removed": worktree_existed,
             "worktree_existed": worktree_existed,
             "session_existed": session_existed,

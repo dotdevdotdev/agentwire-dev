@@ -244,23 +244,27 @@ def teardown_session_note(result: dict) -> str:
 
 
 def teardown_record_note(result: dict) -> str:
-    """Clause saying what teardown left in the session-record store.
+    """Clause saying what teardown did with the session-record store.
 
-    Teardown never deletes ``~/.agentwire/sessions/<name>`` — the record is
-    the only map from session name to conversation — so it states that it is
-    still there, and whether its chain has orphaned entries. Empty when there
-    was no record (or the teardown did not complete).
+    The record (``~/.agentwire/sessions/<name>``) is the only map from session
+    name to conversation. Teardown drops it only when nothing is left to
+    resume into (``session_cli.record_is_finished``: worktree removed AND
+    branch merged-and-deleted) and says so; otherwise it states the record is
+    kept, and whether its chain has orphaned entries. Empty when there was no
+    record (or the teardown did not complete).
     """
+    if result.get("record_dropped"):
+        return "session record dropped (worktree removed, branch merged and deleted)"
     record = result.get("record_left")
     if not record:
         return ""
     session = result.get("session") or "?"
     orphaned = result.get("record_orphaned_ids") or []
-    note = f"session record left at {record}"
+    note = f"session record kept at {record} (work not fully torn down — `agentwire restart -s {session}` still resumes it)"
     if orphaned:
         note += (f" (chain has {len(orphaned)} orphaned conversation(s) — "
                  f"`agentwire history migrate --session {session}`)")
-    return note + "; drop with `agentwire history prune --dead --yes`"
+    return note
 
 
 def ensure_worktree(

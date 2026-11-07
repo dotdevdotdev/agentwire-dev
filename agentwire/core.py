@@ -1372,6 +1372,25 @@ def recorded_sessions() -> list[str]:
         return []
 
 
+def delete_session_record(session_name: str) -> None:
+    """Remove a session's record file, then its now-empty directories.
+
+    The one deleter, beside :func:`store_session_metadata` (the writer) and
+    :func:`load_session_metadata` (the reader). Used by teardown's drop rule
+    and by ``agentwire history prune --dead``.
+    """
+    path = session_metadata_path(session_name)
+    path.unlink()
+    root = sessions_dir()
+    parent = path.parent
+    while parent != root:
+        try:
+            parent.rmdir()
+        except OSError:
+            break  # not empty — other files live here; leave them
+        parent = parent.parent
+
+
 def store_session_metadata(session_name: str, metadata: dict) -> None:
     """Store session metadata to disk — RAISING if it doesn't land (#885).
 
