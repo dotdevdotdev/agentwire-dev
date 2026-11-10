@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .core import load_session_metadata
+from .permission_summary import summarize
 from .usage_limit import (
     PARK_OPTION,
     _atomic_write,
@@ -868,6 +869,23 @@ def route_prompt(
         return None
 
 
+def agent_label(data: dict) -> str:
+    """Who is asking: ``Claude`` for the main agent, else the subagent named.
+
+    A workflow agent's ask has no dialog in the owning terminal, so the person
+    answering needs the agent identified (#1343). ``agent_id`` is shortened to
+    its first 6 characters.
+    """
+    agent_id = str(data.get("agent_id") or "")
+    agent_type = str(data.get("agent_type") or "")
+    if not agent_id and not agent_type:
+        return "Claude"
+    parts = [agent_type or "subagent"]
+    if agent_id:
+        parts.append(agent_id[:6])
+    return f"Claude agent {' '.join(parts)}"
+
+
 def notify_permission_request(session: str, pane_index: int, data: dict) -> "str | None":
     """Hook-path entry: the portal received a PermissionRequest POST.
 
@@ -929,7 +947,8 @@ def notify_permission_request(session: str, pane_index: int, data: dict) -> "str
         summary = f"use {tool_name} {detail}".strip()
     info = PromptInfo(
         kind="permission",
-        question=f"Claude wants to {summary}",
+        question=f"{agent_label(data)} wants to {summary}",
+        summary=summarize(session, data),
         options=[
             {"number": 1, "label": "allow", "description": ""},
             {"number": 2, "label": "allow always", "description": ""},

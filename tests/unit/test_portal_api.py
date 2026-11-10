@@ -345,21 +345,24 @@ class TestTokenAuth:
 
 class TestPermissionRouting:
     async def _start_request(self, client, server, session="myproj", pane=2,
-                             tmux_session="real-sess"):
+                             tmux_session="real-sess", **extra):
         import asyncio
 
+        sess = server.active_sessions.get(session)
+        before = len(sess.pending_permissions) if sess else 0
         task = asyncio.create_task(client.post(f"/api/permission/{session}", json={
             "tool_name": "Bash",
             "tool_input": {"command": "git push"},
             "pane_index": pane,
             "tmux_session": tmux_session,
+            **extra,
         }))
         for _ in range(200):
             await asyncio.sleep(0.02)
             sess = server.active_sessions.get(session)
-            if sess and sess.pending_permission:
+            if sess and len(sess.pending_permissions) > before:
                 return task, sess
-        raise AssertionError("pending_permission never appeared")
+        raise AssertionError("pending permission never appeared")
 
     async def test_request_routes_to_parent_and_respond_sends_pane_keystroke(
         self, portal_client
@@ -379,7 +382,7 @@ class TestPermissionRouting:
         ):
             run = server._run_subprocess = AsyncMock(return_value=(0, "", ""))
             task, sess = await self._start_request(client, server)
-            assert sess.pending_permission.pane_index == 2
+            assert next(iter(sess.pending_permissions.values())).pane_index == 2
 
             # Routed with the real tmux session name + pane from the hook.
             notify.assert_called_once()
@@ -402,6 +405,122 @@ class TestPermissionRouting:
                 "agentwire", "send-keys", "-s", "real-sess", "--pane", "2", "1"
             ]
             clear.assert_called()
+
+    async def test_concurrent_asks_resolve_independently(self, portal_client):
+        client, server = portal_client
+        server._say_to_room = AsyncMock()
+        with patch(
+            "agentwire.server.prompt_router.notify_permission_request",
+            return_value=None,
+        ), patch("agentwire.server.prompt_router.clear_marker"), patch(
+            "agentwire.server.prompt_router.screen_shows_live_menu",
+            return_value=False,
+        ), patch("agentwire.server.prompt_router._capture", return_value=""):
+            server._run_subprocess = AsyncMock(return_value=(0, "", ""))
+            t1, sess = await self._start_request(client, server, tool_use_id="tu-1")
+            t2, _ = await self._start_request(client, server, tool_use_id="tu-2")
+            assert set(sess.pending_permissions) == {"tu-1", "tu-2"}
+
+            # Ambiguous respond must not guess.
+            amb = await client.post(
+                "/api/permission/myproj/respond", json={"decision": "allow"}
+            )
+            assert amb.status == 400
+
+            r1 = await client.post(
+                "/api/permission/myproj/respond",
+                json={"decision": "allow", "request_id": "tu-1"},
+            )
+            r2 = await client.post(
+                "/api/permission/myproj/respond",
+                json={"decision": "deny", "request_id": "tu-2"},
+            )
+            assert r1.status == 200 and r2.status == 200
+            assert (await (await t1).json())["decision"] == "allow"
+            assert (await (await t2).json())["decision"] == "deny"
+            assert sess.pending_permissions == {}
+
+    async def test_timeout_of_older_ask_keeps_newer_ask_live(
+        self, portal_client, monkeypatch
+    ):
+        import asyncio
+
+        client, server = portal_client
+        server._say_to_room = AsyncMock()
+        real_wait_for = asyncio.wait_for
+        gate = asyncio.Event()
+        calls = []
+
+        async def gated_wait_for(aw, timeout):
+            # The first ask's 300s wait expires when the test opens the gate.
+            calls.append(timeout)
+            if len(calls) == 1:
+                aw.close() if hasattr(aw, "close") else None
+                await gate.wait()
+                raise asyncio.TimeoutError
+            return await real_wait_for(aw, timeout)
+
+        with patch(
+            "agentwire.server.prompt_router.notify_permission_request",
+            return_value=None,
+        ), patch("agentwire.server.prompt_router.clear_marker"), patch(
+            "agentwire.server.prompt_router.screen_shows_live_menu",
+            return_value=False,
+        ), patch("agentwire.server.prompt_router._capture", return_value=""):
+            server._run_subprocess = AsyncMock(return_value=(0, "", ""))
+            monkeypatch.setattr(
+                "agentwire.routes.permission.asyncio.wait_for", gated_wait_for
+            )
+            t1, sess = await self._start_request(client, server, tool_use_id="old")
+            t2, _ = await self._start_request(client, server, tool_use_id="new")
+
+            gate.set()
+            body1 = await (await t1).json()
+            assert "timed out" in body1["message"]
+            assert set(sess.pending_permissions) == {"new"}
+
+            resp = await client.post(
+                "/api/permission/myproj/respond",
+                json={"decision": "allow", "request_id": "new"},
+            )
+            assert resp.status == 200
+            assert (await (await t2).json())["decision"] == "allow"
+
+    async def test_workflow_agent_named_in_listing_and_parent_route(
+        self, portal_client
+    ):
+        client, server = portal_client
+        say = server._say_to_room = AsyncMock()
+        with patch(
+            "agentwire.server.prompt_router.notify_permission_request",
+            return_value=None,
+        ) as notify, patch("agentwire.server.prompt_router.clear_marker"), patch(
+            "agentwire.server.prompt_router.screen_shows_live_menu",
+            return_value=False,
+        ), patch("agentwire.server.prompt_router._capture", return_value=""):
+            server._run_subprocess = AsyncMock(return_value=(0, "", ""))
+            task, sess = await self._start_request(
+                client, server, tool_use_id="tu-w",
+                agent_id="a1b2c3d4e5f6", agent_type="workflow-subagent",
+            )
+            # Spoken line names session + agent + command.
+            spoken = say.call_args[0][1]
+            assert "workflow subagent" in spoken and "myproj" in spoken
+            assert "push code to GitHub" in spoken and "git push" not in spoken
+            # Parent routing receives the raw payload carrying the agent.
+            assert notify.call_args[0][2]["agent_type"] == "workflow-subagent"
+
+            # A client that missed the broadcast can still list it.
+            listing = await (await client.get("/api/permissions")).json()
+            assert [(p["session"], p["request_id"], p["agent"]) for p in listing["pending"]] == [
+                ("myproj", "tu-w", "Claude agent workflow-subagent a1b2c3")
+            ]
+            await client.post(
+                "/api/permission/myproj/respond",
+                json={"decision": "deny", "request_id": "tu-w"},
+            )
+            await task
+            assert (await (await client.get("/api/permissions")).json())["pending"] == []
 
     async def test_respond_skips_keystroke_when_dialog_gone(self, portal_client):
         client, server = portal_client

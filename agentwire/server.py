@@ -168,6 +168,7 @@ class PendingPermission:
     """A permission request waiting for user decision."""
 
     request: dict  # The permission request from Claude Code
+    request_id: str = ""  # Key in Session.pending_permissions (tool_use_id or minted)
     event: asyncio.Event = field(default_factory=asyncio.Event)  # Signals when user responds
     decision: dict | None = None  # The user's decision
     pane_index: int = 0  # Pane the dialog is on (worker panes > 0)
@@ -185,7 +186,7 @@ class Session:
     output_task: asyncio.Task | None = None
     played_says: set = field(default_factory=set)
     last_question: str | None = None  # Track AskUserQuestion to avoid duplicates
-    pending_permission: PendingPermission | None = None  # Active permission request
+    pending_permissions: dict[str, PendingPermission] = field(default_factory=dict)  # Active asks by request_id (#1343)
     last_output_timestamp: float = 0.0  # Last time output changed (server-side activity tracking)
     is_active: bool = False  # Current active/idle state for transition detection
     created_at: float = field(default_factory=time.monotonic)  # Grace window for #629 eviction
@@ -768,7 +769,7 @@ class AgentWireServer(
 
         The config fetch awaits (possibly a 5s SSH probe), so a naive
         check-then-assign around it lets a concurrent handler register the
-        same session first — clobbering its clients and pending_permission.
+        same session first — clobbering its clients and pending_permissions.
         Re-check after the await and keep whichever Session landed first.
         """
         session = self.active_sessions.get(name)
@@ -1410,7 +1411,7 @@ class AgentWireServer(
           off         pane 0 runs no agent (Claude exited → bare shell);
                       also the fallback for anything unrecognized/errored —
                       when in doubt show off, never a false working/idle
-          needs_input prompt-router marker or live pending_permission
+          needs_input prompt-router marker or live pending_permissions
           working     recent output (activity_threshold_seconds)
           idle        agent present, nothing pending, no recent output
         """
@@ -1430,7 +1431,8 @@ class AgentWireServer(
                 if name and prompt_router.is_agent_pane(name, 0):
                     marker = markers.get(name.split("@")[0])
                     session_obj = self.active_sessions.get(name)
-                    pending = session_obj.pending_permission if session_obj else None
+                    pending_all = list(session_obj.pending_permissions.values()) if session_obj else []
+                    pending = pending_all[0] if pending_all else None
                     if marker:
                         state = "needs_input"
                         kind = marker.get("kind")
