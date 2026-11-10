@@ -6073,6 +6073,22 @@ body.sidebar-pinned { --hud-left: var(--sidebar-width); }
     border: 1px solid var(--danger, #ff5555); color: var(--danger, #ff5555);
 }
 
+/* ---------- Approvals sidebar section (#1343) ---------- */
+.approval-card {
+    display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px;
+    background: var(--chrome); border: 1px solid var(--topology-awaiting, var(--orb-awaiting)); border-radius: 6px; padding: 6px 8px;
+}
+.approval-summary { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.approval-detail { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; white-space: pre-wrap; max-height: 6em; overflow: auto; }
+.approval-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.approval-btn {
+    flex: 1 1 auto; min-width: 64px; padding: 4px 8px; border-radius: 4px; cursor: pointer;
+    background: var(--chrome); color: var(--text); border: 1px solid var(--chrome-border);
+}
+.approval-btn:hover { background: var(--hover); }
+.approval-btn--deny { border-color: var(--topology-stuck, var(--danger, #ff5555)); }
+.approval-empty { font-size: 11px; color: var(--text-muted); }
+
 /* ---------- Sidebar section launcher ---------- */
 .council-section-list { display: flex; flex-direction: column; gap: 6px; }
 .council-section-item {

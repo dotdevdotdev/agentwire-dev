@@ -32,6 +32,7 @@ import { projectsSection } from './sidebar/projects-section.js';
 import { schedulerSection } from './sidebar/scheduler-section.js';
 import { councilSection } from './sidebar/council-section.js';
 import { fleetSection } from './sidebar/fleet-section.js';
+import { approvalsSection } from './sidebar/approvals-section.js';
 import { addSectionsIsolated } from './sidebar/add-sections.js';
 import { servicesSection } from './sidebar/services-section.js';
 import { notificationsPanel } from './notifications-panel.js';
@@ -108,6 +109,7 @@ async function init() {
         ['artifacts', artifactsSection],
         ['scheduler', schedulerSection],
         ['council', councilSection],
+        ['approvals', approvalsSection],
         ['fleet', fleetSection],
         ['config', configSection],
     ], (id, err) => console.error(`[desktop] sidebar section "${id}" failed to mount`, err));

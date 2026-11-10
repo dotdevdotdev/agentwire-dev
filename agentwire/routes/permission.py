@@ -15,7 +15,6 @@ import.
 import asyncio
 import logging
 import uuid
-from pathlib import Path
 
 from aiohttp import web
 
