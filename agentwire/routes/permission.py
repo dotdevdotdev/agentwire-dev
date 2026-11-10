@@ -14,11 +14,12 @@ import.
 
 import asyncio
 import logging
-from pathlib import Path
+import uuid
 
 from aiohttp import web
 
 from .. import prompt_router
+from ..permission_summary import summarize
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,14 @@ class PermissionRoutesMixin:
                 pane_index = int(data.get("pane_index") or 0)
             except (TypeError, ValueError):
                 pane_index = 0
-            session.pending_permission = PendingPermission(request=data, pane_index=pane_index)
+            request_id = str(data.get("tool_use_id") or "")
+            if not request_id or request_id in session.pending_permissions:
+                request_id = f"{request_id or 'perm'}-{uuid.uuid4().hex[:8]}"
+            pending = PendingPermission(
+                request=data, request_id=request_id, pane_index=pane_index
+            )
+            session.pending_permissions[request_id] = pending
+            who = prompt_router.agent_label(data)
 
             # Route to the parent/orchestrator session, if one resolves
             # (#276). Best-effort and non-blocking for the dialog itself.
@@ -146,22 +154,31 @@ class PermissionRoutesMixin:
                 "tool_input": tool_input,
                 "message": message,
                 "parent_notified": parent_notified,
+                "request_id": request_id,
+                "session": name,
+                "agent": who,
+                "summary": summarize(name, data),
+                "agent_id": data.get("agent_id"),
+                "agent_type": data.get("agent_type"),
             })
 
             # Generate TTS announcement (Task 3.6)
             await self._announce_permission_request(
-                name, tool_name, tool_input, parent_notified=parent_notified
+                name, data, parent_notified=parent_notified
             )
 
             # Wait for user decision with 5 minute timeout
             try:
-                await asyncio.wait_for(session.pending_permission.event.wait(), timeout=300)
+                await asyncio.wait_for(pending.event.wait(), timeout=300)
             except asyncio.TimeoutError:
-                logger.warning(f"[{name}] Permission request timed out")
-                session.pending_permission = None
-                await self._broadcast(session, {"type": "permission_timeout"})
-                await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: prompt_router.clear_marker(tmux_name, pane_index)
+                logger.warning(f"[{name}] Permission request {request_id} timed out")
+                # Remove ONLY this ask — a newer one on the session stays live.
+                session.pending_permissions.pop(request_id, None)
+                await self._broadcast(
+                    session, {"type": "permission_timeout", "request_id": request_id}
+                )
+                await self._clear_marker_if_unshared(
+                    session, tmux_name, pane_index
                 )
                 return web.json_response({
                     "decision": "deny",
@@ -169,11 +186,9 @@ class PermissionRoutesMixin:
                 })
 
             # Return the decision to the hook script
-            decision = session.pending_permission.decision
-            session.pending_permission = None
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: prompt_router.clear_marker(tmux_name, pane_index)
-            )
+            decision = pending.decision
+            session.pending_permissions.pop(request_id, None)
+            await self._clear_marker_if_unshared(session, tmux_name, pane_index)
 
             logger.info(f"[{name}] Permission decision: {decision}")
             return web.json_response(decision)
@@ -202,20 +217,33 @@ class PermissionRoutesMixin:
 
             session = self.active_sessions[name]
 
-            if not session.pending_permission:
+            if not session.pending_permissions:
                 return web.json_response({"error": "No pending permission request"}, status=400)
 
+            request_id = str(data.get("request_id") or "")
+            if not request_id:
+                if len(session.pending_permissions) > 1:
+                    return web.json_response({
+                        "error": "Several permission requests are pending; pass request_id",
+                        "pending": sorted(session.pending_permissions),
+                    }, status=400)
+                request_id = next(iter(session.pending_permissions))
+            pending = session.pending_permissions.get(request_id)
+            if pending is None:
+                return web.json_response(
+                    {"error": f"No pending permission request {request_id}"}, status=400
+                )
+
             # Capture pane/session context BEFORE signaling — the waiting
-            # request handler nulls pending_permission as soon as it wakes.
-            pane_index = session.pending_permission.pane_index
-            pending_request = session.pending_permission.request
-            tmux_name = str(pending_request.get("tmux_session") or "") or name
+            # request handler pops its entry as soon as it wakes.
+            pane_index = pending.pane_index
+            tmux_name = str(pending.request.get("tmux_session") or "") or name
 
             # Store decision and signal the waiting request
-            session.pending_permission.decision = {"decision": decision}
+            pending.decision = {"decision": decision}
             if decision == "deny":
-                session.pending_permission.decision["message"] = data.get("message", "User denied permission")
-            session.pending_permission.event.set()
+                pending.decision["message"] = data.get("message", "User denied permission")
+            pending.event.set()
 
             # Send keystroke to the pane the dialog is on — CONDITIONALLY.
             # The parent session may have answered via `agentwire prompts
@@ -263,14 +291,17 @@ class PermissionRoutesMixin:
             except Exception as e:
                 logger.error(f"[{name}] Failed to send keystroke: {e}")
 
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: prompt_router.clear_marker(tmux_name, pane_index)
+            # The waiting handler may not have popped its entry yet; exclude it
+            # so the marker clears when this was the last ask on the pane.
+            await self._clear_marker_if_unshared(
+                session, tmux_name, pane_index, excluding=request_id
             )
 
             # Broadcast permission_resolved to all clients (Task 3.7)
             await self._broadcast(session, {
                 "type": "permission_resolved",
                 "decision": decision,
+                "request_id": request_id,
             })
 
             return web.json_response({"success": True})
@@ -279,34 +310,55 @@ class PermissionRoutesMixin:
             logger.error(f"Permission respond failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
-    async def _announce_permission_request(
-        self, session_name: str, tool_name: str, tool_input: dict,
-        parent_notified: "str | None" = None,
-    ):
-        """Generate TTS announcement for permission request (Task 3.6)."""
-        # Build a natural announcement message
-        if tool_name == "Edit":
-            file_path = tool_input.get("file_path", "a file")
-            # Extract just the filename for brevity
-            filename = Path(file_path).name if file_path else "a file"
-            text = f"Claude wants to edit {filename}"
-        elif tool_name == "Write":
-            file_path = tool_input.get("file_path", "a file")
-            filename = Path(file_path).name if file_path else "a file"
-            text = f"Claude wants to write to {filename}"
-        elif tool_name == "Bash":
-            command = tool_input.get("command", "")
-            # Truncate long commands
-            if len(command) > 50:
-                command = command[:47] + "..."
-            text = f"Claude wants to run a command: {command}"
-        else:
-            text = f"Claude wants to use {tool_name}"
+    async def _clear_marker_if_unshared(
+        self, session, tmux_name: str, pane_index: int, excluding: str = ""
+    ) -> None:
+        """Clear the pane's prompt marker unless another ask still uses it.
 
+        Concurrent asks on one pane share one marker; resolving one must not
+        drop the marker the others still need (#1343).
+        """
+        shared = any(
+            rid != excluding and p.pane_index == pane_index
+            for rid, p in session.pending_permissions.items()
+        )
+        if not shared:
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: prompt_router.clear_marker(tmux_name, pane_index)
+            )
+
+    async def api_permissions_list(self, request: web.Request) -> web.Response:
+        """GET /api/permissions - every pending approval, across sessions.
+
+        Survives a missed ``permission_request`` broadcast: a client that
+        connects late (or the owner who only heard a TTS line) can still see
+        and answer what is waiting (#1343).
+        """
+        pending = [
+            {
+                "session": name,
+                "request_id": p.request_id,
+                "tool_name": p.request.get("tool_name", "unknown"),
+                "tool_input": p.request.get("tool_input", {}),
+                "agent": prompt_router.agent_label(p.request),
+                "summary": summarize(name, p.request),
+                "agent_id": p.request.get("agent_id"),
+                "agent_type": p.request.get("agent_type"),
+                "pane_index": p.pane_index,
+            }
+            for name, sess in self.active_sessions.items()
+            for p in sess.pending_permissions.values()
+        ]
+        return web.json_response({"success": True, "pending": pending})
+
+    async def _announce_permission_request(
+        self, session_name: str, data: dict, parent_notified: "str | None" = None,
+    ):
+        """Speak the plain-language summary of the ask (#1343)."""
+        text = summarize(session_name, data)
         if parent_notified:
             # The human knows an agent may handle it before they get there.
-            text += f". Also routed to {parent_notified}"
-
+            text += f" Also routed to {parent_notified}."
         await self._say_to_room(session_name, text)
 
 
@@ -322,5 +374,6 @@ def register_permission_routes(server, app):
     app.router.add_post("/api/review/{name:.+}/answer", server.api_review_answer)
     # Permission request handling (from Claude Code hook)
     # Note: respond route must come first as aiohttp matches in order
+    app.router.add_get("/api/permissions", server.api_permissions_list)
     app.router.add_post("/api/permission/{name:.+}/respond", server.api_permission_respond)
     app.router.add_post("/api/permission/{name:.+}", server.api_permission_request)
