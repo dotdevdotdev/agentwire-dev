@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Software Development :: User Interfaces",
 ]
 dependencies = [
-    "aiohttp>=3.13.4",  # >=3.13.4 clears CVE-2026-34515 + CVE-2026-34513 (portal-facing)
+    "aiohttp>=3.14.4",  # >=3.14.4 clears the Nov-2026 request-replay/scheme-spoof batch (portal-facing)
     "aiohttp-jinja2>=1.6",
     "jinja2>=3.1.0",
     "pyyaml>=6.0",
@@ -33,11 +33,21 @@ dependencies = [
     # Transitive via requests/aiohttp, pinned explicitly: `uv tool install .` ignores
     # uv.lock, so only a floor here keeps installs off the eMudhra emSign roots.
     "certifi>=2026.10.23",
+    # Same reason (uv.lock is ignored by `uv tool install .`): floors on
+    # transitives that pip-audit flagged in Nov 2026.
+    "multidict>=6.9.1",  # via aiohttp
+    "urllib3>=2.8.0",  # via requests: decompression-bomb fixes
+    "pyjwt>=2.15.0",  # via mcp[crypto]
+    "anyio>=4.14.2",  # via mcp/httpx: IDN TLS hostname check
+    "filelock>=4.2.1; python_version >= '3.11'",  # via huggingface-hub (Moonshine model cache); 4.2.x needs 3.11+
+    "msgpack>=1.2.3",  # via librosa (Moonshine)
+    "fsspec>=2026.6.0",  # via huggingface-hub
     # <2 is load-bearing: MCP SDK 2.x removed `mcp.server.fastmcp`, which
     # agentwire/mcp_core.py imports. Unbounded, any `agentwire rebuild` after
     # the 2.x release resolves it and every mcp__agentwire__* tool silently
     # disappears from every session (#874). Lift only with a 2.x port.
-    "mcp>=1.2.0,<2",
+    # >=1.30.0 clears CVE-2026-59951/115563/116684-6 + PYSEC-2026-3483.
+    "mcp>=1.30.0,<2",
     "resend>=2.0.0",
     "markdown>=3.5",
     # In-process WebM/Opus decoding for /transcribe (avoids ffmpeg subprocess startup).
