@@ -284,6 +284,17 @@ agentwire info -s session-name
 
 ---
 
+### All sessions vanished at once ("tmux crashed")
+
+Usually tmux did not crash. Something deleted the server's socket (`/tmp/tmux-<uid>/default`; `/private/tmp/...` on macOS). The server and every agent in it keep running, but nothing can reach them. The next `tmux` call (often a service health check) finds no server and starts an empty one on the same path. That new server is what you see, so it looks like everything restarted empty.
+
+`agentwire doctor` reports these under **Checking for stranded tmux servers**:
+
+- **Socket gone, path free:** `doctor --yes` (or `kill -USR1 <pid>`) makes the server recreate its socket. Nothing is lost.
+- **Path held by a newer server:** the stranded server can't be reconnected without cutting off the new one. Resume the conversations you need (`agentwire restart -s <session>`; the IDs are recorded), then `kill <pid>`.
+
+Prevent it by keeping the socket out of `/tmp`: `export TMUX_TMPDIR="$HOME/.local/state/tmux"` in `~/.zshenv` (or your shell's always-read file), then rerun `agentwire limits install` so the watchdog's launchd/systemd unit carries the same `TMUX_TMPDIR`. Every launchd job that runs tmux needs it, including a hand-written portal plist.
+
 ## Remote Machine Issues
 
 ### SSH Connection Failed

@@ -14,24 +14,12 @@ the spike report is ``docs/wiki/security/sandbox-spike.md``.
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import shutil
 import sys
 from pathlib import Path
 
-
-def tmux_socket_path() -> str:
-    """Path of the default tmux server socket for this user.
-
-    Taken from ``$TMUX`` when inside tmux (its first field IS the socket), else
-    the conventional ``<tmpdir>/tmux-<uid>/default``.
-    """
-    inside = os.environ.get("TMUX", "").split(",")[0]
-    if inside:
-        return inside
-    return f"/private/tmp/tmux-{os.getuid()}/default" if sys.platform == "darwin" \
-        else f"/tmp/tmux-{os.getuid()}/default"
+from . import tmux_socket
 
 
 def build_settings(
@@ -51,7 +39,7 @@ def build_settings(
     or — under bypass — silently allowed). The tmux socket is always allowed
     because ``agentwire`` itself cannot function without it.
     """
-    sockets = list(dict.fromkeys([tmux_socket_path(), *allow_unix_sockets]))
+    sockets = list(dict.fromkeys([tmux_socket.socket_path(), *allow_unix_sockets]))
     return {
         "sandbox": {
             "enabled": True,
