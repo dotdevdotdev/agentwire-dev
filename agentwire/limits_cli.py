@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 from . import usage_limit
 
@@ -154,8 +156,21 @@ def drain_warning() -> "str | None":
     return None
 
 
+def _tmux_tmpdir() -> str | None:
+    """The installer's ``$TMUX_TMPDIR``, carried into the watchdog's environment.
+
+    Every stage talks to tmux. Without this a watchdog started by launchd or
+    systemd looks for the server under ``/tmp`` while the user's sessions live
+    wherever ``TMUX_TMPDIR`` put them, and every stage sees an empty server.
+    """
+    return os.environ.get("TMUX_TMPDIR") or None
+
+
 def _plist_content(agentwire_bin: str) -> str:
     home = str(Path.home())
+    tmpdir = _tmux_tmpdir()
+    tmux_env = (f"\n        <key>TMUX_TMPDIR</key>\n        <string>{xml_escape(tmpdir)}</string>"
+                if tmpdir else "")
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!--
   AgentWire watchdog — one deterministic tick (no agent) every {TICK_INTERVAL}s.
@@ -191,7 +206,7 @@ def _plist_content(agentwire_bin: str) -> str:
         <key>PATH</key>
         <string>{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
-        <string>{home}</string>
+        <string>{home}</string>{tmux_env}
     </dict>
 
     <key>StandardOutPath</key>
@@ -209,6 +224,8 @@ def _plist_content(agentwire_bin: str) -> str:
 
 def _systemd_service_content(agentwire_bin: str) -> str:
     home = str(Path.home())
+    tmpdir = _tmux_tmpdir()
+    tmux_env = f"Environment=TMUX_TMPDIR={tmpdir}\n" if tmpdir else ""
     return f"""# AgentWire watchdog — one deterministic tick (no agent) every {TICK_INTERVAL}s.
 # It is NOT only usage-limit recovery; disabling it silences all of:
 {stages_summary("# ")}
@@ -225,7 +242,7 @@ ExecStart={agentwire_bin} limits tick
 WorkingDirectory={home}
 Environment=PATH={home}/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME={home}
-"""
+{tmux_env}"""
 
 
 def _systemd_timer_content() -> str:

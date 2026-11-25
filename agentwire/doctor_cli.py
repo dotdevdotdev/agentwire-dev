@@ -1213,6 +1213,51 @@ def _render_sandbox_section() -> int:
     return 0
 
 
+def _render_tmux_orphans_section(
+    *, auto_confirm: bool = False, dry_run: bool = False,
+) -> tuple[int, int]:
+    """tmux servers still running with no reachable socket.
+
+    Something deleting the socket under ``/tmp`` strands a live server: its
+    sessions keep running but nothing can reach them, and the next ``tmux``
+    call starts an empty server on the same path, which looks like a crash.
+    A server whose path is still free is reconnected with ``SIGUSR1``; one
+    whose path a newer server holds can only be reported. Returns
+    ``(issues_found, issues_fixed)``.
+    """
+    from . import tmux_socket
+
+    if shutil.which("lsof") is None or shutil.which("tmux") is None:
+        print("  [..] Skipped: needs lsof and tmux")
+        return 0, 0
+    orphans = tmux_socket.find_orphaned_servers()
+    if not orphans:
+        print("  [ok] Every running tmux server is reachable on its socket")
+        return 0, 0
+
+    fixed = 0
+    for o in orphans:
+        if not o.recoverable:
+            print(f"  [!!] tmux server pid {o.pid} lost {o.socket}; a newer server "
+                  "holds that path, so its sessions cannot be reached")
+            print("       Recover what you need from it, then: kill "
+                  f"{o.pid}. Setting TMUX_TMPDIR outside /tmp stops a /tmp "
+                  "cleanup from doing this again.")
+            continue
+        print(f"  [!!] tmux server pid {o.pid} is running but its socket "
+              f"{o.socket} is gone")
+        print(f"       Fix: kill -USR1 {o.pid}  (recreates the socket; nothing is lost)")
+        if dry_run:
+            print("       -> Would reconnect (dry-run)")
+            continue
+        if not (auto_confirm or _confirm("     Reconnect it now?")):
+            continue
+        tmux_socket.reconnect(o)
+        print("       -> reconnected")
+        fixed += 1
+    return len(orphans), fixed
+
+
 def _render_blocked_prompt_section() -> int:
     """Doctor section: agent alive, but the pane sits on an unanswered menu (#905).
 
@@ -1938,6 +1983,15 @@ def cmd_doctor(args) -> int:
                 print("    [..] say: not found (optional, use 'agentwire say' directly)")
 
     # 10. Check for dead-lettered messages
+    print("\nChecking for stranded tmux servers...")
+    try:
+        _tmux_found, _tmux_fixed = _render_tmux_orphans_section(
+            auto_confirm=auto_confirm, dry_run=dry_run)
+        issues_found += _tmux_found
+        issues_fixed += _tmux_fixed
+    except Exception as e:
+        print(f"  [..] Could not check for stranded tmux servers: {e}")
+
     print("\nChecking for dead-lettered messages...")
     issues_found += _render_dead_letter_section()
 
